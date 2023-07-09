@@ -10,7 +10,13 @@ info:
 limits:
   clients: 400
   sources: 4
-  queue_size: 102400
+  # The most important part
+  # How much audio we want to keep in queue for new users
+  # This depends on bitrate of the stream
+  # So for a stream with bitrate of 320kbps and we want to leave 10 seconds burst
+  # 320 kilobits = 40_000 bytes
+  # 40_000 bytes * 10 seconds = 400_000
+  queue_size: 400000
   header_timeout: 15000
   source_timeout: 10000
   http_max_len: 8192

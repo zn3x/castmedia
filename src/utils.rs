@@ -63,6 +63,7 @@ fn can_backtrack(segment: &str) -> bool {
     }
 }
 
+#[derive(Debug)]
 pub struct Query {
     pub key: String,
     pub val: String
@@ -85,6 +86,21 @@ pub fn get_queries(path: &str) -> Vec<Query> {
     }
 
     queries
+}
+
+pub fn get_queries_val_for_keys<'a>(keys: &[&str], queries: &'a [Query]) -> Vec<Option<&'a str>> {
+    let mut vals = vec![None; keys.len()];
+
+    for i in 0..keys.len() {
+        for query in queries {
+            if query.key.eq(keys[i]) {
+                vals[i] = Some(query.val.as_str());
+                break;
+            }
+        }
+    }
+
+    vals
 }
 
 pub fn get_header< 'a >(key: &str, headers: &[httparse::Header< 'a >]) -> Option<&'a [ u8 ]> {

@@ -5,7 +5,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::{
     server::{ClientSession, Stream},
-    utils::{self, get_basic_auth}, response
+    utils::{self, get_basic_auth, Query}, response
 };
 
 pub struct Request<'a> {
@@ -17,7 +17,15 @@ pub struct Request<'a> {
 #[derive(Debug)]
 pub enum RequestType {
     SourceRequest(SourceRequest),
-    ListenRequest(ListenRequest)
+    ListenRequest(ListenRequest),
+    AdminRequest(AdminRequest)
+}
+
+#[derive(Debug)]
+pub struct AdminRequest {
+    pub path: String,
+    pub queries: Vec<Query>,
+    pub auth: Option<(String, String)>
 }
 
 #[derive(Debug)]
@@ -100,6 +108,13 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
         },
         "GET" => {
             let source_id = utils::clean_path(&path);
+
+            if source_id.starts_with("/admin/") {
+                let auth = get_basic_auth(&request.headers)?;
+                let p    = path.split("?").collect::<Vec<&str>>();
+                return Ok(RequestType::AdminRequest(AdminRequest { path: p[0].to_owned(), queries, auth }));
+            } else if source_id.starts_with("/api/") {
+            }
 
             if !session.server.sources.read().await.contains_key(&source_id) {
                 response::not_found(&mut session.stream, &session.server.config.info.id).await?;

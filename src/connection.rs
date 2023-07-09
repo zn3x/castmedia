@@ -6,10 +6,10 @@ use tracing::{info, error};
 
 use crate::{
     server::ClientSession,
-    request::{read_request, Request, RequestType, ListenRequest}, source, response, utils
+    request::{read_request, Request, RequestType, ListenRequest}, source, response, utils, admin
 };
 
-pub async fn client_broadcast<'a>(session: &mut ClientSession, request: &Request<'a>, req: ListenRequest) -> Result<()> {
+pub async fn client_broadcast<'a>(mut session: ClientSession, request: &Request<'a>, req: ListenRequest) -> Result<()> {
     let (props, mut stream, mut meta_stream) = match session.server.sources.read().await.get(&req.mountpoint) {
         Some(v) => {
             (
@@ -70,6 +70,7 @@ pub async fn client_broadcast<'a>(session: &mut ClientSession, request: &Request
                     metaint += buf.len();
                     session.stream.write_all(&buf).await?;
                 }
+                session.stream.flush().await?;
             },
             Err(RecvError::Overflowed(_)) => (),
             Err(RecvError::Closed) => break
@@ -104,7 +105,8 @@ pub async fn handle(mut session: ClientSession) {
     let request = request.into_inner();
 
     match _type {
+        RequestType::AdminRequest(v) => admin::handle_request(session, &request, v).await,
         RequestType::SourceRequest(v) => source::handle(session, &request, v).await,
-        RequestType::ListenRequest(v) => client_broadcast(&mut session, &request, v).await
+        RequestType::ListenRequest(v) => client_broadcast(session, &request, v).await
     }.ok();
 }

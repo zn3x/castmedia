@@ -5,6 +5,8 @@ mod request;
 mod source;
 mod response;
 mod stream;
+mod admin;
+mod auth;
 mod utils;
 
 #[tokio::main]

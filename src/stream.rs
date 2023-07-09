@@ -1,11 +1,11 @@
 use std::{time::Duration, future::Future, sync::Arc, collections::VecDeque, io::Read};
 use futures::executor::block_on;
-use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::{MetadataOptions, Metadata}, formats::FormatOptions, probe::Hint};
+use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::error;
 
 use tokio::{time::timeout, io::AsyncReadExt};
 
-use crate::{server::{Stream, ClientSession}, source::SourceBroadcast};
+use crate::{server::{Stream, ClientSession}, source::{SourceBroadcast, Source, IcyMetadata}};
 
 pub trait StreamReader: Send + Sync + Read {
 }
@@ -39,39 +39,17 @@ impl Read for SimpleReader {
     }
 }
 
-fn broadcast_metadata<'a>(broadcast: &mut SourceBroadcast, metadata: Option<Metadata<'a>>) {
-    let mut artist = None;
-    let mut title = None;
-
-    match metadata {
-        Some(v) => match v.current() {
-            Some(v) => {
-                for tag in v.tags() {
-                    match tag.std_key {
-                        Some(symphonia::core::meta::StandardTagKey::Artist) => {
-                            artist = Some(tag.value.to_string());
-                        },
-                        Some(symphonia::core::meta::StandardTagKey::TrackTitle) => {
-                            title = Some(tag.value.to_string());
-                        },
-                        _ => {}
-                    }
-
-                    if artist.is_some() && title.is_some() {
-                        break;
-                    }
-                }
-            },
-            None => {}
-        },
-        None => {}
-    }
+pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, url: &Option<&str>) {
+    source.metadata.replace(IcyMetadata {
+        title: song.unwrap_or("").to_string(),
+        url: url.unwrap_or("").to_string()
+    });
 
     let mut vec = vec![0];
     vec.extend_from_slice(b"StreamTitle='");
-    vec.extend_from_slice(artist.unwrap_or("".to_string()).as_bytes());
-    vec.extend_from_slice(b" - ");
-    vec.extend_from_slice(title.unwrap_or("".to_string()).as_bytes());
+    vec.extend_from_slice(song.unwrap_or("").as_bytes());
+    vec.extend_from_slice(b"';StreamUrl='");
+    vec.extend_from_slice(url.unwrap_or("").as_bytes());
     vec.extend_from_slice(b"';");
 
     // Black magic format https://thecodeartist.blogspot.com/2013/02/shoutcast-internet-radio-protocol.html
@@ -88,7 +66,9 @@ fn broadcast_metadata<'a>(broadcast: &mut SourceBroadcast, metadata: Option<Meta
         }
     } as u8;
 
-    block_on(broadcast.metadata.broadcast(Arc::new(vec.clone())))
+    source.meta_broadcast_sender
+        .broadcast(Arc::new(vec.clone()))
+        .await
         .expect("Should be able to broadcast metadata");
 }
 

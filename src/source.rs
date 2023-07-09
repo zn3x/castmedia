@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::info;
 
-use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream::{StreamReader, SimpleReader, self}};
+use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream::{StreamReader, SimpleReader, self}, auth};
 
 pub struct IcyProperties {
 	pub uagent: Option<String>,
@@ -55,7 +55,8 @@ impl IcyProperties {
 }
 
 pub struct IcyMetadata {
-	pub title: String
+	pub title: String,
+    pub url: String
 }
 
 pub struct Source {
@@ -66,8 +67,12 @@ pub struct Source {
 	pub fallback: Option<String>,
     /// The stream broadcast receiver
     pub broadcast: async_broadcast::Receiver<Arc<Vec<u8>>>,
-    /// Stream for metadata broadcast
+    /// Receiver stream for metadata broadcast
     pub meta_broadcast: async_broadcast::Receiver<Arc<Vec<u8>>>,
+    /// Sender stream for metadata broadcast
+    /// Needed so we don't create a new sender every time
+    /// we get metadata update
+    pub meta_broadcast_sender: async_broadcast::Sender<Arc<Vec<u8>>>
 }
 
 pub struct SourceBroadcast {
@@ -85,6 +90,7 @@ impl Source {
 			metadata_vec: Arc::new(vec![0]),
 			fallback: None,
             broadcast: rx,
+            meta_broadcast_sender: rx1.new_sender(),
             meta_broadcast: rx1
 		},
         SourceBroadcast {
@@ -94,18 +100,9 @@ impl Source {
 	}
 }
 
-async fn source_auth(auth: Option<(String, String)>) -> Result<bool> {
-    if let Some(v) = auth {
-        if v.0.eq("1") && v.1.eq("2") {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: SourceRequest) -> Result<()> {
     let sid = &session.server.config.info.id;
-    match source_auth(req.auth).await {
+    match auth::source_auth(req.auth).await {
         Ok(v) => if !v {
             response::authentication_needed(&mut session.stream, sid).await?;
             info!("Source request from {} with wrong authentication", session.addr);
