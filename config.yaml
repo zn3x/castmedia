@@ -1,0 +1,22 @@
+address:
+- addr: 127.0.0.1
+  port: 9000
+metadata_interval: 32000
+info:
+  id: CastRadio 0.1.0
+  admin: admin@localhost
+  location: '1.064646'
+  description: Internet radio!
+limits:
+  clients: 400
+  sources: 4
+  queue_size: 102400
+  burst_size: 65536
+  header_timeout: 15000
+  source_timeout: 10000
+  http_max_len: 8192
+admin_access:
+  enabled: true
+  address:
+    addr: 127.0.0.1
+    port: 9100

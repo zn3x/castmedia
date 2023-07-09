@@ -1,0 +1,182 @@
+use std::sync::Arc;
+
+use anyhow::Result;
+use tracing::info;
+
+use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream::{StreamReader, SimpleReader, self}};
+
+pub struct IcyProperties {
+	pub uagent: Option<String>,
+	pub public: bool,
+	pub name: Option<String>,
+	pub description: Option<String>,
+	pub url: Option<String>,
+	pub genre: Option<String>,
+	pub bitrate: Option<String>,
+	pub content_type: String
+}
+
+impl IcyProperties {
+    fn new(content_type: String) -> Self {
+        IcyProperties {
+            uagent: None,
+            public: false,
+            name: None,
+            description: None,
+            url: None,
+            genre: None,
+            bitrate: None,
+            content_type
+        }
+    }
+
+    fn populate_from_http_headers(&mut self, headers: &[httparse::Header<'_>]) {
+        for header in headers {
+            let name = header.name.to_lowercase();
+            let val = match std::str::from_utf8(header.value) {
+                Ok(v) => v,
+                Err(_) => continue
+            };
+
+            // There's a nice list here: https://github.com/ben221199/MediaCast
+            // Although, these were taken directly from Icecast's source: https://github.com/xiph/Icecast-Server/blob/master/src/source.c
+            match name.as_str() {
+                "user-agent" => self.uagent = Some(val.to_string()),
+                "ice-public" | "icy-pub" | "x-audiocast-public" | "icy-public" => self.public = val.parse::<usize>().unwrap_or(0) == 1,
+                "ice-name" | "icy-name" | "x-audiocast-name" => self.name = Some(val.to_string()),
+                "ice-description" | "icy-description" | "x-audiocast-description" => self.description = Some(val.to_string()),
+                "ice-url" | "icy-url" | "x-audiocast-url" => self.url = Some(val.to_string()),
+                "ice-genre" | "icy-genre" | "x-audiocast-genre" => self.genre = Some(val.to_string()),
+                "ice-bitrate" | "icy-br" | "x-audiocast-bitrate" => self.bitrate = Some(val.to_string()),
+                _ => (),
+            }
+        }
+    }
+}
+
+pub struct IcyMetadata {
+	pub title: String
+}
+
+pub struct Source {
+    pub properties: Arc<IcyProperties>,
+    pub metadata: Option<IcyMetadata>,
+	pub metadata_vec: Arc<Vec<u8>>,
+    /// Fallback mountpoint in case this one is down
+	pub fallback: Option<String>,
+    /// The stream broadcast receiver
+    pub broadcast: async_broadcast::Receiver<Arc<Vec<u8>>>,
+    /// Stream for metadata broadcast
+    pub meta_broadcast: async_broadcast::Receiver<Arc<Vec<u8>>>,
+}
+
+pub struct SourceBroadcast {
+    pub audio: async_broadcast::Sender<Arc<Vec<u8>>>,
+    pub metadata: async_broadcast::Sender<Arc<Vec<u8>>>
+}
+
+impl Source {
+	pub fn new(properties: IcyProperties) -> (Self, SourceBroadcast) {
+        let (tx, rx) = async_broadcast::broadcast(1);
+        let (tx1, rx1) = async_broadcast::broadcast(1);
+		(Source {
+			properties: Arc::new(properties),
+			metadata: None,
+			metadata_vec: Arc::new(vec![0]),
+			fallback: None,
+            broadcast: rx,
+            meta_broadcast: rx1
+		},
+        SourceBroadcast {
+            audio: tx,
+            metadata: tx1
+        })
+	}
+}
+
+async fn source_auth(auth: Option<(String, String)>) -> Result<bool> {
+    if let Some(v) = auth {
+        if v.0.eq("1") && v.1.eq("2") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: SourceRequest) -> Result<()> {
+    let sid = &session.server.config.info.id;
+    match source_auth(req.auth).await {
+        Ok(v) => if !v {
+            response::authentication_needed(&mut session.stream, sid).await?;
+            info!("Source request from {} with wrong authentication", session.addr);
+            return Ok(());
+        },
+        Err(e) => {
+            response::internal_error(&mut session.stream, sid).await?;
+            return Err(anyhow::Error::msg(format!("Source authentication failed, cause {}", e)));
+        }
+    }
+
+    // TODO: CHECK PATH
+
+    // Check if mountpoint used
+    if session.server.sources.read().await.contains_key(&req.mountpoint) {
+        response::forbidden(&mut session.stream, sid, "Invalid mountpoint").await?;
+        return Ok(());
+    }
+
+    // Instanciating stream properties
+    let mut properties = IcyProperties::new(match utils::get_header("Content-Type", &request.headers) {
+        Some(v) => std::str::from_utf8(v)?.to_owned(),
+        None => {
+            response::forbidden(&mut session.stream, sid, "Missing content type").await?;
+            return Ok(());
+        }
+    });
+
+    let chunked;
+    if request.method == "SOURCE" {
+        response::ok_200(&mut session.stream, sid).await?;
+        chunked = false;
+    } else {
+        // PUT METHOD
+        // No support for encoding
+        // TODO Add support for transfer encoding options as specified here: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Transfer-Encoding
+        match utils::get_header("Transger-Encoding", &request.headers) {
+            Some(b"identity") | None => {},
+            Some(b"chunked") => {},
+            _ => {
+                response::bad_request(&mut session.stream, sid, "Invalid transfer encoding").await?;
+                return Ok(());
+            }
+        }
+
+        match utils::get_header("Expect", &request.headers) {
+            Some(b"100-continue") => {},
+            Some(_) => {
+                response::bad_request(&mut session.stream, sid, "Expecting 100-continue in header expect").await?;
+                return Ok(());
+            },
+            None => {
+                response::bad_request(&mut session.stream, sid, "PUT method must have expect header").await?;
+                return Ok(());
+            }
+        }
+
+        response::ok_200(&mut session.stream, sid).await?;
+        chunked = true;
+    }
+
+    properties.populate_from_http_headers(&request.headers);
+
+    let (source, broadcast) = Source::new(properties);
+
+    let mountpoint = req.mountpoint.clone();
+    session.server.sources.write().await.insert(req.mountpoint, source);
+    
+    info!("Mounted source on {}", mountpoint);
+    stream::broadcast(&mountpoint, session, chunked, broadcast).await;
+    info!("Unmounted source on {}", mountpoint);
+
+    Ok(())
+}
