@@ -14,6 +14,7 @@ async fn server_info(stream: &mut Stream) -> Result<()> {
     fmt_http_date(SystemTime::now())
     ).as_bytes()).await?;
 
+    stream.flush().await?;
 	Ok(())
 }
 

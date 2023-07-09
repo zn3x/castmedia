@@ -1,7 +1,7 @@
 use std::{sync::Arc, net::SocketAddr};
 use tokio::{
     net::{TcpListener, TcpStream},
-    task::JoinSet, io::{AsyncRead, AsyncWrite}, sync::{Semaphore, RwLock}
+    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock}
 };
 use tracing::{info, error};
 use hashbrown::HashMap;
@@ -9,7 +9,7 @@ use hashbrown::HashMap;
 use crate::{config::ServerSettings, connection, source::Source};
 
 pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {}
-impl Socket for TcpStream {}
+impl Socket for BufStream<TcpStream> {}
 pub type Stream = Box<dyn Socket>;
 
 /// Struct holding all info related to server
@@ -48,7 +48,8 @@ async fn accept_connections(serv: Arc<Server>, listener: TcpListener, admin_addr
                         connection::handle(ClientSession {
                             admin_addr,
                             server: serv_clone,
-                            stream: Box::new(stream),
+                            // Use bufferer for socket to reduce syscalls we make
+                            stream: Box::new(BufStream::new(stream)),
                             addr
                         }).await;
                     }
