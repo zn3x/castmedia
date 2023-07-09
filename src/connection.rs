@@ -70,7 +70,6 @@ pub async fn client_broadcast<'a>(mut session: ClientSession, request: &Request<
                     metaint += buf.len();
                     session.stream.write_all(&buf).await?;
                 }
-                session.stream.flush().await?;
             },
             Err(RecvError::Overflowed(_)) => (),
             Err(RecvError::Closed) => break
