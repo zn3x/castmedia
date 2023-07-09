@@ -87,7 +87,6 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
     let queries = utils::get_queries(&path);
     let path    = utils::clean_path(&path);
 
-    println!("wwwkwoew {:?}", request.headers);
     // Now we check request made by user
     match request.method {
 		// ICECAST protocol info: https://gist.github.com/ePirat/adc3b8ba00d85b7e3870
