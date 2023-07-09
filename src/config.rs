@@ -78,13 +78,11 @@ pub struct ServerLimits {
     /// The max size the queue for every mountpoint
     /// When a user falls behind this queue, they are moved to the tail of the queue
     /// Or they is disconnected if we can't send data to them
+    /// This is also the value used as burst value for new clients
+    /// Burst is usefull so that we do not put new clients a the top of the queue
+    /// where there may or may not be some new data in queue to buffer
     #[serde(default = "default_val_limit_queue_size")]
     pub queue_size: usize,
-    /// When a client joins a mountpoint, we can give him a stream burst
-    /// So they are not put at the top of the queue where there may not be some
-    /// audio available yet to be sent
-    #[serde(default = "default_val_limit_burst_size")]
-    pub burst_size: usize,
     /// Max time in millis we wait for a client to send his header
     #[serde(default = "default_val_limit_header_timeout")]
     pub header_timeout: u64,
@@ -133,7 +131,6 @@ impl Default for ServerLimits {
             clients: default_val_limit_clients(),
             sources: default_val_limit_sources(),
             queue_size: default_val_limit_queue_size(),
-            burst_size: default_val_limit_burst_size(),
             header_timeout: default_val_limit_header_timeout(),
             source_timeout: default_val_limit_source_timeout(),
             http_max_len: default_val_limit_http_max_len()

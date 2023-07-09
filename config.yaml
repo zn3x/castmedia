@@ -11,7 +11,6 @@ limits:
   clients: 400
   sources: 4
   queue_size: 102400
-  burst_size: 65536
   header_timeout: 15000
   source_timeout: 10000
   http_max_len: 8192
