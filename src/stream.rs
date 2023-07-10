@@ -170,9 +170,9 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, m
                 rt.block_on(broadcast.audio.broadcast(Arc::new(slice)))
                     .expect("Should be able to write to broadcast queue");
             },
-            Err(err) => {
-                // A unrecoverable error occurred, halt decoding.
-                panic!("{}", err);
+            Err(e) => {
+                // A unrecoverable error occurred, halt reading
+                return Err(e.into());
             }
         };
 
