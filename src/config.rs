@@ -14,7 +14,6 @@ const DESCRIPTION: &str      = "Internet radio!";
 const MAX_CLIENTS: usize     = 400;
 const MAX_SOURCES: usize     = 4;
 const QUEUE_SIZE: usize      = 102400;
-const BURST_SIZE: usize      = 65536;
 const HEADER_TIMEOUT: u64    = 15000;
 const SOURCE_TIMEOUT: u64    = 10000;
 const HTTP_MAX_LEN: usize    = 8192;
@@ -161,7 +160,6 @@ fn default_val_info_description() -> String { DESCRIPTION.to_owned() }
 fn default_val_limit_clients() -> usize { MAX_CLIENTS }
 fn default_val_limit_sources() -> usize { MAX_SOURCES }
 fn default_val_limit_queue_size() -> usize { QUEUE_SIZE }
-fn default_val_limit_burst_size() -> usize { BURST_SIZE }
 fn default_val_limit_header_timeout() -> u64 { HEADER_TIMEOUT }
 fn default_val_limit_source_timeout() -> u64 { SOURCE_TIMEOUT }
 fn default_val_limit_http_max_len() -> usize { HTTP_MAX_LEN }
