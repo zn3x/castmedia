@@ -10,8 +10,6 @@ tokio = { version = "1.29.0", features = [ "full" ] }
 async-broadcast = "0.5.1"
 async-trait = "0.1.71"
 
-futures = "0.3.28"
-
 hashbrown = "0.14.0"
 
 httparse = "1.8.0"

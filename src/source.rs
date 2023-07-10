@@ -171,9 +171,7 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
     let mountpoint = req.mountpoint.clone();
     session.server.sources.write().await.insert(req.mountpoint, source);
     
-    info!("Mounted source on {}", mountpoint);
     stream::broadcast(&mountpoint, session, chunked, broadcast).await;
-    info!("Unmounted source on {}", mountpoint);
 
     Ok(())
 }
