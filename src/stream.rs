@@ -79,7 +79,7 @@ pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, ur
 }
 
 // Getting a future lifetime error, a workaround for now
-pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool, mut broadcast: SourceBroadcast)
+pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool, broadcast: SourceBroadcast)
     -> impl Future<Output = ()> + 'a {
     async move {
         info!("Mounted source on {}", mountpoint);
@@ -87,9 +87,13 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool,
         let mountpoint = mountpoint.to_owned();
         // For now we are using threads for source
         tokio::task::spawn_blocking(move || {
+            let server = session.server.clone();
             if let Err(e) = blocking_broadcast(&mountpoint, session, chunked, broadcast) {
                 error!("Source stream for {} closed: {}", mountpoint, e);
             }
+
+            // Cleanup
+            server.sources.blocking_write().remove(&mountpoint);
 
             info!("Unmounted source on {}", mountpoint);
         });
@@ -115,8 +119,7 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, m
     fmt_opts.enable_gapless = true;
 
     let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &fmt_opts, &meta_opts)
-        .expect("unsupported format");
+        .format(&hint, mss, &fmt_opts, &meta_opts)?;
 
     //broadcast_metadata(&mut broadcast, probed.metadata.get());
 
@@ -180,9 +183,6 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, m
     };
 
     // TODO: Checking if there is a fallback
-    
-    // Cleanup
-    session.server.sources.blocking_write().remove(mountpoint);
 
     Ok(())
 }
