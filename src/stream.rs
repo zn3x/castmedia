@@ -90,6 +90,8 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool,
             if let Err(e) = blocking_broadcast(&mountpoint, session, chunked, broadcast) {
                 error!("Source stream for {} closed: {}", mountpoint, e);
             }
+
+            info!("Unmounted source on {}", mountpoint);
         });
 
     }
@@ -181,8 +183,6 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, m
     
     // Cleanup
     session.server.sources.blocking_write().remove(mountpoint);
-
-    info!("Unmounted source on {}", mountpoint);
 
     Ok(())
 }
