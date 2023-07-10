@@ -62,7 +62,6 @@ pub struct IcyMetadata {
 pub struct Source {
     pub properties: Arc<IcyProperties>,
     pub metadata: Option<IcyMetadata>,
-	pub metadata_vec: Arc<Vec<u8>>,
     /// Fallback mountpoint in case this one is down
 	pub fallback: Option<String>,
     /// The stream broadcast receiver
@@ -87,7 +86,6 @@ impl Source {
 		(Source {
 			properties: Arc::new(properties),
 			metadata: None,
-			metadata_vec: Arc::new(vec![0]),
 			fallback: None,
             broadcast: rx,
             meta_broadcast_sender: rx1.new_sender(),
