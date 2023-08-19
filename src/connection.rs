@@ -1,6 +1,6 @@
 use std::{cell::RefCell, sync::Arc};
 use anyhow::Result;
-use async_broadcast::{RecvError, TryRecvError};
+use llq::errors::{RecvError, TryRecvError};
 use tokio::io::AsyncWriteExt;
 use tracing::{info, error};
 
@@ -44,7 +44,7 @@ pub async fn client_broadcast<'a>(mut session: ClientSession, request: &Request<
     loop {
         match meta_stream.try_recv() {
             Ok(v) => metadata = v,
-            Err(TryRecvError::Empty | TryRecvError::Overflowed(_)) => (),
+            Err(TryRecvError::Empty | TryRecvError::Lagged(_)) => (),
             Err(TryRecvError::Closed) => break
         }
 
@@ -71,7 +71,7 @@ pub async fn client_broadcast<'a>(mut session: ClientSession, request: &Request<
                     session.stream.write_all(&buf).await?;
                 }
             },
-            Err(RecvError::Overflowed(_)) => (),
+            Err(RecvError::Lagged(_)) => (),
             Err(RecvError::Closed) => break
         }
     };

@@ -1,4 +1,4 @@
-use std::{time::Duration, future::Future, sync::Arc, collections::VecDeque, io::Read};
+use std::{time::Duration, future::Future, sync::Arc, collections::VecDeque, io::Read, num::NonZeroUsize};
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};
 use anyhow::Result;
@@ -73,9 +73,7 @@ pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, ur
     } as u8;
 
     source.meta_broadcast_sender
-        .broadcast(Arc::new(vec.clone()))
-        .await
-        .expect("Should be able to broadcast metadata");
+        .send(vec.clone());
 }
 
 // Getting a future lifetime error, a workaround for now
@@ -101,18 +99,12 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool,
     }
 }
 
-fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, mut broadcast: SourceBroadcast) -> Result<()> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-
+fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, broadcast: SourceBroadcast) -> Result<()> {
     let reader = Box::new(SimpleReader::new(session.stream, session.server.config.limits.source_timeout));
     let mss = MediaSourceStream::new(Box::new(ReadOnlySource::new(reader)), Default::default());
 
     let hint = Hint::new();
 
-    broadcast.audio.set_overflow(true);
-    broadcast.metadata.set_overflow(true);
     // Use the default options for metadata and format readers.
     let meta_opts: MetadataOptions = Default::default();
     let mut fmt_opts: FormatOptions = Default::default();
@@ -158,17 +150,24 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, m
                     // We will resize broadcast queue by removing count-1
                     // from capacity
                     if count > 1 {
-                        broadcast.audio.set_capacity(broadcast.audio.capacity()-(count-1));
+                        let new_cap: NonZeroUsize = ((broadcast.audio.capacity()-(count-1)) as usize)
+                            .try_into()
+                            .expect("Can't have empty or negative size");
+                        broadcast.audio.set_capacity(new_cap);
+                        println!("reiiiiiiizzizizizizzz");
                     }
                 } else if broadcast.audio.capacity() == broadcast.audio.len() {
                     // If broadcast capacity is full
                     // We need to resize it
-                    broadcast.audio.set_capacity(broadcast.audio.capacity()+1);
+                    let new_cap: NonZeroUsize = ((broadcast.audio.capacity()+1) as usize)
+                        .try_into()
+                        .expect("Can't have empty or negative size");
+                    broadcast.audio.set_capacity(new_cap);
+                        println!("reiiiiiiizzizizizizzz");
                 }
 
                 // Now we push buffer to broadcast queue
-                rt.block_on(broadcast.audio.broadcast(Arc::new(slice)))
-                    .expect("Should be able to write to broadcast queue");
+                broadcast.audio.send(slice);
             },
             Err(e) => {
                 // A unrecoverable error occurred, halt reading
