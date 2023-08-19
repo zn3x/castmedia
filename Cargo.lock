@@ -286,7 +286,7 @@ checksum = "b4668fb0ea861c1df094127ac5f1da3409a82116a4ba74fca2e58ef927159bb3"
 [[package]]
 name = "llq"
 version = "0.1.0"
-source = "git+https://codeberg.org/zesty/LLQ#98612fb9e4ca82e72bc9bbfbdc165623d177fe37"
+source = "git+https://codeberg.org/zesty/LLQ#2c3e4cb31ec196c43111e4fb39be9a2d7f5dc0c0"
 dependencies = [
  "arc-swap",
  "crossbeam-utils",

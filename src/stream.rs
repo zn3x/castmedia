@@ -1,4 +1,4 @@
-use std::{time::Duration, future::Future, sync::Arc, collections::VecDeque, io::Read, num::NonZeroUsize};
+use std::{time::Duration, future::Future, collections::VecDeque, io::Read, num::NonZeroUsize};
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};
 use anyhow::Result;
