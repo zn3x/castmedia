@@ -1,5 +1,5 @@
 use std::{sync::Arc, num::NonZeroUsize};
-use llq::broadcast::{ResizableQueueReader, ResizableQueueWriter, BoundQueueReader, BoundQueueWriter};
+use llq::broadcast::{Receiver, Sender};
 
 use anyhow::Result;
 use tracing::info;
@@ -66,25 +66,25 @@ pub struct Source {
     /// Fallback mountpoint in case this one is down
 	pub fallback: Option<String>,
     /// The stream broadcast receiver
-    pub broadcast: ResizableQueueReader<Vec<u8>>,
+    pub broadcast: Receiver<Vec<u8>>,
     /// Receiver stream for metadata broadcast
-    pub meta_broadcast: BoundQueueReader<Vec<u8>>,
+    pub meta_broadcast: Receiver<Vec<u8>>,
     /// Sender stream for metadata broadcast
     /// Needed so we don't create a new sender every time
     /// we get metadata update
-    pub meta_broadcast_sender: BoundQueueWriter<Vec<u8>>
+    pub meta_broadcast_sender: Sender<Vec<u8>>
 }
 
 pub struct SourceBroadcast {
-    pub audio: ResizableQueueWriter<Vec<u8>>,
-    pub metadata: BoundQueueWriter<Vec<u8>>
+    pub audio: Sender<Vec<u8>>,
+    pub metadata: Sender<Vec<u8>>
 }
 
 impl Source {
 	pub fn new(properties: IcyProperties) -> (Self, SourceBroadcast) {
         let size: NonZeroUsize = 1.try_into().expect("1 should be posetif");
-        let (tx, rx)           = llq::broadcast::resizable(size);
-        let (tx1, rx1)         = llq::broadcast::bound(size);
+        let (tx, rx)           = llq::broadcast::channel(size);
+        let (tx1, rx1)         = llq::broadcast::channel(size);
 		(Source {
 			properties: Arc::new(properties),
 			metadata: None,

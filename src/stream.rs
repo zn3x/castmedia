@@ -154,7 +154,6 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, b
                             .try_into()
                             .expect("Can't have empty or negative size");
                         broadcast.audio.set_capacity(new_cap);
-                        println!("reiiiiiiizzizizizizzz");
                     }
                 } else if broadcast.audio.capacity() == broadcast.audio.len() {
                     // If broadcast capacity is full
@@ -163,7 +162,6 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, b
                         .try_into()
                         .expect("Can't have empty or negative size");
                     broadcast.audio.set_capacity(new_cap);
-                        println!("reiiiiiiizzizizizizzz");
                 }
 
                 // Now we push buffer to broadcast queue
