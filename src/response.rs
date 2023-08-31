@@ -6,7 +6,7 @@ use tokio::io::AsyncWriteExt;
 use crate::{server::Stream, source::IcyProperties};
 
 async fn server_info(stream: &mut Stream) -> Result<()> {
-	stream.write_all(format!("Date: {}\r\n\
+    stream.write_all(format!("Date: {}\r\n\
     Cache-Control: no-cache, no-store\r\n\
     Expires: Mon, 26 Jul 1997 05:00:00 GMT\r\n\
     Pragma: no-cache\r\n\
@@ -15,52 +15,52 @@ async fn server_info(stream: &mut Stream) -> Result<()> {
     ).as_bytes()).await?;
 
     stream.flush().await?;
-	Ok(())
+    Ok(())
 }
 
 pub async fn method_not_allowed(stream: &mut Stream, server_id: &str) -> Result<()> {
-	stream.write_all(format!("HTTP/1.0 405 Method Not Allowed\r\n\
+    stream.write_all(format!("HTTP/1.0 405 Method Not Allowed\r\n\
 Server: {}\r\n\
 Connection: Close\r\n",
     server_id).as_bytes()).await?;
 
     server_info(stream).await?;
-	Ok(())
+    Ok(())
 }
 
 pub async fn not_found(stream: &mut Stream, server_id: &str) -> Result<()> {
-	stream.write_all(format!("HTTP/1.0 404 File Not Found\r\n\
+    stream.write_all(format!("HTTP/1.0 404 File Not Found\r\n\
 Server: {}\r\n\
 Connection: Close\r\n",
     server_id).as_bytes()).await?;
 
     server_info(stream).await?;
-	Ok(())
+    Ok(())
 }
 
 pub async fn authentication_needed(stream: &mut Stream, server_id: &str) -> Result<()> {
-	stream.write_all(format!("HTTP/1.0 401 Authorization Required\r\n\
+    stream.write_all(format!("HTTP/1.0 401 Authorization Required\r\n\
 Server: {}\r\n\
 WWW-Authenticate: Basic realm=\"Icy Server\"\r\n\
 Connection: Close\r\n",
     server_id).as_bytes()).await?;
 
     server_info(stream).await?;
-	Ok(())
+    Ok(())
 }
 
 pub async fn internal_error(stream: &mut Stream, server_id: &str) -> Result<()> {
-	stream.write_all(format!("HTTP/1.0 500 Internal Server Error\r\n\
+    stream.write_all(format!("HTTP/1.0 500 Internal Server Error\r\n\
 Server: {}\r\n\
 Connection: Close\r\n",
     server_id).as_bytes()).await?;
 
     server_info(stream).await?;
-	Ok(())
+    Ok(())
 }
 
 pub async fn forbidden(stream: &mut Stream, server_id: &str, message: &str) -> Result<()> {
-	stream.write_all(format!("HTTP/1.0 403 Forbidden\r\n\
+    stream.write_all(format!("HTTP/1.0 403 Forbidden\r\n\
 Server: {}\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 Content-Length: {}\r\n\
@@ -72,11 +72,11 @@ Connection: Close\r\n",
     server_info(stream).await?;
     stream.write_all(message.as_bytes()).await?;
 
-	Ok(())
+    Ok(())
 }
 
 pub async fn bad_request(stream: &mut Stream, server_id: &str, message: &str) -> Result<()> {
-	stream.write_all(format!("HTTP/1.0 400 Bad request\r\n\
+    stream.write_all(format!("HTTP/1.0 400 Bad request\r\n\
 Server: {}\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 Content-Length: {}\r\n\
@@ -88,21 +88,21 @@ Connection: Close\r\n",
     server_info(stream).await?;
     stream.write_all(message.as_bytes()).await?;
 
-	Ok(())
+    Ok(())
 }
 
 pub async fn ok_200(stream: &mut Stream, server_id: &str) -> Result<()> {
-	stream.write_all(format!("HTTP/1.0 200 OK\r\n\
+    stream.write_all(format!("HTTP/1.0 200 OK\r\n\
 Server: {}\r\n\
 Connection: Close\r\n",
     server_id).as_bytes()).await?;
 
     server_info(stream).await?;
-	Ok(())
+    Ok(())
 }
 
 pub async fn ok_200_json_body(stream: &mut Stream, server_id: &str, body: &[u8]) -> Result<()> {
-	stream.write_all(format!("HTTP/1.0 200 OK\r\n\
+    stream.write_all(format!("HTTP/1.0 200 OK\r\n\
 Server: {}\r\n\
 Connection: Close\r\n
 Content-Length: {}\r\n
@@ -112,11 +112,11 @@ Content-Type: application/json; charset=utf-8\r\n",
 
     server_info(stream).await?;
     stream.write_all(body).await?;
-	Ok(())
+    Ok(())
 }
 
 pub async fn ok_200_icy_metadata(stream: &mut Stream, server_id: &str, properties: &IcyProperties, metaint: usize) -> Result<()> {
-	stream.write_all(format!("HTTP/1.1 200 OK\r\n\
+    stream.write_all(format!("HTTP/1.1 200 OK\r\n\
 Server: {}\r\n\
 Connection: Close\r\n\
 icy-metaint: {}\r\n\
@@ -138,5 +138,5 @@ icy-url: {}\r\n",
     }
 
     server_info(stream).await?;
-	Ok(())
+    Ok(())
 }

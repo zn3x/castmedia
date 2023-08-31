@@ -73,9 +73,9 @@ pub fn get_queries(path: &str) -> Vec<Query> {
     let mut queries = Vec::new();
     if let Some(i) = path.find('?') {
         for query in path[i+1..].split('&') {
-			if let Some((key, val)) = query.replace( "+", " " ).split_once('=') {
-				let key = urlencoding::decode(key);
-				let val = urlencoding::decode(val);
+            if let Some((key, val)) = query.replace( "+", " " ).split_once('=') {
+                let key = urlencoding::decode(key);
+                let val = urlencoding::decode(val);
                 if let Ok(key) = key {
                     if let Ok(val) = val {
                         queries.push(Query { key: key.to_string(), val: val.to_string() });
@@ -104,22 +104,22 @@ pub fn get_queries_val_for_keys<'a>(keys: &[&str], queries: &'a [Query]) -> Vec<
 }
 
 pub fn get_header< 'a >(key: &str, headers: &[httparse::Header< 'a >]) -> Option<&'a [ u8 ]> {
-	let key = key.to_lowercase();
-	for header in headers {
-		if header.name.to_lowercase() == key {
-			return Some(header.value)
-		}
-	}
-	None
+    let key = key.to_lowercase();
+    for header in headers {
+        if header.name.to_lowercase() == key {
+            return Some(header.value)
+        }
+    }
+    None
 }
 
 pub fn get_basic_auth( headers: &[httparse::Header] ) -> Result<Option<(String, String)>> {
-	if let Some(auth) = get_header("Authorization", headers) {
+    if let Some(auth) = get_header("Authorization", headers) {
         let basic_auth = std::str::from_utf8(&auth)?.replace("Basic ", "");
         let bs64       = base64::engine::general_purpose::URL_SAFE;
         if let Some((name, pass)) = std::str::from_utf8(&bs64.decode(&basic_auth)?)?.split_once(":") {
             return Ok(Some((String::from(name), String::from(pass))))
         }
-	}
-	Ok(None)
+    }
+    Ok(None)
 }

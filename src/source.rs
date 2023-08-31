@@ -9,14 +9,14 @@ use crate::{server::ClientSession, request::{SourceRequest, Request}, response, 
 
 #[derive(Serialize)]
 pub struct IcyProperties {
-	pub uagent: Option<String>,
-	pub public: bool,
-	pub name: Option<String>,
-	pub description: Option<String>,
-	pub url: Option<String>,
-	pub genre: Option<String>,
-	pub bitrate: Option<String>,
-	pub content_type: String
+    pub uagent: Option<String>,
+    pub public: bool,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub url: Option<String>,
+    pub genre: Option<String>,
+    pub bitrate: Option<String>,
+    pub content_type: String
 }
 
 impl IcyProperties {
@@ -59,7 +59,7 @@ impl IcyProperties {
 
 #[derive(Serialize)]
 pub struct IcyMetadata {
-	pub title: String,
+    pub title: String,
     pub url: String
 }
 
@@ -67,7 +67,7 @@ pub struct Source {
     pub properties: Arc<IcyProperties>,
     pub metadata: Option<IcyMetadata>,
     /// Fallback mountpoint in case this one is down
-	pub fallback: Option<String>,
+    pub fallback: Option<String>,
     /// The stream broadcast receiver
     pub broadcast: Receiver<Vec<u8>>,
     /// Receiver stream for metadata broadcast
@@ -84,23 +84,23 @@ pub struct SourceBroadcast {
 }
 
 impl Source {
-	pub fn new(properties: IcyProperties) -> (Self, SourceBroadcast) {
+    pub fn new(properties: IcyProperties) -> (Self, SourceBroadcast) {
         let size: NonZeroUsize = 1.try_into().expect("1 should be posetif");
         let (tx, rx)           = llq::broadcast::channel(size);
         let (tx1, rx1)         = llq::broadcast::channel(size);
-		(Source {
-			properties: Arc::new(properties),
-			metadata: None,
-			fallback: None,
+        (Source {
+            properties: Arc::new(properties),
+            metadata: None,
+            fallback: None,
             broadcast: rx,
             meta_broadcast_sender: tx1.clone(),
             meta_broadcast: rx1
-		},
+        },
         SourceBroadcast {
             audio: tx,
             metadata: tx1
         })
-	}
+    }
 }
 
 pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: SourceRequest) -> Result<()> {
