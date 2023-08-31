@@ -1,4 +1,5 @@
 use std::{sync::Arc, num::NonZeroUsize};
+use serde::Serialize;
 use llq::broadcast::{Receiver, Sender};
 
 use anyhow::Result;
@@ -6,6 +7,7 @@ use tracing::info;
 
 use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream::{StreamReader, SimpleReader, self}, auth};
 
+#[derive(Serialize)]
 pub struct IcyProperties {
 	pub uagent: Option<String>,
 	pub public: bool,
@@ -55,6 +57,7 @@ impl IcyProperties {
     }
 }
 
+#[derive(Serialize)]
 pub struct IcyMetadata {
 	pub title: String,
     pub url: String

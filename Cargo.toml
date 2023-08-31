@@ -11,13 +11,14 @@ llq = { git = "https://codeberg.org/zesty/LLQ" }
 tokio = { version = "1.29.0", features = [ "full" ] }
 async-trait = "0.1.71"
 
-hashbrown = "0.14.0"
+hashbrown = { version = "0.14.0", features = [ "serde" ] }
 
 httparse = "1.8.0"
 httpdate = "1.0.2"
 urlencoding = "2.1.2"
 base64 = "0.21.2"
 
+serde_json = "1.0.105"
 serde_yaml = "0.9.22"
 serde = { version = "1.0.164", features = [ "derive" ] }
 

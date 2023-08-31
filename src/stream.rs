@@ -99,7 +99,7 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool,
     }
 }
 
-fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, broadcast: SourceBroadcast) -> Result<()> {
+fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, mut broadcast: SourceBroadcast) -> Result<()> {
     let reader = Box::new(SimpleReader::new(session.stream, session.server.config.limits.source_timeout));
     let mss = MediaSourceStream::new(Box::new(ReadOnlySource::new(reader)), Default::default());
 
