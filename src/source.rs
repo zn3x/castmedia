@@ -1,11 +1,14 @@
-use std::{sync::Arc, num::NonZeroUsize};
+use std::{
+    sync::{Arc, atomic::{AtomicUsize, AtomicU64}},
+    num::NonZeroUsize
+};
 use serde::Serialize;
 use llq::broadcast::{Receiver, Sender};
 
 use anyhow::Result;
 use tracing::info;
 
-use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream::{StreamReader, SimpleReader, self}, auth};
+use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream, auth};
 
 #[derive(Serialize)]
 pub struct IcyProperties {
@@ -63,9 +66,30 @@ pub struct IcyMetadata {
     pub url: String
 }
 
+pub struct SourceStats {
+    /// Time as utc timestamp, conversion is done on the fly to local time when needed
+    pub start_time: i64,
+    pub active_listeners: AtomicUsize,
+    pub peak_listeners: AtomicUsize,
+    pub bytes_read: AtomicU64
+}
+
+impl SourceStats {
+    pub fn new() -> Self {
+        Self {
+            start_time: chrono::offset::Utc::now()
+                .timestamp(),
+            active_listeners: AtomicUsize::new(0),
+            peak_listeners: AtomicUsize::new(0),
+            bytes_read: AtomicU64::new(0)
+        }
+    }
+}
+
 pub struct Source {
     pub properties: Arc<IcyProperties>,
     pub metadata: Option<IcyMetadata>,
+    pub stats: Arc<SourceStats>,
     /// Fallback mountpoint in case this one is down
     pub fallback: Option<String>,
     /// The stream broadcast receiver
@@ -91,6 +115,7 @@ impl Source {
         (Source {
             properties: Arc::new(properties),
             metadata: None,
+            stats: Arc::new(SourceStats::new()),
             fallback: None,
             broadcast: rx,
             meta_broadcast_sender: tx1.clone(),
@@ -171,9 +196,14 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
 
     let (source, broadcast) = Source::new(properties);
 
+    // We must write initial read length to stats
+    source.stats.bytes_read.fetch_add(request.headers_buf.len() as u64, std::sync::atomic::Ordering::Relaxed);
+
+    // Add this mountpoint to mountpoints hashmap
     let mountpoint = req.mountpoint.clone();
     session.server.sources.write().await.insert(req.mountpoint, source);
     
+    // Then handle media stream coming for this mountpoint
     stream::broadcast(&mountpoint, session, chunked, broadcast).await;
 
     Ok(())

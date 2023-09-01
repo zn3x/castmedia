@@ -1,11 +1,11 @@
-use std::{time::Duration, future::Future, collections::VecDeque, io::Read, num::NonZeroUsize};
+use std::{time::Duration, future::Future, collections::VecDeque, io::Read, num::NonZeroUsize, sync::{Arc, atomic::Ordering}};
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};
 use anyhow::Result;
 
 use tokio::{time::timeout, io::AsyncReadExt};
 
-use crate::{server::{Stream, ClientSession}, source::{SourceBroadcast, Source, IcyMetadata}};
+use crate::{server::{Stream, ClientSession}, source::{SourceBroadcast, Source, IcyMetadata, SourceStats}};
 
 pub trait StreamReader: Send + Sync + Read {
 }
@@ -13,17 +13,18 @@ pub trait StreamReader: Send + Sync + Read {
 pub struct SimpleReader {
     timeout: Duration,
     stream: Stream,
+    stats: Arc<SourceStats>,
     rt: tokio::runtime::Runtime
 }
 
 impl SimpleReader {
-    pub fn new(stream: Stream, timeout: u64) -> Self {
+    pub fn new(stream: Stream, timeout: u64, stats: Arc<SourceStats>) -> Self {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Should be able to get current thread");
 
-        SimpleReader { stream, timeout: Duration::from_millis(timeout), rt }
+        SimpleReader { stream, timeout: Duration::from_millis(timeout), stats, rt }
     }
 }
 
@@ -40,7 +41,8 @@ impl Read for SimpleReader {
         if r == 0 {
             return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "Reached end of connection"));
         }
-        
+
+        self.stats.bytes_read.fetch_add(r as u64, Ordering::Relaxed);
         Ok(r)
     }
 }
@@ -83,10 +85,20 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool,
         info!("Mounted source on {}", mountpoint);
 
         let mountpoint = mountpoint.to_owned();
+        let stats      = match session.server.sources
+            .read()
+            .await
+            .get(&mountpoint) {
+            Some(v) => v.stats.clone(),
+            None => {
+                error!("Can't find stats for {}, did it get removed?", mountpoint);
+                return;
+            }
+        };
         // For now we are using threads for source
         tokio::task::spawn_blocking(move || {
             let server = session.server.clone();
-            if let Err(e) = blocking_broadcast(&mountpoint, session, chunked, broadcast) {
+            if let Err(e) = blocking_broadcast(&mountpoint, session, chunked, broadcast, stats) {
                 error!("Source stream for {} closed: {}", mountpoint, e);
             }
 
@@ -99,8 +111,9 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool,
     }
 }
 
-fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool, mut broadcast: SourceBroadcast) -> Result<()> {
-    let reader = Box::new(SimpleReader::new(session.stream, session.server.config.limits.source_timeout));
+fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool,
+                      mut broadcast: SourceBroadcast, stats: Arc<SourceStats>) -> Result<()> {
+    let reader = Box::new(SimpleReader::new(session.stream, session.server.config.limits.source_timeout, stats));
     let mss = MediaSourceStream::new(Box::new(ReadOnlySource::new(reader)), Default::default());
 
     let hint = Hint::new();

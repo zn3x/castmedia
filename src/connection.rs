@@ -1,21 +1,22 @@
-use std::{cell::RefCell, sync::Arc};
+use std::{cell::RefCell, sync::{Arc, atomic::Ordering}};
 use anyhow::Result;
-use llq::errors::{RecvError, TryRecvError};
+use llq::{errors::{RecvError, TryRecvError}, broadcast::Receiver};
 use tokio::io::AsyncWriteExt;
 use tracing::{info, error};
 
 use crate::{
     server::ClientSession,
-    request::{read_request, Request, RequestType, ListenRequest}, source, response, utils, admin
+    request::{read_request, Request, RequestType, ListenRequest}, source::{self, IcyProperties}, response, utils, admin
 };
 
-pub async fn client_broadcast<'a>(mut session: ClientSession, request: &Request<'a>, req: ListenRequest) -> Result<()> {
-    let (props, mut stream, mut meta_stream) = match session.server.sources.read().await.get(&req.mountpoint) {
+pub async fn handle_client<'a>(mut session: ClientSession, request: &Request<'a>, req: ListenRequest) -> Result<()> {
+    let (props, stream, meta_stream, stats) = match session.server.sources.read().await.get(&req.mountpoint) {
         Some(v) => {
             (
             v.properties.clone(),
             v.broadcast.clone(),
-            v.meta_broadcast.clone())
+            v.meta_broadcast.clone(),
+            v.stats.clone())
         },
         None => {
             response::not_found(&mut session.stream, &session.server.config.info.id).await?;
@@ -24,8 +25,25 @@ pub async fn client_broadcast<'a>(mut session: ClientSession, request: &Request<
         }
     };
 
+    // We increment active listeners
+    // and check if we reached a new peak listeners here
+    let new_count = stats.active_listeners.fetch_add(1, Ordering::Relaxed) + 1;
+    stats.peak_listeners.fetch_max(new_count, Ordering::Relaxed);
+
     drop(req);
 
+    let ret = client_broadcast(session, request, props, stream, meta_stream).await;
+
+    // End of connection
+    stats.active_listeners.fetch_sub(1, Ordering::Relaxed);
+
+    ret
+}
+
+#[inline]
+pub async fn client_broadcast<'a>(mut session: ClientSession, request: &Request<'a>,
+                                  props: Arc<IcyProperties>, mut stream: Receiver<Vec<u8>>,
+                                  mut meta_stream: Receiver<Vec<u8>>) -> Result<()> {
     if utils::get_header("icy-metadata", &request.headers).unwrap_or(b"0") == b"1" {
         response::ok_200_icy_metadata(
             &mut session.stream,
@@ -37,6 +55,7 @@ pub async fn client_broadcast<'a>(mut session: ClientSession, request: &Request<
         response::ok_200(&mut session.stream, &session.server.config.info.id).await?;
     }
 
+    drop(props);
 
     let mut metadata = Arc::new(Vec::new());
     let mut metaint = 0;
@@ -106,6 +125,6 @@ pub async fn handle(mut session: ClientSession) {
     match _type {
         RequestType::AdminRequest(v) => admin::handle_request(session, &request, v).await,
         RequestType::SourceRequest(v) => source::handle(session, &request, v).await,
-        RequestType::ListenRequest(v) => client_broadcast(session, &request, v).await
+        RequestType::ListenRequest(v) => handle_client(session, &request, v).await
     }.ok();
 }

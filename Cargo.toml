@@ -18,6 +18,8 @@ httpdate = "1.0.2"
 urlencoding = "2.1.2"
 base64 = "0.21.2"
 
+chrono = "0.4.28"
+
 serde_json = "1.0.105"
 serde_yaml = "0.9.22"
 serde = { version = "1.0.164", features = [ "derive" ] }

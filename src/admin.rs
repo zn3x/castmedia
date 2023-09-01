@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use anyhow::Result;
 use hashbrown::HashMap;
 use tracing::info;
@@ -58,7 +60,12 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
             "fallback": source.1.fallback,
             "metadata": source.1.metadata,
             "properties": prop_ref,
-            // TODO: Add missing
+            "stats": {
+                "active_listeners": source.1.stats.active_listeners.load(Ordering::Relaxed),
+                "peak_listeners": source.1.stats.peak_listeners.load(Ordering::Relaxed),
+                "bytes_read": source.1.stats.bytes_read.load(Ordering::Relaxed),
+                "start_time": source.1.stats.start_time
+            }
         }));
     });
 
