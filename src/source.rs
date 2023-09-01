@@ -67,7 +67,7 @@ pub struct IcyMetadata {
 }
 
 pub struct SourceStats {
-    /// Time as utc timestamp, conversion is done on the fly to local time when needed
+    // Utc timestamp
     pub start_time: i64,
     pub active_listeners: AtomicUsize,
     pub peak_listeners: AtomicUsize,

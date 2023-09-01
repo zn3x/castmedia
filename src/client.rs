@@ -1,4 +1,4 @@
-use std::{cell::RefCell, sync::{Arc, atomic::Ordering}};
+use std::{cell::RefCell, sync::{Arc, atomic::{Ordering, AtomicU64}}};
 use anyhow::Result;
 use llq::{errors::{RecvError, TryRecvError}, broadcast::Receiver};
 use tokio::io::AsyncWriteExt;
@@ -8,6 +8,21 @@ use crate::{
     server::ClientSession,
     request::{read_request, Request, RequestType, ListenRequest}, source::{self, IcyProperties}, response, utils, admin
 };
+
+pub struct Client {
+    properties: ClientProperties,
+    stats: ClientStats
+}
+
+pub struct ClientProperties {
+    user_agent: Option<String>,
+    metadata: bool
+}
+
+pub struct ClientStats {
+    pub start_time: i64,
+    pub bytes_sent: AtomicU64
+}
 
 pub async fn handle_client<'a>(mut session: ClientSession, request: &Request<'a>, req: ListenRequest) -> Result<()> {
     let (props, stream, meta_stream, stats) = match session.server.sources.read().await.get(&req.mountpoint) {

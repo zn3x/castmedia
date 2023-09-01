@@ -1,4 +1,4 @@
-use std::{sync::Arc, net::SocketAddr};
+use std::{sync::{Arc, atomic::{AtomicUsize, AtomicU64}}, net::SocketAddr};
 use tokio::{
     net::{TcpListener, TcpStream},
     task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock}
@@ -18,7 +18,34 @@ pub struct Server {
     /// Semaphore intended to cap concurrent connection to server
     pub max_clients: Arc<Semaphore>,
     /// List of all sources whereas the mountpoint is the key
-    pub sources: RwLock<HashMap<String, Source>>
+    pub sources: RwLock<HashMap<String, Source>>,
+    ///// Server general stats (this excludes calls on /api and /admin)
+    //pub stats: ServerStats
+}
+
+pub struct ServerStats {
+    /// Server startup time as a utc timestamp
+    pub start_time: i64,
+    /// Number of connections since startup (accumulating counter)
+    pub connections: AtomicUsize,
+    /// Number of total active sources
+    pub active_sources: AtomicUsize,
+    /// Number of total active clients, this excludes sources
+    pub active_clients: AtomicUsize,
+    /// Number of total active listening clients to mountpoints
+    pub active_listeners: AtomicUsize,
+    /// Number of peak listeners to mountpoints
+    pub peak_listeners: AtomicUsize,
+    /// Number of connections to mountpoints (accumulating counter)
+    pub listener_connections: AtomicUsize,
+    /// Number of connections made by source clients (accumulating counter)
+    pub source_client_connections: AtomicUsize,
+    /// Number of connections made to admin api (accumulating counter)
+    pub admin_api_connections: AtomicUsize,
+    /// Number of successful admin api connections (accumulating counter)
+    pub admin_api_connections_success: AtomicUsize,
+    /// Number of public api connections (accumulating counter)
+    pub api_connections: AtomicUsize
 }
 
 /// A client session
