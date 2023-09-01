@@ -6,7 +6,7 @@ use tokio::{
 use tracing::{info, error};
 use hashbrown::HashMap;
 
-use crate::{config::ServerSettings, connection, source::Source};
+use crate::{config::ServerSettings, client, source::Source};
 
 pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {}
 impl Socket for BufStream<TcpStream> {}
@@ -45,7 +45,7 @@ async fn accept_connections(serv: Arc<Server>, listener: TcpListener, admin_addr
                     let sem = serv_clone.max_clients.clone();
                     let aq  = sem.try_acquire();
                     if let Ok(_guard) = aq {
-                        connection::handle(ClientSession {
+                        client::handle(ClientSession {
                             admin_addr,
                             server: serv_clone,
                             // Use bufferer for socket to reduce syscalls we make

@@ -1,6 +1,6 @@
 mod config;
 mod server;
-mod connection;
+mod client;
 mod request;
 mod source;
 mod response;
