@@ -64,6 +64,7 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
                 "active_listeners": source.1.stats.active_listeners.load(Ordering::Relaxed),
                 "peak_listeners": source.1.stats.peak_listeners.load(Ordering::Relaxed),
                 "bytes_read": source.1.stats.bytes_read.load(Ordering::Relaxed),
+                "bytes_sent": source.1.stats.bytes_sent.load(Ordering::Relaxed),
                 "start_time": source.1.stats.start_time
             }
         }));
