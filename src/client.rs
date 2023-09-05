@@ -1,4 +1,7 @@
-use std::{cell::RefCell, sync::{Arc, atomic::{Ordering, AtomicU64}}, time::Duration};
+use std::{
+    sync::{Arc, atomic::{Ordering, AtomicU64}},
+    time::Duration
+};
 use anyhow::Result;
 use llq::{errors::RecvError, broadcast::Receiver};
 use tokio::io::AsyncWriteExt;
@@ -125,18 +128,20 @@ pub async fn client_broadcast<'a>(mut session: ClientSession, request: &Request<
 }
 
 pub async fn handle(mut session: ClientSession) {
-    let request = RefCell::new(Request {
+    let mut request = Request {
         headers_buf: Vec::new(),
         headers: Vec::new(),
         method: ""
-    });
+    };
 
 
-    // I don't really knew why borrowing later is impossible without this hack
+    // Found no way to have fields of struct referencing each other without having borrow issue
+    // for now we do direct access to pointer.
+    // Safety: Valid pointer across the whole contect of this function
     let _type;
-    {
-        let refe = unsafe { request.as_ptr().as_mut() };
-        _type = match read_request(&mut session, refe.unwrap()).await {
+    unsafe {
+        let refm = (&mut request as *mut Request<'_>).as_mut().unwrap_unchecked();
+        _type = match read_request(&mut session, refm).await {
             Ok(v) => v,
             Err(e) => {
                 response::method_not_allowed(&mut session.stream, &session.server.config.info.id).await.ok();
@@ -145,8 +150,6 @@ pub async fn handle(mut session: ClientSession) {
             }
         };
     }
-
-    let request = request.into_inner();
 
     match _type {
         RequestType::AdminRequest(v) => admin::handle_request(session, &request, v).await,
