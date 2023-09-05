@@ -67,11 +67,16 @@ pub struct IcyMetadata {
 }
 
 pub struct SourceStats {
-    // Utc timestamp
+    /// Time when source last mounted mountpoint as utc timestamp
     pub start_time: i64,
+    /// Number of active listeners for mountpoint
     pub active_listeners: AtomicUsize,
+    /// Peak number of listeners for mountpoint
     pub peak_listeners: AtomicUsize,
-    pub bytes_read: AtomicU64
+    /// Number of bytes read from source client
+    pub bytes_read: AtomicU64,
+    /// Number of bytes sent to all listeners of mountpoint
+    pub bytes_sent: AtomicU64,
 }
 
 impl SourceStats {
@@ -81,7 +86,8 @@ impl SourceStats {
                 .timestamp(),
             active_listeners: AtomicUsize::new(0),
             peak_listeners: AtomicUsize::new(0),
-            bytes_read: AtomicU64::new(0)
+            bytes_read: AtomicU64::new(0),
+            bytes_sent: AtomicU64::new(0)
         }
     }
 }
