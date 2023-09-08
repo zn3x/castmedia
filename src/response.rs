@@ -104,14 +104,15 @@ Connection: Close\r\n",
 pub async fn ok_200_json_body(stream: &mut Stream, server_id: &str, body: &[u8]) -> Result<()> {
     stream.write_all(format!("HTTP/1.0 200 OK\r\n\
 Server: {}\r\n\
-Connection: Close\r\n
-Content-Length: {}\r\n
+Connection: Close\r\n\
+Content-Length: {}\r\n\
 Content-Type: application/json; charset=utf-8\r\n",
         server_id,
         body.len()).as_bytes()).await?;
 
     server_info(stream).await?;
     stream.write_all(body).await?;
+    stream.flush().await?;
     Ok(())
 }
 

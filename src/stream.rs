@@ -107,8 +107,7 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool,
 
             info!("Unmounted source on {}", mountpoint);
             server.stats.active_sources.fetch_sub(1, Ordering::Release);
-        });
-
+        }).await.ok();
     }
 }
 
