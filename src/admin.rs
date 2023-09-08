@@ -17,6 +17,7 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
         response::authentication_needed(&mut session.stream, sid).await?;
         return Ok(());
     }
+    session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
 
     match utils::get_queries_val_for_keys(&["mode", "mount", "song", "url"], &req.queries).as_slice() {
         &[Some(mode), Some(mount), song, url] => {
@@ -49,6 +50,7 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
         response::authentication_needed(&mut session.stream, sid).await?;
         return Ok(());
     }
+    session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
 
     let mut sources = HashMap::new();
 
@@ -85,6 +87,7 @@ async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Resu
         response::authentication_needed(&mut session.stream, sid).await?;
         return Ok(());
     }
+    session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
 
     match utils::get_queries_val_for_keys(&["mount", "fallback"], &req.queries).as_slice() {
         &[Some(mount), fallback] => {
@@ -109,15 +112,21 @@ async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Resu
 }
 
 pub async fn handle_request<'a>(mut session: ClientSession, _request: &Request<'a>, req: AdminRequest) -> Result<()> {
+    session.server.stats.admin_api_connections.fetch_add(1, Ordering::Relaxed);
     // Handling /admin requests
     // In each path we must first check identity before proceeding todo anything
     match req.path.as_str() {
+        // Requests that an admin or source with it's own mountpoint can perform:
+        //
         // Update metadata for a mount point
         "/admin/metadata" => update_metadata(&mut session, req).await?,
-        // Fetch all mounts with their info
-        "/admin/listmounts" => list_mounts(&mut session, req).await?,
         // Changing fallback for a mount
         "/admin/fallback" => update_fallback(&mut session, req).await?,
+
+        // Admin only access:
+        //
+        // Fetch all mounts with their info
+        "/admin/listmounts" => list_mounts(&mut session, req).await?,
         _ => response::not_found(&mut session.stream, &session.server.config.info.id).await?
     }
 

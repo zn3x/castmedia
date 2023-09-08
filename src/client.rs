@@ -45,21 +45,30 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: &Request<'a>
 
     // We increment active listeners
     // and check if we reached a new peak listeners here
-    let new_count = stats.active_listeners.fetch_add(1, Ordering::Relaxed) + 1;
-    stats.peak_listeners.fetch_max(new_count, Ordering::Relaxed);
+    {
+        // Server stats
+        session.server.stats.listener_connections.fetch_add(1, Ordering::Relaxed);
+
+        let new_count = session.server.stats.active_listeners.fetch_add(1, Ordering::Acquire) + 1;
+        session.server.stats.peak_listeners.fetch_max(new_count, Ordering::Relaxed);
+        // Mount stats
+        let new_count = stats.active_listeners.fetch_add(1, Ordering::Acquire) + 1;
+        stats.peak_listeners.fetch_max(new_count, Ordering::Relaxed);
+    }
 
     drop(req);
 
-    let ret = client_broadcast(session, request, props, stream, meta_stream, &stats).await;
+    let ret = client_broadcast(&mut session, request, props, stream, meta_stream, &stats).await;
 
     // End of connection
-    stats.active_listeners.fetch_sub(1, Ordering::Relaxed);
+    session.server.stats.active_listeners.fetch_sub(1, Ordering::Release);
+    stats.active_listeners.fetch_sub(1, Ordering::Release);
 
     ret
 }
 
 #[inline]
-pub async fn client_broadcast<'a>(mut session: ClientSession, request: &Request<'a>,
+pub async fn client_broadcast<'a>(session: &mut ClientSession, request: &Request<'a>,
                                   props: Arc<IcyProperties>, mut stream: Receiver<Vec<u8>>,
                                   mut meta_stream: Receiver<Vec<u8>>, stats: &SourceStats) -> Result<()> {
     if utils::get_header("icy-metadata", &request.headers).unwrap_or(b"0") == b"1" {
@@ -137,7 +146,7 @@ pub async fn handle(mut session: ClientSession) {
 
     // Found no way to have fields of struct referencing each other without having borrow issue
     // for now we do direct access to pointer.
-    // Safety: Valid pointer across the whole contect of this function
+    // Safety: Valid pointer across the whole context of this function
     let _type;
     unsafe {
         let refm = (&mut request as *mut Request<'_>).as_mut().unwrap_unchecked();

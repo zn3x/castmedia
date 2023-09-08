@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, atomic::{AtomicUsize, AtomicU64}},
+    sync::{Arc, atomic::{AtomicUsize, AtomicU64, Ordering}},
     num::NonZeroUsize
 };
 use serde::Serialize;
@@ -203,11 +203,16 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
     let (source, broadcast) = Source::new(properties);
 
     // We must write initial read length to stats
-    source.stats.bytes_read.fetch_add(request.headers_buf.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    source.stats.bytes_read.fetch_add(request.headers_buf.len() as u64, Ordering::Relaxed);
 
     // Add this mountpoint to mountpoints hashmap
     let mountpoint = req.mountpoint.clone();
     session.server.sources.write().await.insert(req.mountpoint, source);
+
+    // Server stats
+    session.server.stats.source_client_connections.fetch_add(1, Ordering::Relaxed);
+
+    session.server.stats.active_sources.fetch_add(1, Ordering::Acquire);
     
     // Then handle media stream coming for this mountpoint
     stream::broadcast(&mountpoint, session, chunked, broadcast).await;
