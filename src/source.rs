@@ -196,14 +196,14 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
         // PUT METHOD
         // No support for encoding
         // TODO Add support for transfer encoding options as specified here: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Transfer-Encoding
-        match utils::get_header("Transger-Encoding", &request.headers) {
-            Some(b"identity") | None => {},
-            Some(b"chunked") => {},
+        chunked = match utils::get_header("Transger-Encoding", &request.headers) {
+            Some(b"identity") | None => false,
+            Some(b"chunked") => true,
             _ => {
                 response::bad_request(&mut session.stream, sid, "Invalid transfer encoding").await?;
                 return Ok(());
             }
-        }
+        };
 
         match utils::get_header("Expect", &request.headers) {
             Some(b"100-continue") => {},
@@ -218,7 +218,6 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
         }
 
         response::ok_200(&mut session.stream, sid).await?;
-        chunked = true;
     }
 
     properties.populate_from_http_headers(&request.headers);

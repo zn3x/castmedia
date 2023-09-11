@@ -7,8 +7,7 @@ use tokio::{time::timeout, io::AsyncReadExt};
 
 use crate::{server::{Stream, ClientSession}, source::{SourceBroadcast, Source, IcyMetadata, SourceStats, MoveClientsCommand, MoveClientsType}};
 
-pub trait StreamReader: Send + Sync + Read {
-}
+pub trait StreamReader: Send + Sync + Read {}
 
 pub struct SimpleReader {
     timeout: Duration,
@@ -44,6 +43,76 @@ impl Read for SimpleReader {
 
         self.stats.bytes_read.fetch_add(r as u64, Ordering::Relaxed);
         Ok(r)
+    }
+}
+
+pub struct ChunkedReader {
+    inner: SimpleReader,
+    bytes_left: usize,
+    reader: [u8; 1]
+}
+
+impl ChunkedReader {
+    fn new(inner: SimpleReader) -> Self {
+        Self {
+            inner,
+            bytes_left: 0,
+            reader: [0u8]
+        }
+    }
+}
+
+impl StreamReader for ChunkedReader {}
+
+impl Read for ChunkedReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // We first need to read chunk length that is encoded as hex followed by \r\n
+        if self.bytes_left == 0 {
+            let mut hex_len = Vec::new();
+            loop {
+                match self.inner.read_exact(&mut self.reader) {
+                    Ok(_) => {
+                        hex_len.push(self.reader[0]);
+                        // Avoiding a ddos here
+                        if hex_len.len() > 12 {
+                            return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Peer trying to send a big size chunk"))
+                        } else if hex_len.ends_with(&[b'\r', b'\n']) {
+                            break;
+                        }
+                    },
+                    Err(e) => return Err(e)
+                }
+            }
+
+            self.bytes_left = match std::str::from_utf8(&hex_len) {
+                Ok(v) => match usize::from_str_radix(v, 16) {
+                    Ok(v) => v,
+                    Err(_) => return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Chunk length is not a valid number"))
+                },
+                Err(_) => return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Chunk length is not a valid string"))
+            };
+
+            // if we get 0, this means it's the end
+            if self.bytes_left == 0 {
+                return Ok(0)
+            }
+        }
+
+        // Now we read actual chunk
+        // We make sure we are not reading more than bytes_left
+        let read_len = if buf.len() > self.bytes_left {
+            self.bytes_left
+        } else {
+            buf.len()
+        };
+
+        match self.inner.read(&mut buf[..read_len]) {
+            Ok(r) => {
+                self.bytes_left -= r;
+                Ok(r)
+            },
+            Err(e) => Err(e)
+        }
     }
 }
 
@@ -127,15 +196,21 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool,
 
 fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool,
                       mut broadcast: SourceBroadcast, stats: Arc<SourceStats>) -> Result<()> {
-    let reader = Box::new(SimpleReader::new(session.stream, session.server.config.limits.source_timeout, stats));
-    let mss = MediaSourceStream::new(Box::new(ReadOnlySource::new(reader)), Default::default());
+    let reader: Box<dyn StreamReader>;
+    let base_reader = SimpleReader::new(session.stream, session.server.config.limits.source_timeout, stats);
+    if chunked {
+        reader      = Box::new(ChunkedReader::new(base_reader));
+    } else {
+        reader      = Box::new(base_reader);
+    }
+    let mss         = MediaSourceStream::new(Box::new(ReadOnlySource::new(reader)), Default::default());
 
     let hint = Hint::new();
 
     // Use the default options for metadata and format readers.
-    let meta_opts: MetadataOptions = Default::default();
+    let meta_opts: MetadataOptions  = Default::default();
     let mut fmt_opts: FormatOptions = Default::default();
-    fmt_opts.enable_gapless = true;
+    fmt_opts.enable_gapless         = true;
 
     let probed = symphonia::default::get_probe()
         .format(&hint, mss, &fmt_opts, &meta_opts)?;
