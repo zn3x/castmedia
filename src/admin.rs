@@ -7,7 +7,7 @@ use serde_json::json;
 
 use crate::{
     server::ClientSession,
-    request::{Request, AdminRequest}, response, auth, utils, stream::broadcast_metadata
+    request::{Request, AdminRequest}, response, auth, utils, stream::broadcast_metadata, source::{MoveClientsCommand, MoveClientsType}
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
@@ -142,6 +142,50 @@ async fn stats(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
     Ok(())
 }
 
+async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
+    let sid = &session.server.config.info.id;
+
+    if !auth::admin_auth(req.auth).await? {
+        response::authentication_needed(&mut session.stream, sid).await?;
+        return Ok(());
+    }
+    session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
+
+    match utils::get_queries_val_for_keys(&["mount", "destination"], &req.queries).as_slice() {
+        &[Some(mount), Some(destination)] => {
+            let move_comm;
+            match session.server.sources.read().await.get(destination) {
+                Some(destination) => {
+                    move_comm = MoveClientsCommand {
+                        broadcast: destination.broadcast.clone(),
+                        meta_broadcast: destination.meta_broadcast.clone(),
+                        move_listeners_receiver: destination.move_listeners_receiver.clone(),
+                        move_type: MoveClientsType::Move
+                    };
+                },
+                None => {
+                    response::bad_request(&mut session.stream, sid, "Destination not found").await?;
+                    return Ok(());
+                }
+            }
+
+            match session.server.sources.read().await.get(mount) {
+                Some(mount) => {
+                    mount.move_listeners_sender.clone().send(move_comm);
+                },
+                None => {
+                    response::bad_request(&mut session.stream, sid, "Mount not found").await?;
+                }
+            }
+        },
+        _ => {
+            response::bad_request(&mut session.stream, sid, "Mount and destination are both needed").await?;
+        }
+    }
+
+    Ok(())
+}
+
 
 pub async fn handle_request<'a>(mut session: ClientSession, _request: &Request<'a>, req: AdminRequest) -> Result<()> {
     session.server.stats.admin_api_connections.fetch_add(1, Ordering::Relaxed);
@@ -161,6 +205,8 @@ pub async fn handle_request<'a>(mut session: ClientSession, _request: &Request<'
         "/admin/stats" => stats(&mut session, req).await?,
         // Fetch all mounts with their info
         "/admin/listmounts" => list_mounts(&mut session, req).await?,
+        // Move clients from one mount to another
+        "/admin/moveclients" => move_clients(&mut session, req).await?,
         _ => response::not_found(&mut session.stream, &session.server.config.info.id).await?
     }
 
