@@ -3,7 +3,7 @@ use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOpt
 use tracing::{error, info};
 use anyhow::Result;
 
-use tokio::{time::timeout, io::AsyncReadExt};
+use tokio::{time::timeout, io::AsyncReadExt, sync::oneshot};
 
 use crate::{server::{Stream, ClientSession}, source::{SourceBroadcast, Source, IcyMetadata, SourceStats, MoveClientsCommand, MoveClientsType}};
 
@@ -148,49 +148,62 @@ pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, ur
 }
 
 // Getting a future lifetime error, a workaround for now
-pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool, broadcast: SourceBroadcast)
+pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
+                     chunked: bool, broadcast: SourceBroadcast,
+                     kill_notifier: oneshot::Receiver<()>)
     -> impl Future<Output = ()> + 'a {
     async move {
         info!("Mounted source on {}", mountpoint);
 
-        let mountpoint = mountpoint.to_owned();
-        let stats      = match session.server.sources
+        let omountpoint = mountpoint.to_owned();
+        let stats       = match session.server.sources
             .read()
             .await
-            .get(&mountpoint) {
+            .get(mountpoint) {
             Some(v) => v.stats.clone(),
             None => {
                 error!("Can't find stats for {}, did it get removed?", mountpoint);
                 return;
             }
         };
+
+        let server = session.server.clone();
         // For now we are using threads for source
-        tokio::task::spawn_blocking(move || {
-            let server = session.server.clone();
-            if let Err(e) = blocking_broadcast(&mountpoint, session, chunked, broadcast, stats) {
-                error!("Source stream for {} closed: {}", mountpoint, e);
+        let fut = tokio::task::spawn_blocking(move || {
+            if let Err(e) = blocking_broadcast(&omountpoint, session, chunked, broadcast, stats) {
+                error!("Source stream for {} closed: {}", omountpoint, e);
             }
+        });
+        
+        // Here we either way for source to broadcast till it disconnects
+        // Or we receive a command to kill it from admin
+        let abort_handle = fut.abort_handle();
+        tokio::select! {
+            _ = kill_notifier => {
+                abort_handle.abort();
+            },
+            _ = fut => {},
+        }
 
-            // Cleanup
-            let mount = server.sources.blocking_write().remove(&mountpoint);
+        // Cleanup
+        let mount = server.sources.blocking_write().remove(mountpoint);
 
-            // Before closing, we need to give clients a fallback if one is configured
-            if let Some(mut mount) = mount {
-                if let Some(fallback) = mount.fallback {
-                    if let Some(fallback_mount) = server.sources.blocking_read().get(&fallback) {
-                        mount.move_listeners_sender.send(MoveClientsCommand {
-                            broadcast: fallback_mount.broadcast.clone(),
-                            meta_broadcast: fallback_mount.meta_broadcast.clone(),
-                            move_listeners_receiver: fallback_mount.move_listeners_receiver.clone(),
-                            move_type: MoveClientsType::Fallback
-                        });
-                    }
+        // Before closing, we need to give clients a fallback if one is configured
+        if let Some(mut mount) = mount {
+            if let Some(fallback) = mount.fallback {
+                if let Some(fallback_mount) = server.sources.blocking_read().get(&fallback) {
+                    mount.move_listeners_sender.send(MoveClientsCommand {
+                        broadcast: fallback_mount.broadcast.clone(),
+                        meta_broadcast: fallback_mount.meta_broadcast.clone(),
+                        move_listeners_receiver: fallback_mount.move_listeners_receiver.clone(),
+                        move_type: MoveClientsType::Fallback
+                    });
                 }
             }
+        }
 
-            info!("Unmounted source on {}", mountpoint);
-            server.stats.active_sources.fetch_sub(1, Ordering::Release);
-        }).await.ok();
+        info!("Unmounted source on {}", mountpoint);
+        server.stats.active_sources.fetch_sub(1, Ordering::Release);
     }
 }
 

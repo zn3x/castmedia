@@ -6,6 +6,7 @@ use serde::Serialize;
 use llq::broadcast::{Receiver, Sender};
 
 use anyhow::Result;
+use tokio::sync::oneshot;
 use tracing::info;
 
 use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream, auth};
@@ -108,7 +109,9 @@ pub struct Source {
     pub meta_broadcast_sender: Sender<Vec<u8>>,
     /// Broadcast to move all clients in mountpoint to another one
     pub move_listeners_receiver: Receiver<MoveClientsCommand>,
-    pub move_listeners_sender: Sender<MoveClientsCommand>
+    pub move_listeners_sender: Sender<MoveClientsCommand>,
+    /// Send a command to kill source
+    pub kill: Option<oneshot::Sender<()>>
 }
 
 pub struct SourceBroadcast {
@@ -134,11 +137,12 @@ pub enum MoveClientsType {
 
 
 impl Source {
-    pub fn new(properties: IcyProperties) -> (Self, SourceBroadcast) {
+    pub fn new(properties: IcyProperties) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
         let size: NonZeroUsize = 1.try_into().expect("1 should be posetif");
         let (tx, rx)           = llq::broadcast::channel(size);
         let (tx1, rx1)         = llq::broadcast::channel(size);
         let (tx2, rx2)         = llq::broadcast::channel(size);
+        let (tx3, rx3)         = oneshot::channel();
         (Source {
             properties: Arc::new(properties),
             metadata: None,
@@ -148,12 +152,14 @@ impl Source {
             meta_broadcast_sender: tx1.clone(),
             meta_broadcast: rx1,
             move_listeners_receiver: rx2,
-            move_listeners_sender: tx2
+            move_listeners_sender: tx2,
+            kill: Some(tx3)
         },
         SourceBroadcast {
             audio: tx,
             metadata: tx1
-        })
+        },
+        rx3)
     }
 }
 
@@ -222,7 +228,7 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
 
     properties.populate_from_http_headers(&request.headers);
 
-    let (source, broadcast) = Source::new(properties);
+    let (source, broadcast, kill_notifier) = Source::new(properties);
 
     // We must write initial read length to stats
     source.stats.bytes_read.fetch_add(request.headers_buf.len() as u64, Ordering::Relaxed);
@@ -237,7 +243,7 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
     session.server.stats.active_sources.fetch_add(1, Ordering::Acquire);
     
     // Then handle media stream coming for this mountpoint
-    stream::broadcast(&mountpoint, session, chunked, broadcast).await;
+    stream::broadcast(&mountpoint, session, chunked, broadcast, kill_notifier).await;
 
     Ok(())
 }

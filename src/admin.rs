@@ -186,6 +186,46 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
     Ok(())
 }
 
+async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
+    let sid = &session.server.config.info.id;
+
+    if !auth::admin_auth(req.auth).await? {
+        response::authentication_needed(&mut session.stream, sid).await?;
+        return Ok(());
+    }
+    session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
+
+    match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
+        &[Some(mount)] => {
+            let kill_switch = match session.server.sources.write().await.get_mut(mount) {
+                Some(mount) => mount.kill.take(),
+                None => {
+                    response::bad_request(&mut session.stream, sid, "Mount not found").await?;
+                    return Ok(())
+                }
+            };
+            
+            match kill_switch {
+                Some(kill_switch) => {
+                    _ = kill_switch.send(());
+                    info!("Source killed for mount {} by admin {}", mount, req);
+                },
+                None => {
+                    // This might really only happen in a small interval between a killsource
+                    // command and before source being removed from hash of active sources
+                    response::bad_request(&mut session.stream, sid, "Source for mountpoint already killed").await?;
+                    return Ok(())
+                }
+            }
+        },
+        _ => {
+            response::bad_request(&mut session.stream, sid, "Mount not specified").await?;
+        }
+    }
+
+    Ok(())
+}
+
 
 pub async fn handle_request<'a>(mut session: ClientSession, _request: &Request<'a>, req: AdminRequest) -> Result<()> {
     session.server.stats.admin_api_connections.fetch_add(1, Ordering::Relaxed);
@@ -207,6 +247,8 @@ pub async fn handle_request<'a>(mut session: ClientSession, _request: &Request<'
         "/admin/listmounts" => list_mounts(&mut session, req).await?,
         // Move clients from one mount to another
         "/admin/moveclients" => move_clients(&mut session, req).await?,
+        // Kill a source mountpoint
+        "/admin/killsource" => kill_source(&mut session, req).await?,
         _ => response::not_found(&mut session.stream, &session.server.config.info.id).await?
     }
 
