@@ -165,7 +165,7 @@ impl Source {
 
 pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: SourceRequest) -> Result<()> {
     let sid = &session.server.config.info.id;
-    match auth::source_auth(req.auth).await {
+    match auth::source_mount_auth(req.auth).await {
         Ok(v) => if !v {
             response::authentication_needed(&mut session.stream, sid).await?;
             info!("Source request from {} with wrong authentication", session.addr);

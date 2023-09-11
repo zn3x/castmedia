@@ -11,13 +11,8 @@ use crate::{
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
+    let _   = auth::admin_or_source_auth(session, req.auth).await?;
     let sid = &session.server.config.info.id;
-
-    if !auth::admin_or_source_auth(req.auth).await? {
-        response::authentication_needed(&mut session.stream, sid).await?;
-        return Ok(());
-    }
-    session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
 
     match utils::get_queries_val_for_keys(&["mode", "mount", "song", "url"], &req.queries).as_slice() {
         &[Some(mode), Some(mount), song, url] => {
@@ -44,13 +39,8 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
 }
 
 async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
+    let _   = auth::admin_or_source_auth(session, req.auth).await?;
     let sid = &session.server.config.info.id;
-
-    if !auth::admin_or_source_auth(req.auth).await? {
-        response::authentication_needed(&mut session.stream, sid).await?;
-        return Ok(());
-    }
-    session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
 
     match utils::get_queries_val_for_keys(&["mount", "fallback"], &req.queries).as_slice() {
         &[Some(mount), fallback] => {
@@ -75,13 +65,8 @@ async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Resu
 }
 
 async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
+    let _   = auth::admin_auth(session, req.auth).await?;
     let sid = &session.server.config.info.id;
-
-    if !auth::admin_auth(req.auth).await? {
-        response::authentication_needed(&mut session.stream, sid).await?;
-        return Ok(());
-    }
-    session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
 
     let mut sources = HashMap::new();
 
@@ -112,13 +97,8 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
 }
 
 async fn stats(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
+    let _   = auth::admin_auth(session, req.auth).await?;
     let sid = &session.server.config.info.id;
-
-    if !auth::admin_auth(req.auth).await? {
-        response::authentication_needed(&mut session.stream, sid).await?;
-        return Ok(());
-    }
-    session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
 
     let stats = json!({
         "start_time": session.server.stats.start_time,
@@ -143,13 +123,8 @@ async fn stats(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
 }
 
 async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
+    let _   = auth::admin_auth(session, req.auth).await?;
     let sid = &session.server.config.info.id;
-
-    if !auth::admin_auth(req.auth).await? {
-        response::authentication_needed(&mut session.stream, sid).await?;
-        return Ok(());
-    }
-    session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
 
     match utils::get_queries_val_for_keys(&["mount", "destination"], &req.queries).as_slice() {
         &[Some(mount), Some(destination)] => {
@@ -187,13 +162,8 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
 }
 
 async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let sid = &session.server.config.info.id;
-
-    if !auth::admin_auth(req.auth).await? {
-        response::authentication_needed(&mut session.stream, sid).await?;
-        return Ok(());
-    }
-    session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
+    let user_id = auth::admin_auth(session, req.auth).await?;
+    let sid     = &session.server.config.info.id;
 
     match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
         &[Some(mount)] => {
@@ -208,7 +178,7 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
             match kill_switch {
                 Some(kill_switch) => {
                     _ = kill_switch.send(());
-                    info!("Source killed for mount {} by admin {}", mount, req);
+                    info!("Source killed for mount {} by admin {}", mount, user_id);
                 },
                 None => {
                     // This might really only happen in a small interval between a killsource
