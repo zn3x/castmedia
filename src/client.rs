@@ -9,7 +9,7 @@ use tracing::{info, error};
 
 use crate::{
     server::ClientSession,
-    request::{read_request, Request, RequestType, ListenRequest}, source::{self, IcyProperties, SourceStats}, response, utils, admin
+    request::{read_request, Request, RequestType, ListenRequest}, source::{self, IcyProperties, SourceStats, MoveClientsCommand, MoveClientsType}, response, utils, admin
 };
 
 pub struct Client {
@@ -28,12 +28,13 @@ pub struct ClientStats {
 }
 
 pub async fn handle_client<'a>(mut session: ClientSession, request: &Request<'a>, req: ListenRequest) -> Result<()> {
-    let (props, stream, meta_stream, stats) = match session.server.sources.read().await.get(&req.mountpoint) {
+    let (props, stream, meta_stream, mover, stats) = match session.server.sources.read().await.get(&req.mountpoint) {
         Some(v) => {
             (
             v.properties.clone(),
             v.broadcast.clone(),
             v.meta_broadcast.clone(),
+            v.move_listeners_receiver.clone(),
             v.stats.clone())
         },
         None => {
@@ -58,7 +59,7 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: &Request<'a>
 
     drop(req);
 
-    let ret = client_broadcast(&mut session, request, props, stream, meta_stream, &stats).await;
+    let ret = client_broadcast(&mut session, request, props, stream, meta_stream, mover, &stats).await;
 
     // End of connection
     session.server.stats.active_listeners.fetch_sub(1, Ordering::Release);
@@ -67,10 +68,11 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: &Request<'a>
     ret
 }
 
-#[inline]
+#[inline(always)]
 pub async fn client_broadcast<'a>(session: &mut ClientSession, request: &Request<'a>,
                                   props: Arc<IcyProperties>, mut stream: Receiver<Vec<u8>>,
-                                  mut meta_stream: Receiver<Vec<u8>>, stats: &SourceStats) -> Result<()> {
+                                  mut meta_stream: Receiver<Vec<u8>>, mut mover: Receiver<MoveClientsCommand>,
+                                  stats: &SourceStats) -> Result<()> {
     if utils::get_header("icy-metadata", &request.headers).unwrap_or(b"0") == b"1" {
         response::ok_200_icy_metadata(
             &mut session.stream,
@@ -84,53 +86,83 @@ pub async fn client_broadcast<'a>(session: &mut ClientSession, request: &Request
 
     drop(props);
 
+    let mut fallback   = None;
+
     let mut metadata   = Arc::new(Vec::new());
     let mut metaint    = 0;
     let mut bytes_sent = 0;
     let mut stat_int   = tokio::time::interval(Duration::from_secs(30));
 
     loop {
-        tokio::select! {
-            r = meta_stream.recv() => match r {
-                Ok(v) => metadata = v,
-                Err(RecvError::Lagged(_)) => (),
-                Err(RecvError::Closed) => break
-            },
-            r = stream.recv() => match r {
-                Ok(buf) => {
-                    // We are checking here if we need to broadcast metadata
-                    // Metadata needs to be sent inbetween ever metaint interval
-                    if metaint + buf.len() >= session.server.config.metaint {
-                        let diff          = (metaint + buf.len()) - session.server.config.metaint;
-                        let first_buf_len = session.server.config.metaint - metaint;
-                        
-                        if first_buf_len > 0 {
-                            session.stream.write_all(&buf[..first_buf_len]).await?;
-                        }
-                        // Now we write metadata
-                        session.stream.write_all(&metadata).await?;
-                        // Followed by what left in buffer if there is any
-                        if diff > 0 {
-                            session.stream.write_all(&buf[first_buf_len..]).await?;
-                        }
-                        metaint     = diff;
-                        bytes_sent += metadata.len() + buf.len();
-                    } else {
-                        session.stream.write_all(&buf).await?;
-                        metaint    += buf.len();
-                        bytes_sent += buf.len();
-                    }
+        loop {
+            tokio::select! {
+                r = meta_stream.recv() => match r {
+                    Ok(v) => metadata = v,
+                    Err(RecvError::Lagged(_)) => (),
+                    Err(RecvError::Closed) => break
                 },
-                Err(RecvError::Lagged(_)) => (),
-                Err(RecvError::Closed) => break
-            },
-            // We increment sent bytes count with interval in order not to have degraded performance
-            // under contention if any
-            _ = stat_int.tick() => {
-                stats.bytes_sent.fetch_add(bytes_sent as u64, Ordering::Relaxed);
-                bytes_sent = 0;
+                r = stream.recv() => match r {
+                    Ok(buf) => {
+                        // We are checking here if we need to broadcast metadata
+                        // Metadata needs to be sent inbetween ever metaint interval
+                        if metaint + buf.len() >= session.server.config.metaint {
+                            let diff          = (metaint + buf.len()) - session.server.config.metaint;
+                            let first_buf_len = session.server.config.metaint - metaint;
+                            
+                            if first_buf_len > 0 {
+                                session.stream.write_all(&buf[..first_buf_len]).await?;
+                            }
+                            // Now we write metadata
+                            session.stream.write_all(&metadata).await?;
+                            // Followed by what left in buffer if there is any
+                            if diff > 0 {
+                                session.stream.write_all(&buf[first_buf_len..]).await?;
+                            }
+                            metaint     = diff;
+                            bytes_sent += metadata.len() + buf.len();
+                        } else {
+                            session.stream.write_all(&buf).await?;
+                            metaint    += buf.len();
+                            bytes_sent += buf.len();
+                        }
+                    },
+                    Err(RecvError::Lagged(_)) => (),
+                    Err(RecvError::Closed) => break
+                },
+                // We increment sent bytes count with interval in order not to have degraded performance
+                // under contention if any
+                _ = stat_int.tick() => {
+                    stats.bytes_sent.fetch_add(bytes_sent as u64, Ordering::Relaxed);
+                    bytes_sent = 0;
+                }
+                // Listening for move requests (ie. fallback or admin move clients)
+                r = mover.recv() => match r {
+                    Ok(v) => match &v.move_type {
+                        MoveClientsType::Fallback => {
+                            // If it is a fallback, we put it here until we reach closed state of
+                            // current mount
+                            fallback = Some(v);
+                        },
+                        MoveClientsType::Move => {
+                            // Otherwise we move right away
+                            stream = v.broadcast.clone();
+                            meta_stream = v.meta_broadcast.clone();
+                            mover = v.move_listeners_receiver.clone();
+                        }
+                    },
+                    Err(RecvError::Lagged(_)) => (),
+                    Err(RecvError::Closed) => break
+                }
             }
+        };
+
+        if let Some(v) = fallback.take() {
+            stream = v.broadcast.clone();
+            meta_stream = v.meta_broadcast.clone();
+            mover = v.move_listeners_receiver.clone();
+            continue;
         }
+        break;
     };
 
     Ok(())

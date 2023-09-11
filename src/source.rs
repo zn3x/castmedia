@@ -105,7 +105,10 @@ pub struct Source {
     /// Sender stream for metadata broadcast
     /// Needed so we don't create a new sender every time
     /// we get metadata update
-    pub meta_broadcast_sender: Sender<Vec<u8>>
+    pub meta_broadcast_sender: Sender<Vec<u8>>,
+    /// Broadcast to move all clients in mountpoint to another one
+    pub move_listeners_receiver: Receiver<MoveClientsCommand>,
+    pub move_listeners_sender: Sender<MoveClientsCommand>
 }
 
 pub struct SourceBroadcast {
@@ -113,11 +116,29 @@ pub struct SourceBroadcast {
     pub metadata: Sender<Vec<u8>>
 }
 
+/// We can remotely command clients to change mountpoint using a variant of move commands
+pub struct MoveClientsCommand {
+    pub broadcast: Receiver<Vec<u8>>,
+    pub meta_broadcast: Receiver<Vec<u8>>,
+    pub move_listeners_receiver: Receiver<MoveClientsCommand>,
+    pub move_type: MoveClientsType
+}
+
+pub enum MoveClientsType {
+    /// An admin move command, this should be instaneous.
+    Move,
+    /// When source disconnects, we can move clients to a fallback, unlike Move command, client
+    /// need to read till end of stream of old mountpoint to move to new one.
+    Fallback,
+}
+
+
 impl Source {
     pub fn new(properties: IcyProperties) -> (Self, SourceBroadcast) {
         let size: NonZeroUsize = 1.try_into().expect("1 should be posetif");
         let (tx, rx)           = llq::broadcast::channel(size);
         let (tx1, rx1)         = llq::broadcast::channel(size);
+        let (tx2, rx2)         = llq::broadcast::channel(size);
         (Source {
             properties: Arc::new(properties),
             metadata: None,
@@ -125,7 +146,9 @@ impl Source {
             fallback: None,
             broadcast: rx,
             meta_broadcast_sender: tx1.clone(),
-            meta_broadcast: rx1
+            meta_broadcast: rx1,
+            move_listeners_receiver: rx2,
+            move_listeners_sender: tx2
         },
         SourceBroadcast {
             audio: tx,

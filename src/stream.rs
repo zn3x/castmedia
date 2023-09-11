@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use tokio::{time::timeout, io::AsyncReadExt};
 
-use crate::{server::{Stream, ClientSession}, source::{SourceBroadcast, Source, IcyMetadata, SourceStats}};
+use crate::{server::{Stream, ClientSession}, source::{SourceBroadcast, Source, IcyMetadata, SourceStats, MoveClientsCommand, MoveClientsType}};
 
 pub trait StreamReader: Send + Sync + Read {
 }
@@ -103,7 +103,21 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession, chunked: bool,
             }
 
             // Cleanup
-            server.sources.blocking_write().remove(&mountpoint);
+            let mount = server.sources.blocking_write().remove(&mountpoint);
+
+            // Before closing, we need to give clients a fallback if one is configured
+            if let Some(mut mount) = mount {
+                if let Some(fallback) = mount.fallback {
+                    if let Some(fallback_mount) = server.sources.blocking_read().get(&fallback) {
+                        mount.move_listeners_sender.send(MoveClientsCommand {
+                            broadcast: fallback_mount.broadcast.clone(),
+                            meta_broadcast: fallback_mount.meta_broadcast.clone(),
+                            move_listeners_receiver: fallback_mount.move_listeners_receiver.clone(),
+                            move_type: MoveClientsType::Fallback
+                        });
+                    }
+                }
+            }
 
             info!("Unmounted source on {}", mountpoint);
             server.stats.active_sources.fetch_sub(1, Ordering::Release);
@@ -191,8 +205,6 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool,
             format.metadata().pop();
         }
     };
-
-    // TODO: Checking if there is a fallback
 
     Ok(())
 }
