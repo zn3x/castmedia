@@ -153,7 +153,7 @@ pub async fn handle_request<'a>(mut session: ClientSession, _request: &Request<'
         // Update metadata for a mount point
         "/admin/metadata" => update_metadata(&mut session, req).await?,
         // Changing fallback for a mount
-        "/admin/fallback" => update_fallback(&mut session, req).await?,
+        "/admin/fallbacks" => update_fallback(&mut session, req).await?,
 
         // Admin only access:
         //
