@@ -5,7 +5,7 @@ use std::{
 use anyhow::Result;
 use hashbrown::HashMap;
 use llq::{errors::RecvError, broadcast::Receiver};
-use tokio::{io::AsyncWriteExt, sync::RwLock};
+use tokio::{io::AsyncWriteExt, sync::{RwLock, oneshot}};
 use tracing::{info, error};
 use uuid::Uuid;
 
@@ -15,13 +15,14 @@ use crate::{
 };
 
 pub struct Client {
-    properties: ClientProperties,
-    stats: Arc<ClientStats>
+    pub properties: ClientProperties,
+    pub kill: Option<oneshot::Sender<()>>,
+    pub stats: Arc<ClientStats>
 }
 
 pub struct ClientProperties {
-    user_agent: Option<String>,
-    metadata: bool
+    pub user_agent: Option<String>,
+    pub metadata: bool
 }
 
 pub struct ClientStats {
@@ -62,9 +63,9 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: Request<'a>,
         stats.peak_listeners.fetch_max(new_count, Ordering::Relaxed);
     }
     
-    let metadata = utils::get_header("icy-metadata", &request.headers).unwrap_or(b"0") == b"1";
-
-    let client_stats = Arc::new(ClientStats {
+    let (kill, kill_rx) = oneshot::channel();
+    let metadata        = utils::get_header("icy-metadata", &request.headers).unwrap_or(b"0") == b"1";
+    let client_stats    = Arc::new(ClientStats {
         start_time: AtomicI64::new(chrono::offset::Utc::now().timestamp()),
         bytes_sent: AtomicU64::new(0)
     });
@@ -95,6 +96,7 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: Request<'a>,
                     },
                     metadata
                 },
+                kill: Some(kill),
                 stats: client_stats.clone()
             });
             break;
@@ -104,8 +106,16 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: Request<'a>,
     drop(req);
     drop(request);
 
-    let ret = client_broadcast(&mut session, props, stream, meta_stream, mover, 
-                               &stats, metadata, &mut id, &mut clients, &client_stats).await;
+    let ret = tokio::select! {
+        r = client_broadcast(&mut session, props, stream, meta_stream, mover, 
+                             &stats, metadata, &mut id, &mut clients,
+                             &client_stats) => {
+            r
+        },
+        _ = kill_rx => {
+            Err(anyhow::Error::msg("Client killed by admininstrator command"))
+        }
+    };
 
     // If it's a client error we must remove client from list of active clients
     // Otherwise that means source disconnected and we reached end

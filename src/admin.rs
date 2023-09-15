@@ -4,6 +4,7 @@ use anyhow::Result;
 use hashbrown::HashMap;
 use tracing::info;
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::{
     server::ClientSession,
@@ -197,6 +198,54 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
     Ok(())
 }
 
+async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
+    let user_id = auth::admin_auth(session, req.auth).await?;
+    let sid     = &session.server.config.info.id;
+
+    match utils::get_queries_val_for_keys(&["mount", "id"], &req.queries).as_slice() {
+        &[Some(mount), Some(id)] => {
+            let id = match Uuid::parse_str(id) {
+                Ok(v) => v,
+                Err(_) => {
+                    response::bad_request(&mut session.stream, sid, "id is not a uuid").await?;
+                    return Ok(());
+                }
+            };
+
+            let clients = match session.server.sources.read().await.get(mount) {
+                Some(mount) => mount.clients.clone(),
+                None => {
+                    response::bad_request(&mut session.stream, sid, "Mount not found").await?;
+                    return Ok(());
+                }
+            };
+
+            let kill_switch = match clients.write().await.get_mut(&id) {
+                Some(client) => client.kill.take(),
+                None => {
+                    response::bad_request(&mut session.stream, sid, "Client with specified id not found").await?;
+                    return Ok(());
+                }
+            };
+
+            match kill_switch {
+                Some(kill_switch) => {
+                    _ = kill_switch.send(());
+                    info!("Client {} killed for mount {} by admin {}", id, mount, user_id);
+                },
+                None => {
+                    response::bad_request(&mut session.stream, sid, "Client already killed").await?;
+                }
+            }
+        },
+        _ => {
+            response::bad_request(&mut session.stream, sid, "Mount or client id not specified").await?;
+        }
+    }
+
+    Ok(())
+}
+
 
 pub async fn handle_request<'a>(mut session: ClientSession, _request: &Request<'a>, req: AdminRequest) -> Result<()> {
     session.server.stats.admin_api_connections.fetch_add(1, Ordering::Relaxed);
@@ -220,6 +269,8 @@ pub async fn handle_request<'a>(mut session: ClientSession, _request: &Request<'
         "/admin/moveclients" => move_clients(&mut session, req).await?,
         // Kill a source mountpoint
         "/admin/killsource" => kill_source(&mut session, req).await?,
+        // Kill a specific listener
+        "/admin/killclient" => kill_client(&mut session, req).await?,
         _ => response::not_found(&mut session.stream, &session.server.config.info.id).await?
     }
 
