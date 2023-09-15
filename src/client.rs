@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, atomic::{Ordering, AtomicU64}},
+    sync::{Arc, atomic::{Ordering, AtomicU64, AtomicI64}},
     time::Duration
 };
 use anyhow::Result;
@@ -16,7 +16,7 @@ use crate::{
 
 pub struct Client {
     properties: ClientProperties,
-    stats: ClientStats
+    stats: Arc<ClientStats>
 }
 
 pub struct ClientProperties {
@@ -25,7 +25,8 @@ pub struct ClientProperties {
 }
 
 pub struct ClientStats {
-    pub start_time: i64,
+    /// Here we need atomic so that we can update it when we change mountpoint
+    pub start_time: AtomicI64,
     pub bytes_sent: AtomicU64
 }
 
@@ -63,6 +64,10 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: Request<'a>,
     
     let metadata = utils::get_header("icy-metadata", &request.headers).unwrap_or(b"0") == b"1";
 
+    let client_stats = Arc::new(ClientStats {
+        start_time: AtomicI64::new(chrono::offset::Utc::now().timestamp()),
+        bytes_sent: AtomicU64::new(0)
+    });
     let mut id;
     // We need to insert listener to list of active clients of mountpoint
     {
@@ -90,10 +95,7 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: Request<'a>,
                     },
                     metadata
                 },
-                stats: ClientStats {
-                    start_time: chrono::offset::Utc::now().timestamp(),
-                    bytes_sent: AtomicU64::new(0)
-                }
+                stats: client_stats.clone()
             });
             break;
         };
@@ -102,7 +104,8 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: Request<'a>,
     drop(req);
     drop(request);
 
-    let ret = client_broadcast(&mut session, props, stream, meta_stream, mover, &stats, metadata, &mut id, &mut clients).await;
+    let ret = client_broadcast(&mut session, props, stream, meta_stream, mover, 
+                               &stats, metadata, &mut id, &mut clients, &client_stats).await;
 
     // If it's a client error we must remove client from list of active clients
     // Otherwise that means source disconnected and we reached end
@@ -122,7 +125,8 @@ pub async fn client_broadcast<'a>(session: &mut ClientSession,
                                   props: Arc<IcyProperties>, mut stream: Receiver<Vec<u8>>,
                                   mut meta_stream: Receiver<Vec<u8>>, mut mover: Receiver<MoveClientsCommand>,
                                   stats: &SourceStats, metadata: bool, id: &mut Uuid,
-                                  clients: &mut Arc<RwLock<HashMap<Uuid, Client>>>) -> Result<()> {
+                                  clients: &mut Arc<RwLock<HashMap<Uuid, Client>>>,
+                                  client_stats: &ClientStats) -> Result<()> {
     if metadata {
         response::ok_200_icy_metadata(
             &mut session.stream,
@@ -182,7 +186,9 @@ pub async fn client_broadcast<'a>(session: &mut ClientSession,
                 // We increment sent bytes count with interval in order not to have degraded performance
                 // under contention if any
                 _ = stat_int.tick() => {
-                    stats.bytes_sent.fetch_add(bytes_sent as u64, Ordering::Relaxed);
+                    let bytes = bytes_sent as u64;
+                    stats.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
+                    client_stats.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
                     bytes_sent = 0;
                 }
                 // Listening for move requests (ie. fallback or admin move clients)
@@ -195,7 +201,7 @@ pub async fn client_broadcast<'a>(session: &mut ClientSession,
                         },
                         MoveClientsType::Move => {
                             // Otherwise we move right away
-                            change_mount(&mut stream, &mut meta_stream, &mut mover, &v, id, clients).await;
+                            change_mount(&mut stream, &mut meta_stream, &mut mover, client_stats, &v, id, clients).await;
                         }
                     },
                     Err(RecvError::Lagged(_)) => (),
@@ -205,7 +211,7 @@ pub async fn client_broadcast<'a>(session: &mut ClientSession,
         };
 
         if let Some(v) = fallback.take() {
-            change_mount(&mut stream, &mut meta_stream, &mut mover, &v, id, clients).await;
+            change_mount(&mut stream, &mut meta_stream, &mut mover, client_stats, &v, id, clients).await;
             continue;
         }
         // If we don't have any fallback, it is fine to keep this client in list of active clients
@@ -218,6 +224,7 @@ pub async fn client_broadcast<'a>(session: &mut ClientSession,
 
 async fn change_mount(stream: &mut Receiver<Vec<u8>>, meta_stream: &mut Receiver<Vec<u8>>,
                       mover: &mut Receiver<MoveClientsCommand>,
+                      client_stats: &ClientStats,
                       new: &MoveClientsCommand, id: &mut Uuid,
                       clients: &mut Arc<RwLock<HashMap<Uuid, Client>>>) {
     // changing streams that we actually listen to
@@ -241,6 +248,10 @@ async fn change_mount(stream: &mut Receiver<Vec<u8>>, meta_stream: &mut Receiver
         lock.insert(*id, client);
         break;
     };
+
+    // We need to also update client stats
+    client_stats.start_time.store(chrono::offset::Utc::now().timestamp(), Ordering::Relaxed);
+    client_stats.bytes_sent.store(0, Ordering::Relaxed);
 }
 
 pub async fn handle(mut session: ClientSession) {
