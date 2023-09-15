@@ -2,6 +2,7 @@ use std::{
     sync::{Arc, atomic::{Ordering, AtomicU64, AtomicI64}},
     time::Duration
 };
+use serde::Serialize;
 use anyhow::Result;
 use hashbrown::HashMap;
 use llq::{errors::RecvError, broadcast::Receiver};
@@ -20,6 +21,7 @@ pub struct Client {
     pub stats: Arc<ClientStats>
 }
 
+#[derive(Serialize)]
 pub struct ClientProperties {
     pub user_agent: Option<String>,
     pub metadata: bool

@@ -71,6 +71,7 @@ Connection: Close\r\n",
 
     server_info(stream).await?;
     stream.write_all(message.as_bytes()).await?;
+    stream.flush().await?;
 
     Ok(())
 }
@@ -87,6 +88,7 @@ Connection: Close\r\n",
 
     server_info(stream).await?;
     stream.write_all(message.as_bytes()).await?;
+    stream.flush().await?;
 
     Ok(())
 }
@@ -114,6 +116,35 @@ Content-Type: application/json; charset=utf-8\r\n",
     stream.write_all(body).await?;
     stream.flush().await?;
     Ok(())
+}
+
+pub struct ChunkedResponse {}
+
+impl ChunkedResponse {
+    pub async fn new(stream: &mut Stream, server_id: &str) -> Result<Self> {
+        stream.write_all(format!("HTTP/1.0 200 OK\r\n\
+Server: {}\r\n\
+Connection: Close\r\n\
+Transfer-Encoding: Chunked\r\n\
+Content-Type: application/json; charset=utf-8\r\n",
+            server_id).as_bytes()).await?;
+
+        server_info(stream).await?;
+        Ok(Self {})
+    }
+
+    pub async fn send(&self, stream: &mut Stream, buf: &[u8]) -> Result<()> {
+        stream.write_all(format!("{:x}\r\n", buf.len()).as_bytes()).await?;
+        stream.write_all(buf).await?;
+        stream.write_all(b"\r\n").await?;
+        Ok(())
+    }
+
+    pub async fn flush(&self, stream: &mut Stream) -> Result<()> {
+        stream.write_all(b"0\r\n").await?;
+        stream.flush().await?;
+        Ok(())
+    }
 }
 
 pub async fn ok_200_icy_metadata(stream: &mut Stream, server_id: &str, properties: &IcyProperties, metaint: usize) -> Result<()> {

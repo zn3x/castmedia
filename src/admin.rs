@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     server::ClientSession,
-    request::{Request, AdminRequest}, response, auth, utils, stream::broadcast_metadata, source::{MoveClientsCommand, MoveClientsType}
+    request::{Request, AdminRequest}, response::{self, ChunkedResponse}, auth, utils, stream::broadcast_metadata, source::{MoveClientsCommand, MoveClientsType}
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
@@ -198,6 +198,57 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
     Ok(())
 }
 
+async fn list_clients(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
+    let _   = auth::admin_auth(session, req.auth).await?;
+    let sid = &session.server.config.info.id;
+
+    let mount = match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
+        &[Some(mount)] => mount,
+        _ => {
+            response::bad_request(&mut session.stream, sid, "Mount not specified").await?;
+            return Ok(());
+        }
+    };
+
+    let clients = {
+        let lock = session.server.sources.read().await;
+        let find = lock
+            .iter()
+            .find(|x| x.0.eq(mount));
+        match find {
+            Some(v) => v.1.clients.clone(),
+            None => {
+                response::bad_request(&mut session.stream, sid, "Mount not found").await?;
+                return Ok(())
+            }
+        }
+    };
+
+    let chunked = ChunkedResponse::new(&mut session.stream, sid).await?;
+    chunked.send(&mut session.stream, b"{").await?;
+    {
+        let lock     = clients.read().await;
+        let mut list = lock.iter().peekable();
+        while let Some((key, val)) = list.next() {
+            chunked.send(&mut session.stream, format!("\"{}\":", key).as_bytes()).await?;
+            chunked.send(&mut session.stream, serde_json::to_vec(&json!({
+                "properties": val.properties,
+                "stats": {
+                    "start_time": val.stats.start_time.load(Ordering::Relaxed),
+                    "bytes_sent": val.stats.bytes_sent.load(Ordering::Relaxed)
+                }
+            }))?.as_slice()).await?;
+            if list.peek().is_some() {
+                chunked.send(&mut session.stream, b",").await?;
+            }
+        }
+    }
+    chunked.send(&mut session.stream, b"}").await?;
+    chunked.flush(&mut session.stream).await?;
+
+    Ok(())
+}
+
 async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
     let user_id = auth::admin_auth(session, req.auth).await?;
     let sid     = &session.server.config.info.id;
@@ -269,6 +320,8 @@ pub async fn handle_request<'a>(mut session: ClientSession, _request: &Request<'
         "/admin/moveclients" => move_clients(&mut session, req).await?,
         // Kill a source mountpoint
         "/admin/killsource" => kill_source(&mut session, req).await?,
+        // List listeners of a specific mountpoint
+        "/admin/listclients" => list_clients(&mut session, req).await?,
         // Kill a specific listener
         "/admin/killclient" => kill_client(&mut session, req).await?,
         _ => response::not_found(&mut session.stream, &session.server.config.info.id).await?
