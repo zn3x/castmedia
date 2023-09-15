@@ -186,12 +186,12 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
         }
 
         // Cleanup
-        let mount = server.sources.blocking_write().remove(mountpoint);
+        let mount = server.sources.write().await.remove(mountpoint);
 
         // Before closing, we need to give clients a fallback if one is configured
         if let Some(mut mount) = mount {
             if let Some(fallback) = mount.fallback {
-                if let Some(fallback_mount) = server.sources.blocking_read().get(&fallback) {
+                if let Some(fallback_mount) = server.sources.read().await.get(&fallback) {
                     mount.move_listeners_sender.send(MoveClientsCommand {
                         broadcast: fallback_mount.broadcast.clone(),
                         meta_broadcast: fallback_mount.meta_broadcast.clone(),
