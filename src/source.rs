@@ -2,14 +2,16 @@ use std::{
     sync::{Arc, atomic::{AtomicUsize, AtomicU64, Ordering}},
     num::NonZeroUsize
 };
+use hashbrown::HashMap;
 use serde::Serialize;
 use llq::broadcast::{Receiver, Sender};
 
 use anyhow::Result;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, RwLock};
 use tracing::info;
+use uuid::Uuid;
 
-use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream, auth};
+use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream, auth, client::Client};
 
 #[derive(Serialize)]
 pub struct IcyProperties {
@@ -96,6 +98,8 @@ impl SourceStats {
 pub struct Source {
     pub properties: Arc<IcyProperties>,
     pub metadata: Option<IcyMetadata>,
+    /// List of currently connected listeners to mount
+    pub clients: Arc<RwLock<HashMap<Uuid, Client>>>,
     pub stats: Arc<SourceStats>,
     /// Fallback mountpoint in case this one is down
     pub fallback: Option<String>,
@@ -124,6 +128,7 @@ pub struct MoveClientsCommand {
     pub broadcast: Receiver<Vec<u8>>,
     pub meta_broadcast: Receiver<Vec<u8>>,
     pub move_listeners_receiver: Receiver<MoveClientsCommand>,
+    pub clients: Arc<RwLock<HashMap<Uuid, Client>>>,
     pub move_type: MoveClientsType
 }
 
@@ -146,6 +151,7 @@ impl Source {
         (Source {
             properties: Arc::new(properties),
             metadata: None,
+            clients: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(SourceStats::new()),
             fallback: None,
             broadcast: rx,

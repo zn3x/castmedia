@@ -135,6 +135,7 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
                         broadcast: destination.broadcast.clone(),
                         meta_broadcast: destination.meta_broadcast.clone(),
                         move_listeners_receiver: destination.move_listeners_receiver.clone(),
+                        clients: destination.clients.clone(),
                         move_type: MoveClientsType::Move
                     };
                 },

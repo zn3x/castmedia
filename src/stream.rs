@@ -196,6 +196,7 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
                         broadcast: fallback_mount.broadcast.clone(),
                         meta_broadcast: fallback_mount.meta_broadcast.clone(),
                         move_listeners_receiver: fallback_mount.move_listeners_receiver.clone(),
+                        clients: fallback_mount.clients.clone(),
                         move_type: MoveClientsType::Fallback
                     });
                 }

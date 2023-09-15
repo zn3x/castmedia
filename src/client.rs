@@ -3,9 +3,11 @@ use std::{
     time::Duration
 };
 use anyhow::Result;
+use hashbrown::HashMap;
 use llq::{errors::RecvError, broadcast::Receiver};
-use tokio::io::AsyncWriteExt;
+use tokio::{io::AsyncWriteExt, sync::RwLock};
 use tracing::{info, error};
+use uuid::Uuid;
 
 use crate::{
     server::ClientSession,
@@ -27,15 +29,17 @@ pub struct ClientStats {
     pub bytes_sent: AtomicU64
 }
 
-pub async fn handle_client<'a>(mut session: ClientSession, request: &Request<'a>, req: ListenRequest) -> Result<()> {
-    let (props, stream, meta_stream, mover, stats) = match session.server.sources.read().await.get(&req.mountpoint) {
+pub async fn handle_client<'a>(mut session: ClientSession, request: Request<'a>, req: ListenRequest) -> Result<()> {
+    let (props, stream, meta_stream, mover, stats, mut clients) = match session.server.sources.read().await.get(&req.mountpoint) {
         Some(v) => {
             (
-            v.properties.clone(),
-            v.broadcast.clone(),
-            v.meta_broadcast.clone(),
-            v.move_listeners_receiver.clone(),
-            v.stats.clone())
+                v.properties.clone(),
+                v.broadcast.clone(),
+                v.meta_broadcast.clone(),
+                v.move_listeners_receiver.clone(),
+                v.stats.clone(),
+                v.clients.clone()
+            )
         },
         None => {
             response::not_found(&mut session.stream, &session.server.config.info.id).await?;
@@ -56,10 +60,55 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: &Request<'a>
         let new_count = stats.active_listeners.fetch_add(1, Ordering::Acquire) + 1;
         stats.peak_listeners.fetch_max(new_count, Ordering::Relaxed);
     }
+    
+    let metadata = utils::get_header("icy-metadata", &request.headers).unwrap_or(b"0") == b"1";
+
+    let mut id;
+    // We need to insert listener to list of active clients of mountpoint
+    {
+        let mut lock = clients.write().await;
+        // We need to create a unique uuid for client
+        loop {
+            id = uuid::Uuid::new_v4();
+            if lock.contains_key(&id) {
+                continue;
+            }
+            lock.insert(id, Client {
+                properties: ClientProperties {
+                    // Retrieving user agent if there is one, a user agent will not be fully story
+                    // if it's length is bigger than 100
+                    user_agent: match utils::get_header("user-agent", &request.headers) {
+                        Some(v) => match std::str::from_utf8(v) {
+                            Ok(v) => Some(if v.len() > 100 {
+                                v[..100].to_owned()
+                            } else {
+                                v.to_owned()
+                            }),
+                            Err(_) => None   
+                        },
+                        None => None
+                    },
+                    metadata
+                },
+                stats: ClientStats {
+                    start_time: chrono::offset::Utc::now().timestamp(),
+                    bytes_sent: AtomicU64::new(0)
+                }
+            });
+            break;
+        };
+    }
 
     drop(req);
+    drop(request);
 
-    let ret = client_broadcast(&mut session, request, props, stream, meta_stream, mover, &stats).await;
+    let ret = client_broadcast(&mut session, props, stream, meta_stream, mover, &stats, metadata, &mut id, &mut clients).await;
+
+    // If it's a client error we must remove client from list of active clients
+    // Otherwise that means source disconnected and we reached end
+    if ret.is_err() {
+        clients.write().await.remove(&id);
+    }
 
     // End of connection
     session.server.stats.active_listeners.fetch_sub(1, Ordering::Release);
@@ -69,11 +118,12 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: &Request<'a>
 }
 
 #[inline(always)]
-pub async fn client_broadcast<'a>(session: &mut ClientSession, request: &Request<'a>,
+pub async fn client_broadcast<'a>(session: &mut ClientSession,
                                   props: Arc<IcyProperties>, mut stream: Receiver<Vec<u8>>,
                                   mut meta_stream: Receiver<Vec<u8>>, mut mover: Receiver<MoveClientsCommand>,
-                                  stats: &SourceStats) -> Result<()> {
-    if utils::get_header("icy-metadata", &request.headers).unwrap_or(b"0") == b"1" {
+                                  stats: &SourceStats, metadata: bool, id: &mut Uuid,
+                                  clients: &mut Arc<RwLock<HashMap<Uuid, Client>>>) -> Result<()> {
+    if metadata {
         response::ok_200_icy_metadata(
             &mut session.stream,
             &session.server.config.info.id,
@@ -145,9 +195,7 @@ pub async fn client_broadcast<'a>(session: &mut ClientSession, request: &Request
                         },
                         MoveClientsType::Move => {
                             // Otherwise we move right away
-                            stream = v.broadcast.clone();
-                            meta_stream = v.meta_broadcast.clone();
-                            mover = v.move_listeners_receiver.clone();
+                            change_mount(&mut stream, &mut meta_stream, &mut mover, &v, id, clients).await;
                         }
                     },
                     Err(RecvError::Lagged(_)) => (),
@@ -157,15 +205,42 @@ pub async fn client_broadcast<'a>(session: &mut ClientSession, request: &Request
         };
 
         if let Some(v) = fallback.take() {
-            stream = v.broadcast.clone();
-            meta_stream = v.meta_broadcast.clone();
-            mover = v.move_listeners_receiver.clone();
+            change_mount(&mut stream, &mut meta_stream, &mut mover, &v, id, clients).await;
             continue;
         }
+        // If we don't have any fallback, it is fine to keep this client in list of active clients
+        // of mount, because it will be cleaned up by source task dropping the whole hashmap
         break;
     };
 
     Ok(())
+}
+
+async fn change_mount(stream: &mut Receiver<Vec<u8>>, meta_stream: &mut Receiver<Vec<u8>>,
+                      mover: &mut Receiver<MoveClientsCommand>,
+                      new: &MoveClientsCommand, id: &mut Uuid,
+                      clients: &mut Arc<RwLock<HashMap<Uuid, Client>>>) {
+    // changing streams that we actually listen to
+    *stream      = new.broadcast.clone();
+    *meta_stream = new.meta_broadcast.clone();
+    *mover       = new.move_listeners_receiver.clone();
+
+    // We also need to remove ourselves from clients list of old mountpoint
+    // And add ourselves to new one
+    let client = clients.write().await.remove(id)
+        .expect("Client should still by in mountpoint clients hashmap");
+    
+    // Now we move to new clients list
+    *clients     = new.clients.clone();
+    let mut lock = clients.write().await;
+    loop {
+        if lock.contains_key(&*id) {
+            *id = uuid::Uuid::new_v4();
+            continue;
+        }
+        lock.insert(*id, client);
+        break;
+    };
 }
 
 pub async fn handle(mut session: ClientSession) {
@@ -195,6 +270,6 @@ pub async fn handle(mut session: ClientSession) {
     match _type {
         RequestType::AdminRequest(v) => admin::handle_request(session, &request, v).await,
         RequestType::SourceRequest(v) => source::handle(session, &request, v).await,
-        RequestType::ListenRequest(v) => handle_client(session, &request, v).await
+        RequestType::ListenRequest(v) => handle_client(session, request, v).await
     }.ok();
 }
