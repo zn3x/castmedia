@@ -18,7 +18,8 @@ pub struct Request<'a> {
 pub enum RequestType {
     SourceRequest(SourceRequest),
     ListenRequest(ListenRequest),
-    AdminRequest(AdminRequest)
+    AdminRequest(AdminRequest),
+    ApiRequest(ApiRequest)
 }
 
 #[derive(Debug)]
@@ -37,6 +38,12 @@ pub struct SourceRequest {
 #[derive(Debug)]
 pub struct ListenRequest {
     pub mountpoint: String
+}
+
+#[derive(Debug)]
+pub struct ApiRequest {
+    pub path: String,
+    pub queries: Vec<Query>
 }
 
 async fn read_request_header(stream: &mut Stream, buf: &mut Vec<u8>, max_len: usize) -> Result<()> {
@@ -114,6 +121,8 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
                 let p    = path.split("?").collect::<Vec<&str>>();
                 return Ok(RequestType::AdminRequest(AdminRequest { path: p[0].to_owned(), queries, auth }));
             } else if source_id.starts_with("/api/") {
+                let p    = path.split("?").collect::<Vec<&str>>();
+                return Ok(RequestType::ApiRequest(ApiRequest { path: p[0].to_owned(), queries }));
             }
 
             if !session.server.sources.read().await.contains_key(&source_id) {

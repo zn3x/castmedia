@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     server::ClientSession,
-    request::{Request, AdminRequest}, response::{self, ChunkedResponse}, auth, utils, stream::broadcast_metadata, source::{MoveClientsCommand, MoveClientsType}
+    request::AdminRequest, response::{self, ChunkedResponse}, auth, utils, stream::broadcast_metadata, source::{MoveClientsCommand, MoveClientsType}
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
@@ -303,7 +303,7 @@ async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<(
 }
 
 
-pub async fn handle_request<'a>(mut session: ClientSession, _request: &Request<'a>, req: AdminRequest) -> Result<()> {
+pub async fn handle_request<'a>(mut session: ClientSession, req: AdminRequest) -> Result<()> {
     session.server.stats.admin_api_connections.fetch_add(1, Ordering::Relaxed);
     // Handling /admin requests
     // In each path we must first check identity before proceeding todo anything
@@ -311,26 +311,24 @@ pub async fn handle_request<'a>(mut session: ClientSession, _request: &Request<'
         // Mount specific requests that an admin or source with it's own mountpoint can perform:
         //
         // Update metadata for a mount point
-        "/admin/metadata" => update_metadata(&mut session, req).await?,
+        "/admin/metadata" => update_metadata(&mut session, req).await,
         // Changing fallback for a mount
-        "/admin/fallbacks" => update_fallback(&mut session, req).await?,
+        "/admin/fallbacks" => update_fallback(&mut session, req).await,
 
         // Admin only access:
         //
         // General server stats
-        "/admin/stats" => stats(&mut session, req).await?,
+        "/admin/stats" => stats(&mut session, req).await,
         // Fetch all mounts with their info
-        "/admin/listmounts" => list_mounts(&mut session, req).await?,
+        "/admin/listmounts" => list_mounts(&mut session, req).await,
         // Move clients from one mount to another
-        "/admin/moveclients" => move_clients(&mut session, req).await?,
+        "/admin/moveclients" => move_clients(&mut session, req).await,
         // Kill a source mountpoint
-        "/admin/killsource" => kill_source(&mut session, req).await?,
+        "/admin/killsource" => kill_source(&mut session, req).await,
         // List listeners of a specific mountpoint
-        "/admin/listclients" => list_clients(&mut session, req).await?,
+        "/admin/listclients" => list_clients(&mut session, req).await,
         // Kill a specific listener
-        "/admin/killclient" => kill_client(&mut session, req).await?,
-        _ => response::not_found(&mut session.stream, &session.server.config.info.id).await?
+        "/admin/killclient" => kill_client(&mut session, req).await,
+        _ => response::not_found(&mut session.stream, &session.server.config.info.id).await
     }
-
-    Ok(())
 }

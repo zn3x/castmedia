@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     server::ClientSession,
-    request::{read_request, Request, RequestType, ListenRequest}, source::{self, IcyProperties, SourceStats, MoveClientsCommand, MoveClientsType}, response, utils, admin
+    request::{read_request, Request, RequestType, ListenRequest}, source::{self, IcyProperties, SourceStats, MoveClientsCommand, MoveClientsType}, response, utils, admin, api
 };
 
 pub struct Client {
@@ -290,9 +290,10 @@ pub async fn handle(mut session: ClientSession) {
         };
     }
 
-    match _type {
-        RequestType::AdminRequest(v) => admin::handle_request(session, &request, v).await,
+    _ = match _type {
+        RequestType::AdminRequest(v)  => admin::handle_request(session, v).await,
+        RequestType::ApiRequest(v)    => api::handle_request(session, v).await,
         RequestType::SourceRequest(v) => source::handle(session, &request, v).await,
-        RequestType::ListenRequest(v) => handle_client(session, request, v).await
-    }.ok();
+        RequestType::ListenRequest(v) => handle_client(session, request, v).await,
+    };
 }
