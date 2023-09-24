@@ -1,9 +1,10 @@
+use std::net::SocketAddr;
+
 use serde::{Serialize, Deserialize};
 use tracing::{error, info};
 
 // Sane defaults for CastRadio
-const ADDR: &str             = "127.0.0.1";
-const PORT: u16              = 9000;
+const BIND: &str             = "127.0.0.1:9000";
 const METAINT: usize         = 32000;
 
 const SERVER_ID: &str        = "CastRadio 0.1.0";
@@ -19,8 +20,7 @@ const SOURCE_TIMEOUT: u64    = 10000;
 const HTTP_MAX_LEN: usize    = 8192;
 
 const ADMINACC_ENABLED: bool = true;
-const ADMINACC_ADDR: &str    = ADDR;
-const ADMINACC_PORT: u16     = 9100;
+const ADMINACC_BIND: &str    = "127.0.0.1:9100";
 
 /// Server configuration
 #[derive(Serialize, Deserialize)]
@@ -46,8 +46,7 @@ pub struct ServerSettings {
 #[derive(Serialize, Deserialize)]
 pub struct ServerAddress {
     /// Address to bind to, must be a valid ipv4/ipv6 of an interface
-    pub addr: String,
-    pub port: u16
+    pub bind: SocketAddr,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -146,7 +145,7 @@ impl Default for AdminAccess {
     }
 }
 
-fn default_val_address() -> Vec<ServerAddress> { vec![ ServerAddress { addr: ADDR.to_owned(), port: PORT } ] }
+fn default_val_address() -> Vec<ServerAddress> { vec![ ServerAddress { bind: BIND.parse().expect("Should be a valid socket address") } ] }
 fn default_val_metaint() -> usize { METAINT }
 fn default_val_info() -> ServerInfo { ServerInfo::default() }
 fn default_val_limits() -> ServerLimits { ServerLimits::default() }
@@ -165,7 +164,7 @@ fn default_val_limit_source_timeout() -> u64 { SOURCE_TIMEOUT }
 fn default_val_limit_http_max_len() -> usize { HTTP_MAX_LEN }
 
 fn default_val_adminacc_enabled() -> bool { ADMINACC_ENABLED }
-fn default_val_adminacc_address() -> ServerAddress { ServerAddress { addr: ADMINACC_ADDR.to_owned(), port: ADMINACC_PORT } }
+fn default_val_adminacc_address() -> ServerAddress { ServerAddress { bind: ADMINACC_BIND.parse().expect("Should be a valid socket address") } }
 
 impl ServerSettings {
     pub fn load(config_path: &str) -> Self {

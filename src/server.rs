@@ -110,14 +110,13 @@ async fn accept_connections(serv: Arc<Server>, listener: TcpListener, admin_addr
     }
 }
 
-async fn bind(addr: &str, port: u16) -> TcpListener {
-    match TcpListener::bind(&format!("{}:{}", addr, port)).await {
+async fn bind(bind: &SocketAddr) -> TcpListener {
+    match TcpListener::bind(bind).await {
         Ok(v) => {
-            info!("Listening on {}:{}", addr, port);
             v
         },
         Err(e) => {
-            error!("Binding to {}:{} failed: {}", addr, port, e);
+            error!("Binding to {}:{} failed: {}", bind.ip(), bind.port(), e);
             std::process::exit(1);
         }
     }
@@ -135,10 +134,11 @@ pub async fn listener(config: ServerSettings) {
     let mut set = JoinSet::new();
 
     if serv.config.admin_access.enabled {
-        let listener = bind(
-            &serv.config.admin_access.address.addr,
-            serv.config.admin_access.address.port
+        let bind_addr = &serv.config.admin_access.address.bind;
+        let listener  = bind(
+            bind_addr,
         ).await;
+        info!("Listening on {}:{} (Admin interface)", bind_addr.ip(), bind_addr.port());
         set.spawn(accept_connections(serv.clone(), listener, true));
     }
 
@@ -148,7 +148,8 @@ pub async fn listener(config: ServerSettings) {
     }
 
     for addr in &serv.config.address {
-        let listener = bind(&addr.addr, addr.port).await;
+        let listener = bind(&addr.bind).await;
+        info!("Listening on {}:{}", addr.bind.ip(), addr.bind.port());
         set.spawn(accept_connections(serv.clone(), listener, false));
     }
 

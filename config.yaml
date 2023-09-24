@@ -1,14 +1,20 @@
+# Specify listening addresses where we will accept clients incoming connections
 address:
-- addr: 127.0.0.1
-  port: 9000
+- bind: 127.0.0.1:9000
+# In icecast, regularly broadcast metadata update to clients, this indicates bytes interval between
+# metadata broadcasts.
 metadata_interval: 32000
+# General server info
 info:
   id: CastRadio 0.1.0
   admin: admin@localhost
   location: '1.064646'
   description: Internet radio!
+# Defining server general limits
 limits:
+  # Max clients server will ever accept, this includes admin connections
   clients: 400
+  # Max number of sources ever accepted
   sources: 4
   # The most important part
   # How much audio we want to keep in queue for new users
@@ -17,11 +23,14 @@ limits:
   # 320 kilobits = 40_000 bytes
   # 40_000 bytes * 10 seconds = 400_000
   queue_size: 400000
+  # Timeout when reading http request header in milliseconds
   header_timeout: 15000
+  # Timeout awaiting for source steam in milliseconds
   source_timeout: 10000
+  # To avoid large requests from clients that may cause denial of service, we limit request size in bytes
   http_max_len: 8192
+# This is a specific interface for admin access only
 admin_access:
   enabled: true
   address:
-    addr: 127.0.0.1
-    port: 9100
+    bind: 127.0.0.1:9100

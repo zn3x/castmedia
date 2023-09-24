@@ -29,6 +29,11 @@ pub async fn admin_or_source_auth(session: &mut ClientSession, auth: Option<(Str
 }
 
 pub async fn admin_auth(session: &mut ClientSession, auth: Option<(String, String)>) -> Result<String> {
+    /*let admin_access = &session.server.config.admin_access;
+    if admin_access.enabled
+        && admin_access.address.port == session.addr.*/
+
+
     if let Some(v) = auth {
         if v.0.eq("1") && v.1.eq("2") {
             session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
