@@ -12,8 +12,8 @@ use crate::{
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let _   = auth::admin_or_source_auth(session, req.auth).await?;
-    let sid = &session.server.config.info.id;
+    let user_id = auth::admin_or_source_auth(session, req.auth).await?;
+    let sid     = &session.server.config.info.id;
 
     match utils::get_queries_val_for_keys(&["mode", "mount", "song", "url"], &req.queries).as_slice() {
         &[Some(mode), Some(mount), song, url] => {
@@ -24,12 +24,11 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
 
             if let Some(mut source) = session.server.sources.write().await.get_mut(mount) {
                 broadcast_metadata(&mut source, &song, &url).await;
+                info!("Updated mountpoint metadata for {} by {}", mount, user_id);
+                response::ok_200(&mut session.stream, sid).await?;
             } else {
                 response::bad_request(&mut session.stream, sid, "Invalid mountpoint").await?;
-                return Ok(());
             }
-            response::ok_200(&mut session.stream, sid).await?;
-            info!("Updated mountpoint metadata for {}", mount);
         },
         _ => {
             response::bad_request(&mut session.stream, sid, "Metadata update request need valid queries").await?;
@@ -40,17 +39,19 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
 }
 
 async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let _   = auth::admin_or_source_auth(session, req.auth).await?;
-    let sid = &session.server.config.info.id;
+    let user_id = auth::admin_or_source_auth(session, req.auth).await?;
+    let sid     = &session.server.config.info.id;
 
     match utils::get_queries_val_for_keys(&["mount", "fallback"], &req.queries).as_slice() {
         &[Some(mount), fallback] => {
             match session.server.sources.write().await.get_mut(mount) {
-                Some(mount) => {
-                    mount.fallback = match fallback {
+                Some(mount_ref) => {
+                    mount_ref.fallback = match fallback {
                         Some(v) => Some(v.to_owned()),
                         None => None
                     };
+                    info!("New fallback {:?} set for {} by {}", fallback, mount, user_id);
+                    response::ok_200(&mut session.stream, sid).await?;
                 },
                 None => {
                     response::bad_request(&mut session.stream, sid, "Invalid mountpoint").await?;
@@ -124,8 +125,8 @@ async fn stats(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
 }
 
 async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let _   = auth::admin_auth(session, req.auth).await?;
-    let sid = &session.server.config.info.id;
+    let user_id = auth::admin_auth(session, req.auth).await?;
+    let sid     = &session.server.config.info.id;
 
     match utils::get_queries_val_for_keys(&["mount", "destination"], &req.queries).as_slice() {
         &[Some(mount), Some(destination)] => {
@@ -147,8 +148,10 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
             }
 
             match session.server.sources.read().await.get(mount) {
-                Some(mount) => {
-                    mount.move_listeners_sender.clone().send(Arc::new(move_comm));
+                Some(mount_ref) => {
+                    mount_ref.move_listeners_sender.clone().send(Arc::new(move_comm));
+                    info!("Clients in {} moved to {} by admin {}", mount, destination, user_id);
+                    response::ok_200(&mut session.stream, sid).await?;
                 },
                 None => {
                     response::bad_request(&mut session.stream, sid, "Mount not found").await?;
@@ -181,6 +184,7 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
                 Some(kill_switch) => {
                     _ = kill_switch.send(());
                     info!("Source killed for mount {} by admin {}", mount, user_id);
+                    response::ok_200(&mut session.stream, sid).await?;
                 },
                 None => {
                     // This might really only happen in a small interval between a killsource
@@ -283,6 +287,7 @@ async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<(
                 Some(kill_switch) => {
                     _ = kill_switch.send(());
                     info!("Client {} killed for mount {} by admin {}", id, mount, user_id);
+                    response::ok_200(&mut session.stream, sid).await?;
                 },
                 None => {
                     response::bad_request(&mut session.stream, sid, "Client already killed").await?;

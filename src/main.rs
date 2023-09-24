@@ -6,6 +6,7 @@ mod source;
 mod response;
 mod stream;
 mod admin;
+mod api;
 mod auth;
 mod utils;
 
