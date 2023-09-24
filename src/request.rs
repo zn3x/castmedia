@@ -117,6 +117,12 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
             let source_id = utils::clean_path(&path);
 
             if source_id.starts_with("/admin/") {
+                if !session.admin_addr {
+                    // If this is not an admin interface we properly block this request
+                    response::not_found(&mut session.stream, &session.server.config.info.id).await?;
+                    return Err(anyhow::Error::msg("Attempt to access admin api from public interface"));
+                }
+
                 let auth = get_basic_auth(&request.headers)?;
                 let p    = path.split("?").collect::<Vec<&str>>();
                 return Ok(RequestType::AdminRequest(AdminRequest { path: p[0].to_owned(), queries, auth }));
