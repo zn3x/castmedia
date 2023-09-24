@@ -61,6 +61,8 @@ async fn mount_info(session: &mut ClientSession, req: ApiRequest) -> Result<()> 
 }
 
 pub async fn handle_request<'a>(mut session: ClientSession, req: ApiRequest) -> Result<()> {
+    session.server.stats.api_connections.fetch_add(1, Ordering::Relaxed);
+
     match req.path.as_str() {
         "/api/serverinfo" => server_info(&mut session).await,
         "/api/mountinfo" => mount_info(&mut session, req).await,
