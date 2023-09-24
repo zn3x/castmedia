@@ -104,30 +104,30 @@ pub struct Source {
     /// Fallback mountpoint in case this one is down
     pub fallback: Option<String>,
     /// The stream broadcast receiver
-    pub broadcast: Receiver<Vec<u8>>,
+    pub broadcast: Receiver<Arc<Vec<u8>>>,
     /// Receiver stream for metadata broadcast
-    pub meta_broadcast: Receiver<Vec<u8>>,
+    pub meta_broadcast: Receiver<Arc<Vec<u8>>>,
     /// Sender stream for metadata broadcast
     /// Needed so we don't create a new sender every time
     /// we get metadata update
-    pub meta_broadcast_sender: Sender<Vec<u8>>,
+    pub meta_broadcast_sender: Sender<Arc<Vec<u8>>>,
     /// Broadcast to move all clients in mountpoint to another one
-    pub move_listeners_receiver: Receiver<MoveClientsCommand>,
-    pub move_listeners_sender: Sender<MoveClientsCommand>,
+    pub move_listeners_receiver: Receiver<Arc<MoveClientsCommand>>,
+    pub move_listeners_sender: Sender<Arc<MoveClientsCommand>>,
     /// Send a command to kill source
     pub kill: Option<oneshot::Sender<()>>
 }
 
 pub struct SourceBroadcast {
-    pub audio: Sender<Vec<u8>>,
-    pub metadata: Sender<Vec<u8>>
+    pub audio: Sender<Arc<Vec<u8>>>,
+    pub metadata: Sender<Arc<Vec<u8>>>
 }
 
 /// We can remotely command clients to change mountpoint using a variant of move commands
 pub struct MoveClientsCommand {
-    pub broadcast: Receiver<Vec<u8>>,
-    pub meta_broadcast: Receiver<Vec<u8>>,
-    pub move_listeners_receiver: Receiver<MoveClientsCommand>,
+    pub broadcast: Receiver<Arc<Vec<u8>>>,
+    pub meta_broadcast: Receiver<Arc<Vec<u8>>>,
+    pub move_listeners_receiver: Receiver<Arc<MoveClientsCommand>>,
     pub clients: Arc<RwLock<HashMap<Uuid, Client>>>,
     pub move_type: MoveClientsType
 }

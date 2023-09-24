@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::sync::{atomic::Ordering, Arc};
 
 use anyhow::Result;
 use hashbrown::HashMap;
@@ -148,7 +148,7 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
 
             match session.server.sources.read().await.get(mount) {
                 Some(mount) => {
-                    mount.move_listeners_sender.clone().send(move_comm);
+                    mount.move_listeners_sender.clone().send(Arc::new(move_comm));
                 },
                 None => {
                     response::bad_request(&mut session.stream, sid, "Mount not found").await?;

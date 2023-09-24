@@ -144,7 +144,7 @@ pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, ur
     } as u8;
 
     source.meta_broadcast_sender
-        .send(vec.clone());
+        .send(Arc::new(vec.clone()));
 }
 
 // Getting a future lifetime error, a workaround for now
@@ -192,13 +192,13 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
         if let Some(mut mount) = mount {
             if let Some(fallback) = mount.fallback {
                 if let Some(fallback_mount) = server.sources.read().await.get(&fallback) {
-                    mount.move_listeners_sender.send(MoveClientsCommand {
+                    mount.move_listeners_sender.send(Arc::new(MoveClientsCommand {
                         broadcast: fallback_mount.broadcast.clone(),
                         meta_broadcast: fallback_mount.meta_broadcast.clone(),
                         move_listeners_receiver: fallback_mount.move_listeners_receiver.clone(),
                         clients: fallback_mount.clients.clone(),
                         move_type: MoveClientsType::Fallback
-                    });
+                    }));
                 }
             }
         }
@@ -281,7 +281,7 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool,
                 }
 
                 // Now we push buffer to broadcast queue
-                broadcast.audio.send(slice);
+                broadcast.audio.send(Arc::new(slice));
             },
             Err(e) => {
                 // A unrecoverable error occurred, halt reading

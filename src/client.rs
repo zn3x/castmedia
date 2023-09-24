@@ -5,7 +5,7 @@ use std::{
 use serde::Serialize;
 use anyhow::Result;
 use hashbrown::HashMap;
-use llq::{errors::RecvError, broadcast::Receiver};
+use llq::broadcast::{Receiver, RecvError};
 use tokio::{io::AsyncWriteExt, sync::{RwLock, oneshot}};
 use tracing::{info, error};
 use uuid::Uuid;
@@ -134,8 +134,8 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: Request<'a>,
 
 #[inline(always)]
 pub async fn client_broadcast<'a>(session: &mut ClientSession,
-                                  props: Arc<IcyProperties>, mut stream: Receiver<Vec<u8>>,
-                                  mut meta_stream: Receiver<Vec<u8>>, mut mover: Receiver<MoveClientsCommand>,
+                                  props: Arc<IcyProperties>, mut stream: Receiver<Arc<Vec<u8>>>,
+                                  mut meta_stream: Receiver<Arc<Vec<u8>>>, mut mover: Receiver<Arc<MoveClientsCommand>>,
                                   stats: &SourceStats, metadata: bool, id: &mut Uuid,
                                   clients: &mut Arc<RwLock<HashMap<Uuid, Client>>>,
                                   client_stats: &ClientStats) -> Result<()> {
@@ -234,8 +234,8 @@ pub async fn client_broadcast<'a>(session: &mut ClientSession,
     Ok(())
 }
 
-async fn change_mount(stream: &mut Receiver<Vec<u8>>, meta_stream: &mut Receiver<Vec<u8>>,
-                      mover: &mut Receiver<MoveClientsCommand>,
+async fn change_mount(stream: &mut Receiver<Arc<Vec<u8>>>, meta_stream: &mut Receiver<Arc<Vec<u8>>>,
+                      mover: &mut Receiver<Arc<MoveClientsCommand>>,
                       client_stats: &ClientStats,
                       new: &MoveClientsCommand, id: &mut Uuid,
                       clients: &mut Arc<RwLock<HashMap<Uuid, Client>>>) {
