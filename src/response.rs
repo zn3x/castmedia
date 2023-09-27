@@ -21,7 +21,7 @@ async fn server_info(stream: &mut Stream) -> Result<()> {
 pub async fn method_not_allowed(stream: &mut Stream, server_id: &str) -> Result<()> {
     stream.write_all(format!("HTTP/1.0 405 Method Not Allowed\r\n\
 Server: {}\r\n\
-Connection: Close\r\n",
+Connection: close\r\n",
     server_id).as_bytes()).await?;
 
     server_info(stream).await?;
@@ -31,7 +31,7 @@ Connection: Close\r\n",
 pub async fn not_found(stream: &mut Stream, server_id: &str) -> Result<()> {
     stream.write_all(format!("HTTP/1.0 404 File Not Found\r\n\
 Server: {}\r\n\
-Connection: Close\r\n",
+Connection: close\r\n",
     server_id).as_bytes()).await?;
 
     server_info(stream).await?;
@@ -42,7 +42,7 @@ pub async fn authentication_needed(stream: &mut Stream, server_id: &str) -> Resu
     stream.write_all(format!("HTTP/1.0 401 Authorization Required\r\n\
 Server: {}\r\n\
 WWW-Authenticate: Basic realm=\"Icy Server\"\r\n\
-Connection: Close\r\n",
+Connection: close\r\n",
     server_id).as_bytes()).await?;
 
     server_info(stream).await?;
@@ -52,7 +52,7 @@ Connection: Close\r\n",
 pub async fn internal_error(stream: &mut Stream, server_id: &str) -> Result<()> {
     stream.write_all(format!("HTTP/1.0 500 Internal Server Error\r\n\
 Server: {}\r\n\
-Connection: Close\r\n",
+Connection: close\r\n",
     server_id).as_bytes()).await?;
 
     server_info(stream).await?;
@@ -64,7 +64,7 @@ pub async fn forbidden(stream: &mut Stream, server_id: &str, message: &str) -> R
 Server: {}\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 Content-Length: {}\r\n\
-Connection: Close\r\n",
+Connection: close\r\n",
         server_id,
         message.len()
     ).as_bytes()).await?;
@@ -81,7 +81,7 @@ pub async fn bad_request(stream: &mut Stream, server_id: &str, message: &str) ->
 Server: {}\r\n\
 Content-Type: text/plain; charset=utf-8\r\n\
 Content-Length: {}\r\n\
-Connection: Close\r\n",
+Connection: close\r\n",
         server_id,
         message.len()
     ).as_bytes()).await?;
@@ -96,7 +96,7 @@ Connection: Close\r\n",
 pub async fn ok_200(stream: &mut Stream, server_id: &str) -> Result<()> {
     stream.write_all(format!("HTTP/1.0 200 OK\r\n\
 Server: {}\r\n\
-Connection: Close\r\n",
+Connection: close\r\n",
     server_id).as_bytes()).await?;
 
     server_info(stream).await?;
@@ -106,7 +106,7 @@ Connection: Close\r\n",
 pub async fn ok_200_json_body(stream: &mut Stream, server_id: &str, body: &[u8]) -> Result<()> {
     stream.write_all(format!("HTTP/1.0 200 OK\r\n\
 Server: {}\r\n\
-Connection: Close\r\n\
+Connection: close\r\n\
 Content-Length: {}\r\n\
 Content-Type: application/json; charset=utf-8\r\n",
         server_id,
@@ -124,7 +124,7 @@ impl ChunkedResponse {
     pub async fn new(stream: &mut Stream, server_id: &str) -> Result<Self> {
         stream.write_all(format!("HTTP/1.0 200 OK\r\n\
 Server: {}\r\n\
-Connection: Close\r\n\
+Connection: close\r\n\
 Transfer-Encoding: Chunked\r\n\
 Content-Type: application/json; charset=utf-8\r\n",
             server_id).as_bytes()).await?;
@@ -150,7 +150,7 @@ Content-Type: application/json; charset=utf-8\r\n",
 pub async fn ok_200_icy_metadata(stream: &mut Stream, server_id: &str, properties: &IcyProperties, metaint: usize) -> Result<()> {
     stream.write_all(format!("HTTP/1.1 200 OK\r\n\
 Server: {}\r\n\
-Connection: Close\r\n\
+Connection: close\r\n\
 icy-metaint: {}\r\n\
 icy-description: {}\r\n\
 icy-genre: {}\r\n\
