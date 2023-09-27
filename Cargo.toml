@@ -9,7 +9,11 @@ edition = "2021"
 llq = { git = "https://codeberg.org/zesty/LLQ" }
 
 tokio = { version = "1.29.0", features = [ "full" ] }
-async-trait = "0.1.71"
+tokio-native-tls = "0.3.1" 
+
+inotify = "0.10"
+
+futures-util = "0.3.28"
 
 hashbrown = { version = "0.14.0", features = [ "serde" ] }
 

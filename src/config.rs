@@ -47,6 +47,14 @@ pub struct ServerSettings {
 pub struct ServerAddress {
     /// Address to bind to, must be a valid ipv4/ipv6 of an interface
     pub bind: SocketAddr,
+    pub tls: Option<TlsIdentity>
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TlsIdentity {
+    pub enabled: bool, 
+    pub cert: String,
+    pub pass: String
 }
 
 #[derive(Serialize, Deserialize)]
@@ -145,7 +153,7 @@ impl Default for AdminAccess {
     }
 }
 
-fn default_val_address() -> Vec<ServerAddress> { vec![ ServerAddress { bind: BIND.parse().expect("Should be a valid socket address") } ] }
+fn default_val_address() -> Vec<ServerAddress> { vec![ ServerAddress { bind: BIND.parse().expect("Should be a valid socket address"), tls: None } ] }
 fn default_val_metaint() -> usize { METAINT }
 fn default_val_info() -> ServerInfo { ServerInfo::default() }
 fn default_val_limits() -> ServerLimits { ServerLimits::default() }
@@ -164,7 +172,7 @@ fn default_val_limit_source_timeout() -> u64 { SOURCE_TIMEOUT }
 fn default_val_limit_http_max_len() -> usize { HTTP_MAX_LEN }
 
 fn default_val_adminacc_enabled() -> bool { ADMINACC_ENABLED }
-fn default_val_adminacc_address() -> ServerAddress { ServerAddress { bind: ADMINACC_BIND.parse().expect("Should be a valid socket address") } }
+fn default_val_adminacc_address() -> ServerAddress { ServerAddress { bind: ADMINACC_BIND.parse().expect("Should be a valid socket address"), tls: None } }
 
 impl ServerSettings {
     pub fn load(config_path: &str) -> Self {

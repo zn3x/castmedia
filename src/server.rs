@@ -1,16 +1,21 @@
-use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}, net::SocketAddr};
+use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}, net::SocketAddr, hash::BuildHasher};
 use chrono::{DateTime, Local};
+use futures_util::StreamExt;
 use tokio::{
     net::{TcpListener, TcpStream},
     task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock}
 };
+use tokio_native_tls::{native_tls, TlsStream, TlsAcceptor};
 use tracing::{info, error};
-use hashbrown::HashMap;
+use hashbrown::{HashMap, hash_map::DefaultHashBuilder};
+use inotify::{Inotify, WatchMask};
+use anyhow::Result;
 
-use crate::{config::ServerSettings, client, source::Source};
+use crate::{config::{ServerSettings, TlsIdentity}, client, source::Source};
 
 pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {}
 impl Socket for BufStream<TcpStream> {}
+impl Socket for BufStream<TlsStream<TcpStream>> {}
 pub type Stream = Box<dyn Socket>;
 
 /// Struct holding all info related to server
@@ -110,6 +115,118 @@ async fn accept_connections(serv: Arc<Server>, listener: TcpListener, admin_addr
     }
 }
 
+async fn tls_accept_connections(serv: Arc<Server>, listener: TcpListener, admin_addr: bool) {
+    // First we retrieve tls identity
+    let mut tls_identity = None;
+    if admin_addr {
+        tls_identity = Some(serv.config.admin_access.address.tls.as_ref().unwrap());
+    } else {
+        let local_addr = listener.local_addr().expect("Should be able to get local address");
+        for addr in &serv.config.address {
+            if addr.bind.eq(&local_addr) {
+                tls_identity = Some(addr.tls.as_ref().unwrap());
+                break;
+            }
+        }
+    }
+    let tls_identity = tls_identity.expect("Should be able to find Tls identity");
+    
+    let inotify = Inotify::init()
+        .expect("Should be able to initialize inotify");
+    inotify.watches().add(std::path::Path::new(&tls_identity.cert), WatchMask::CREATE | WatchMask::MODIFY)
+        .expect("Couldn't create inotify watch for tls identity file");
+    let mut tls_update_stream = inotify.into_event_stream([0u8; 1024])
+        .expect("Couldn't create inotify tls identity update stream");
+
+    let mut tls_acceptor;
+    let mut tls_id_hash         = 0u64;
+    (tls_id_hash, tls_acceptor) = load_cert(tls_identity, tls_id_hash).await
+        .expect("Failed loading Tls identity")
+        .unwrap();
+
+    loop {
+        tokio::select! {
+            _ = tls_connection_acceptor(&serv, &listener, admin_addr, &tls_acceptor) => {
+                continue;
+            },
+            u = tls_update_stream.next() => {
+                if u.is_none() {
+                    panic!("Inotify notifications suddenly stopped.");
+                } else if let Some(Err(e)) = u {
+                    error!("Tls identity {} inotify error: {}", tls_identity.cert, e);
+                    continue;
+                }
+            }
+        }
+
+        match load_cert(tls_identity, tls_id_hash).await {
+            Ok(Some(v)) => {
+                tls_id_hash  = v.0;
+                tls_acceptor = v.1;
+                info!("Tls identity from {} reloaded", tls_identity.cert);
+            },
+            Ok(None) => {},
+            Err(e) => {
+                error!("Couldn't reload Tls identity from {}, sticking to old identity. Reason: {}", tls_identity.cert, e);
+            }
+        }
+    }
+}
+
+async fn load_cert(tls_identity: &TlsIdentity, old_hash: u64) -> Result<Option<(u64, TlsAcceptor)>> {
+    let tls_slurp = tokio::fs::read(&tls_identity.cert).await?;
+    // In order not to keep reloading same tls identity, we keep a hash for it
+    let hash      = DefaultHashBuilder::default().hash_one(tls_slurp.as_slice());
+    if hash.eq(&old_hash) {
+        return Ok(None);
+    }
+    let tls_id    = native_tls::Identity::from_pkcs12(tls_slurp.as_slice(), &tls_identity.pass)?;
+    
+    Ok(Some((
+        hash,
+        tokio_native_tls::TlsAcceptor::from(native_tls::TlsAcceptor::new(tls_id)?)
+    )))
+}
+
+#[inline]
+async fn tls_connection_acceptor(serv: &Arc<Server>, listener: &TcpListener, admin_addr: bool, tls_acceptor: &TlsAcceptor) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, addr)) => {
+                let tls_acc_clone = tls_acceptor.clone();
+                let serv_clone    = serv.clone();
+                tokio::spawn(async move {
+                    serv_clone.stats.connections.fetch_add(1, Ordering::Relaxed);
+                    // Here we are trying to acquire the semaphore before handling connection
+                    // If we can't, we already hit the max number of clients allowed and we can't
+                    // do nothing
+                    let sem = serv_clone.max_clients.clone();
+                    let aq  = sem.try_acquire();
+                    if let Ok(_guard) = aq {
+                        let tls_stream = match tls_acc_clone.accept(stream).await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("Tls connection failed with {}: {}", addr, e);
+                                return;
+                            }
+                        };
+                        client::handle(ClientSession {
+                            admin_addr,
+                            server: serv_clone,
+                            // Use bufferer for socket to reduce syscalls we make
+                            stream: Box::new(BufStream::new(tls_stream)),
+                            addr
+                        }).await;
+                    }
+                });
+            },
+            Err(e) => {
+                error!("Failed to accept connection: {}", e);
+            }
+        }
+    }
+}
+
 async fn bind(bind: &SocketAddr) -> TcpListener {
     match TcpListener::bind(bind).await {
         Ok(v) => {
@@ -138,8 +255,13 @@ pub async fn listener(config: ServerSettings) {
         let listener  = bind(
             bind_addr,
         ).await;
-        info!("Listening on {}:{} (Admin interface)", bind_addr.ip(), bind_addr.port());
-        set.spawn(accept_connections(serv.clone(), listener, true));
+        let tls = serv.config.admin_access.address.tls.as_ref().is_some_and(|x| x.enabled);
+        info!("Listening on {}:{} (Admin interface) (Tls:{tls})", bind_addr.ip(), bind_addr.port());
+        if tls {
+            set.spawn(tls_accept_connections(serv.clone(), listener, true));
+        } else {
+            set.spawn(accept_connections(serv.clone(), listener, true));
+        }
     }
 
     if serv.config.address.is_empty() {
@@ -149,8 +271,13 @@ pub async fn listener(config: ServerSettings) {
 
     for addr in &serv.config.address {
         let listener = bind(&addr.bind).await;
-        info!("Listening on {}:{}", addr.bind.ip(), addr.bind.port());
-        set.spawn(accept_connections(serv.clone(), listener, false));
+        let tls = addr.tls.as_ref().is_some_and(|x| x.enabled);
+        info!("Listening on {}:{} (Tls:{tls})", addr.bind.ip(), addr.bind.port());
+        if tls {
+            set.spawn(tls_accept_connections(serv.clone(), listener, false));
+        } else {
+            set.spawn(accept_connections(serv.clone(), listener, false));
+        }
     }
 
     {
