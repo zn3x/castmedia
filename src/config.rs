@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use serde::{Serialize, Deserialize};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 // Sane defaults for CastRadio
 const BIND: &str             = "127.0.0.1:9000";
@@ -195,11 +195,44 @@ impl ServerSettings {
             }
         }
     }
+
     pub fn create_default(config_path: &str) {
         let settings = serde_yaml::to_string(&Self::default()).expect("Can't serialize server settings");
         match std::fs::write(config_path, &settings) {
             Ok(_) => info!("Default config file written to {}", config_path),
             Err(e) => error!("Creating default config at {} failed: {}", config_path, e)
+        }
+    }
+
+    /// Method to verify if current settings are sane
+    pub fn verify(config: &ServerSettings) {
+        // First we verify no duplicate addresses are supplied to us
+        let mut addresses = config.address.iter().map(|x| x).collect::<Vec<_>>();
+        if config.admin_access.enabled {
+            addresses.push(&config.admin_access.address);
+        }
+        for address in &addresses {
+            let address = *address;
+            for address1 in &addresses {
+                let address1 = *address1;
+                if &address.bind as *const _ != &address1.bind as *const _
+                    && address.bind.eq(&address1.bind) {
+                    error!("Two addresses can't have same bind tuple [{}].", address.bind);
+                }
+            }
+            if let Some(tls) = address.tls.as_ref() {
+                if !std::path::Path::new(&tls.cert).is_file() {
+                    error!("Tls identity {} for [{}] not found.", tls.cert, address.bind);
+                }
+            }
+        }
+
+        // Verifying also if other settings are sane
+        if config.metaint < 10000 {
+            warn!("metadata_interval [value:{}] interval is too small, this may degrade performance.", config.metaint);
+        }
+        if config.limits.http_max_len > 16000 {
+            warn!("http_max_len [value:{}] is too big, this may be used to deny service.", config.limits.http_max_len);
         }
     }
 }

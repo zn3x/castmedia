@@ -35,3 +35,5 @@ tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = [ "env-filter" ] }
 
 symphonia = { version = "0.5.3", features = [ "mp3" ] }
+
+arg = "0.4.1"
