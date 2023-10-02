@@ -61,7 +61,7 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: Request<'a>,
         let new_count = session.server.stats.active_listeners.fetch_add(1, Ordering::Acquire) + 1;
         if new_count > session.server.config.limits.listeners {
             // We must not surpass limit of possible listeners
-            session.server.stats.active_listeners.fetch_sub(1, Ordering::Acquire);
+            session.server.stats.active_listeners.fetch_sub(1, Ordering::Release);
             response::internal_error(&mut session.stream, &session.server.config.info.id).await?;
             return Ok(());
         }
