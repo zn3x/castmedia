@@ -14,6 +14,7 @@ const DESCRIPTION: &str      = "Internet radio!";
 
 const MAX_CLIENTS: usize     = 400;
 const MAX_SOURCES: usize     = 4;
+const MAX_LISTENERS: usize   = 370;
 const QUEUE_SIZE: usize      = 102400;
 const HEADER_TIMEOUT: u64    = 15000;
 const SOURCE_TIMEOUT: u64    = 10000;
@@ -81,6 +82,9 @@ pub struct ServerLimits {
     /// Max number of concurrent sources
     #[serde(default = "default_val_limit_sources")]
     pub sources: usize,
+    /// Max number of concurrent listeners
+    #[serde(default = "default_val_limit_listeners")]
+    pub listeners: usize,
     /// The max size the queue for every mountpoint
     /// When a user falls behind this queue, they are moved to the tail of the queue
     /// Or they is disconnected if we can't send data to them
@@ -136,6 +140,7 @@ impl Default for ServerLimits {
         ServerLimits {
             clients: default_val_limit_clients(),
             sources: default_val_limit_sources(),
+            listeners: default_val_limit_listeners(),
             queue_size: default_val_limit_queue_size(),
             header_timeout: default_val_limit_header_timeout(),
             source_timeout: default_val_limit_source_timeout(),
@@ -166,6 +171,7 @@ fn default_val_info_description() -> String { DESCRIPTION.to_owned() }
 
 fn default_val_limit_clients() -> usize { MAX_CLIENTS }
 fn default_val_limit_sources() -> usize { MAX_SOURCES }
+fn default_val_limit_listeners() -> usize { MAX_LISTENERS }
 fn default_val_limit_queue_size() -> usize { QUEUE_SIZE }
 fn default_val_limit_header_timeout() -> u64 { HEADER_TIMEOUT }
 fn default_val_limit_source_timeout() -> u64 { SOURCE_TIMEOUT }
@@ -233,6 +239,9 @@ impl ServerSettings {
         }
         if config.limits.http_max_len > 16000 {
             warn!("http_max_len [value:{}] is too big, this may be used to deny service.", config.limits.http_max_len);
+        }
+        if config.limits.sources + config.limits.listeners > config.limits.clients {
+            error!("limits.sources + limits.listeners should never be bigger than limits.clients");
         }
     }
 }

@@ -19,7 +19,10 @@ info:
 # Defining server general limits
 limits:
   # Max clients server will ever accept, this includes admin connections
+  # This should account for listeners + sources + access to api + admin api access
   clients: 400
+  # Max number of listeners that may concurrently access server
+  listeners: 370
   # Max number of sources ever accepted
   sources: 4
   # The most important part
