@@ -2,7 +2,7 @@ use std::{
     sync::{Arc, atomic::{Ordering, AtomicU64, AtomicI64}},
     time::Duration
 };
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use anyhow::Result;
 use hashbrown::HashMap;
 use llq::broadcast::{Receiver, RecvError};
@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     server::ClientSession,
-    request::{read_request, Request, RequestType, ListenRequest}, source::{self, IcyProperties, SourceStats, MoveClientsCommand, MoveClientsType}, response, utils, admin, api
+    request::{read_request, Request, RequestType, ListenRequest}, source::{self, IcyProperties, SourceStats, MoveClientsCommand, MoveClientsType}, response, utils, admin, api, migrate::{MigrateInfo, MigrateClient, MigrateConnection}
 };
 
 pub struct Client {
@@ -21,7 +21,10 @@ pub struct Client {
     pub stats: Arc<ClientStats>
 }
 
-#[derive(Serialize)]
+#[obake::versioned]
+#[obake(version("0.1.0"))]
+#[obake(derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 pub struct ClientProperties {
     pub user_agent: Option<String>,
     pub metadata: bool
@@ -111,8 +114,9 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: Request<'a>,
         };
     }
 
-    drop(req);
     drop(request);
+
+    let mut migrate_comm = session.server.migrate.clone();
 
     let ret = tokio::select! {
         r = client_broadcast(&mut session, props, stream, meta_stream, mover, 
@@ -122,6 +126,24 @@ pub async fn handle_client<'a>(mut session: ClientSession, request: Request<'a>,
         },
         _ = kill_rx => {
             Err(anyhow::Error::msg("Client killed by admininstrator command"))
+        },
+        migrate = migrate_comm.recv() => {
+            // Safety only task of client will ever remove itself
+            let client = clients.write().await
+                .remove(&id)
+                .expect("Should be able to get Client");
+            // Safety: migrate sender half is NEVER dropped until process exits
+            let migrate = migrate
+                .expect("Got migrate notice with closed mpsc");
+            // Well, can't do nothing if we ran out of memory here
+            if let Ok(info) = postcard::to_stdvec(&MigrateConnection::Client { info: MigrateClient { properties: client.properties } }) {
+                _ = migrate.listener.send(MigrateInfo {
+                    info,
+                    mountpoint: req.mountpoint,
+                    sock: session.stream
+                });
+            }
+            return Ok(());
         }
     };
 

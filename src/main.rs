@@ -9,6 +9,7 @@ mod admin;
 mod api;
 mod auth;
 mod utils;
+mod migrate;
 
 use arg::{Args, ParseError, ParseKind};
 

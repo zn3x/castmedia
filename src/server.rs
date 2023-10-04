@@ -1,9 +1,10 @@
-use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}, net::SocketAddr, hash::BuildHasher};
+use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}, net::SocketAddr, hash::BuildHasher, os::fd::AsRawFd};
 use chrono::{DateTime, Local};
 use futures_util::StreamExt;
+use llq::broadcast::{channel, Receiver, Sender};
 use tokio::{
     net::{TcpListener, TcpStream},
-    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock}
+    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock, Mutex}
 };
 use tokio_native_tls::{native_tls, TlsStream, TlsAcceptor};
 use tracing::{info, error};
@@ -11,11 +12,24 @@ use hashbrown::{HashMap, hash_map::DefaultHashBuilder};
 use inotify::{Inotify, WatchMask};
 use anyhow::Result;
 
-use crate::{config::{ServerSettings, TlsIdentity}, client, source::Source};
+use crate::{config::{ServerSettings, TlsIdentity}, client, source::Source, migrate::MigrateCommand};
 
-pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {}
-impl Socket for BufStream<TcpStream> {}
-impl Socket for BufStream<TlsStream<TcpStream>> {}
+pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {
+    fn fd(&self) -> i32;
+}
+
+impl Socket for BufStream<TcpStream> {
+    fn fd(&self) -> i32 {
+        self.get_ref().as_raw_fd()
+    }
+}
+
+impl Socket for BufStream<TlsStream<TcpStream>> {
+    fn fd(&self) -> i32 {
+        unreachable!("Can't migrate Tls connection")
+    }
+}
+
 pub type Stream = Box<dyn Socket>;
 
 /// Struct holding all info related to server
@@ -26,7 +40,11 @@ pub struct Server {
     /// List of all sources whereas the mountpoint is the key
     pub sources: RwLock<HashMap<String, Source>>,
     /// Server general stats (this excludes calls on /api and /admin)
-    pub stats: ServerStats
+    pub stats: ServerStats,
+    /// Trigger to notify all tasks when live migration is done
+    pub migrate_tx: Mutex<Option<Sender<Arc<MigrateCommand>>>>,
+    /// Receiver to listener when migration happens
+    pub migrate: Receiver<Arc<MigrateCommand>>,
 }
 
 pub struct ServerStats {
@@ -241,11 +259,14 @@ async fn bind(bind: &SocketAddr) -> TcpListener {
 
 pub async fn listener(config: ServerSettings) {
     let start_time = chrono::offset::Utc::now();
+    let (tx, rx)   = channel(1.try_into().expect("1 should not be 0"));
     let serv       = Arc::new(Server {
         max_clients: Arc::new(Semaphore::new(config.limits.clients)),
         sources: RwLock::new(HashMap::new()),
         config,
-        stats: ServerStats::new(start_time.timestamp())
+        stats: ServerStats::new(start_time.timestamp()),
+        migrate_tx: Mutex::new(Some(tx)),
+        migrate: rx
     });
 
     let mut set = JoinSet::new();

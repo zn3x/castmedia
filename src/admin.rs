@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::{
     server::ClientSession,
-    request::AdminRequest, response::{self, ChunkedResponse}, auth, utils, stream::broadcast_metadata, source::{MoveClientsCommand, MoveClientsType}
+    request::AdminRequest, response::{self, ChunkedResponse}, auth, utils, stream::broadcast_metadata, source::{MoveClientsCommand, MoveClientsType}, migrate
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
@@ -302,6 +302,24 @@ async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<(
     Ok(())
 }
 
+async fn server_restart(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
+    let user_id = auth::admin_auth(session, req.auth).await?;
+    let sid     = &session.server.config.info.id;
+
+    match session.server.migrate_tx.lock().await.take() {
+        Some(migrate) => {
+            info!("Starting zero downtime migration requested by admin {}", user_id);
+            migrate::handle(session.server.clone(), migrate).await;
+            response::ok_200(&mut session.stream, sid).await?;
+        },
+        None => {
+            response::bad_request(&mut session.stream, sid, "Migration in progress...").await?;
+        }
+    }
+
+    Ok(())
+}
+
 
 pub async fn handle_request<'a>(mut session: ClientSession, req: AdminRequest) -> Result<()> {
     session.server.stats.admin_api_connections.fetch_add(1, Ordering::Relaxed);
@@ -329,6 +347,8 @@ pub async fn handle_request<'a>(mut session: ClientSession, req: AdminRequest) -
         "/admin/listclients" => list_clients(&mut session, req).await,
         // Kill a specific listener
         "/admin/killclient" => kill_client(&mut session, req).await,
+        // Do a zero downtime server restart
+        "/admin/restart" => server_restart(&mut session, req).await,
         _ => response::not_found(&mut session.stream, &session.server.config.info.id).await
     }
 }

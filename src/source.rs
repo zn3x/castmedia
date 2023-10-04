@@ -3,7 +3,7 @@ use std::{
     num::NonZeroUsize
 };
 use hashbrown::HashMap;
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use llq::broadcast::{Receiver, Sender};
 
 use anyhow::Result;
@@ -13,7 +13,10 @@ use uuid::Uuid;
 
 use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream, auth, client::Client};
 
-#[derive(Serialize)]
+#[obake::versioned]
+#[obake(version("0.1.0"))]
+#[obake(derive(Serialize, Deserialize, Clone))]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct IcyProperties {
     pub uagent: Option<String>,
     pub public: bool,
@@ -234,14 +237,19 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
 
     properties.populate_from_http_headers(&request.headers);
 
+
+    handle_source(session, req.mountpoint, properties, request.headers_buf.len() as u64, chunked).await
+}
+
+pub async fn handle_source(session: ClientSession, mountpoint: String,
+                           properties: IcyProperties, initial_bytes_read: u64, chunked: bool) -> Result<()> {
     let (source, broadcast, kill_notifier) = Source::new(properties);
 
     // We must write initial read length to stats
-    source.stats.bytes_read.fetch_add(request.headers_buf.len() as u64, Ordering::Relaxed);
+    source.stats.bytes_read.fetch_add(initial_bytes_read, Ordering::Relaxed);
 
     // Add this mountpoint to mountpoints hashmap
-    let mountpoint = req.mountpoint.clone();
-    session.server.sources.write().await.insert(req.mountpoint, source);
+    session.server.sources.write().await.insert(mountpoint.clone(), source);
 
     // Server stats
     session.server.stats.source_client_connections.fetch_add(1, Ordering::Relaxed);

@@ -5,7 +5,11 @@ use anyhow::Result;
 
 use tokio::{time::timeout, io::AsyncReadExt, sync::oneshot};
 
-use crate::{server::{Stream, ClientSession}, source::{SourceBroadcast, Source, IcyMetadata, SourceStats, MoveClientsCommand, MoveClientsType}};
+use crate::{
+    server::{Stream, ClientSession},
+    source::{SourceBroadcast, Source, IcyMetadata, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties},
+    migrate::{MigrateConnection, MigrateSource, MigrateInfo}
+};
 
 pub trait StreamReader: Send + Sync + Read {}
 
@@ -167,7 +171,8 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
             }
         };
 
-        let server = session.server.clone();
+        let media_broadcast = broadcast.audio.clone();
+        let server          = session.server.clone();
         // For now we are using threads for source
         let fut = tokio::task::spawn_blocking(move || {
             if let Err(e) = blocking_broadcast(&omountpoint, session, chunked, broadcast, stats) {
@@ -175,14 +180,52 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
             }
         });
         
-        // Here we either way for source to broadcast till it disconnects
+        // Here we either wait for source to broadcast till it disconnects
         // Or we receive a command to kill it from admin
-        let abort_handle = fut.abort_handle();
+        // Or we receive command for a migration
+        let abort_handle     = fut.abort_handle();
+        let mut migrate_comm = server.migrate.clone();
         tokio::select! {
+            _ = fut => (),
             _ = kill_notifier => {
                 abort_handle.abort();
             },
-            _ = fut => {},
+            migrate = migrate_comm.recv() => {
+                abort_handle.abort();
+                // Safety: migrate sender half is NEVER dropped until process exits
+                let migrate = migrate
+                    .expect("Got migrate notice with closed mpsc");
+                // We need to first take a snapshot of media channel
+                // This is mainly the thing that will let us resume in new process
+                let snapshot = media_broadcast.snapshot().await;
+                // Now we fetch all info needed
+                let mig_info;
+                {
+                    let lock   = server.sources.read().await;
+                    let source = lock.get(mountpoint)
+                        .expect("Source should still exist at this point");
+                    // Can we not clone here?
+                    let properties: IcyProperties = source.properties.as_ref().clone();
+                    let fallback                  = source.fallback.clone();
+                    mig_info                      = MigrateConnection::Source {
+                        info: MigrateSource {
+                            mountpoint: mountpoint.to_owned(),
+                            properties,
+                            broadcast_snapshot: (snapshot.0.len() as u64, snapshot.1, snapshot.2),
+                            fallback,
+                            chunked
+                        }
+                    };
+                }
+                if let Ok(info) = postcard::to_stdvec(&mig_info) {
+                    /*migrate.source.send(MigrateInfo {
+                        info,
+                        mountpoint: mountpoint.clone(),
+                        sock: ()
+                    });*/
+                }
+                return;
+            }
         }
 
         // Cleanup
