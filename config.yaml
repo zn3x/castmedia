@@ -1,12 +1,6 @@
 # Specify listening addresses where we will accept clients incoming connections
 address:
 - bind: 127.0.0.1:9000
-  tls:
-    enabled: true
-    # Identity in pkcs12 format
-    cert: identity.p12
-    # Password of identity
-    pass: ''
 # In icecast, regularly broadcast metadata update to clients, this indicates bytes interval between
 # metadata broadcasts.
 metadata_interval: 32000

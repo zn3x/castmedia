@@ -1,4 +1,5 @@
-use std::{time::Duration, future::Future, collections::VecDeque, io::Read, num::NonZeroUsize, sync::{Arc, atomic::Ordering}};
+use std::{time::Duration, future::Future, collections::VecDeque, io::Read, num::NonZeroUsize, sync::{Arc, atomic::{Ordering, AtomicBool}}};
+use futures::executor::block_on;
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};
 use anyhow::Result;
@@ -6,36 +7,36 @@ use anyhow::Result;
 use tokio::{time::timeout, io::AsyncReadExt, sync::oneshot};
 
 use crate::{
-    server::{Stream, ClientSession},
-    source::{SourceBroadcast, Source, IcyMetadata, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties},
-    migrate::{MigrateConnection, MigrateSource, MigrateInfo}
+    server::{Stream, ClientSession, Server},
+    source::{SourceBroadcast, Source, IcyMetadata, SourceStats, MoveClientsCommand, MoveClientsType},
+    migrate::{MigrateConnection, VersionedMigrateConnection, MigrateSource, MigrateSourceInfo}
 };
 
-pub trait StreamReader: Send + Sync + Read {}
+pub trait StreamReader: Send + Sync + Read {
+    fn fd(&self) -> i32;
+}
 
 pub struct SimpleReader {
     timeout: Duration,
     stream: Stream,
-    stats: Arc<SourceStats>,
-    rt: tokio::runtime::Runtime
+    stats: Arc<SourceStats>
 }
 
 impl SimpleReader {
     pub fn new(stream: Stream, timeout: u64, stats: Arc<SourceStats>) -> Self {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Should be able to get current thread");
-
-        SimpleReader { stream, timeout: Duration::from_millis(timeout), stats, rt }
+        SimpleReader { stream, timeout: Duration::from_millis(timeout), stats }
     }
 }
 
-impl StreamReader for SimpleReader {}
+impl StreamReader for SimpleReader {
+    fn fd(&self) -> i32 {
+        self.stream.fd()
+    }
+}
 
 impl Read for SimpleReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let r = match self.rt.block_on(timeout(self.timeout, self.stream.read(buf))) {
+        let r = match block_on(timeout(self.timeout, self.stream.read(buf))) {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return Err(e.into()),
             Err(e) => return Err(e.into())
@@ -66,7 +67,11 @@ impl ChunkedReader {
     }
 }
 
-impl StreamReader for ChunkedReader {}
+impl StreamReader for ChunkedReader {
+    fn fd(&self) -> i32 {
+        self.inner.stream.fd()
+    }
+}
 
 impl Read for ChunkedReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -120,12 +125,7 @@ impl Read for ChunkedReader {
     }
 }
 
-pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, url: &Option<&str>) {
-    source.metadata.replace(IcyMetadata {
-        title: song.unwrap_or("").to_string(),
-        url: url.unwrap_or("").to_string()
-    });
-
+pub fn metadata_encode(song: &Option<&str>, url: &Option<&str>) -> Vec<u8> {
     let mut vec = vec![0];
     vec.extend_from_slice(b"StreamTitle='");
     vec.extend_from_slice(song.unwrap_or("").as_bytes());
@@ -147,13 +147,24 @@ pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, ur
         }
     } as u8;
 
+    vec
+}
+
+pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, url: &Option<&str>) {
+    source.metadata.replace(IcyMetadata {
+        title: song.unwrap_or("").to_string(),
+        url: url.unwrap_or("").to_string()
+    });
+
+
     source.meta_broadcast_sender
-        .send(Arc::new(vec.clone()));
+        .send(Arc::new(metadata_encode(song, url)));
+
 }
 
 // Getting a future lifetime error, a workaround for now
 pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
-                     chunked: bool, broadcast: SourceBroadcast,
+                     queue_size: usize, chunked: bool, broadcast: SourceBroadcast,
                      kill_notifier: oneshot::Receiver<()>)
     -> impl Future<Output = ()> + 'a {
     async move {
@@ -171,58 +182,87 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
             }
         };
 
+        let reader: Box<dyn StreamReader>;
+        let base_reader = SimpleReader::new(session.stream, session.server.config.limits.source_timeout, stats);
+        if chunked {
+            reader      = Box::new(ChunkedReader::new(base_reader));
+        } else {
+            reader      = Box::new(base_reader);
+        }
+        let reader = Box::leak(reader);
+        let rguard = unsafe { Box::from_raw(reader) };
+
         let media_broadcast = broadcast.audio.clone();
         let server          = session.server.clone();
         // For now we are using threads for source
-        let fut = tokio::task::spawn_blocking(move || {
-            if let Err(e) = blocking_broadcast(&omountpoint, session, chunked, broadcast, stats) {
-                error!("Source stream for {} closed: {}", omountpoint, e);
+        let abort_handle  = Arc::new(AtomicBool::new(false));
+        let abort_cl      = abort_handle.clone();
+        let mut fut       = tokio::task::spawn_blocking(move || {
+            match blocking_broadcast(&omountpoint, reader, &session.server, broadcast, abort_cl, queue_size) {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    error!("Source stream for {} closed: {}", omountpoint, e);
+                    return Err(e);
+                }
             }
         });
         
         // Here we either wait for source to broadcast till it disconnects
         // Or we receive a command to kill it from admin
         // Or we receive command for a migration
-        let abort_handle     = fut.abort_handle();
         let mut migrate_comm = server.migrate.clone();
         tokio::select! {
-            _ = fut => (),
+            _ = &mut fut => (),
             _ = kill_notifier => {
-                abort_handle.abort();
+                abort_handle.store(true, Ordering::Relaxed);
             },
             migrate = migrate_comm.recv() => {
-                abort_handle.abort();
+                abort_handle.store(true, Ordering::Relaxed);
                 // Safety: migrate sender half is NEVER dropped until process exits
                 let migrate = migrate
                     .expect("Got migrate notice with closed mpsc");
-                // We need to first take a snapshot of media channel
-                // This is mainly the thing that will let us resume in new process
-                let snapshot = media_broadcast.snapshot().await;
                 // Now we fetch all info needed
-                let mig_info;
+                let (properties, fallback, metadata);
                 {
                     let lock   = server.sources.read().await;
                     let source = lock.get(mountpoint)
                         .expect("Source should still exist at this point");
                     // Can we not clone here?
-                    let properties: IcyProperties = source.properties.as_ref().clone();
-                    let fallback                  = source.fallback.clone();
-                    mig_info                      = MigrateConnection::Source {
-                        info: MigrateSource {
-                            mountpoint: mountpoint.to_owned(),
-                            properties,
-                            broadcast_snapshot: (snapshot.0.len() as u64, snapshot.1, snapshot.2),
-                            fallback,
-                            chunked
-                        }
+                    properties = source.properties.as_ref().clone();
+                    fallback   = source.fallback.clone();
+                    metadata   = match source.meta_broadcast.clone().try_recv().ok() {
+                        Some(v) => v.as_ref().clone(),
+                        None  => metadata_encode(&None, &None)
                     };
                 }
-                if let Ok(info) = postcard::to_stdvec(&mig_info) {
-                    /*migrate.source.send(MigrateInfo {
+                let mountpoint = mountpoint.to_owned();
+                let queue_size = if let Ok(Ok(v)) = fut.await {
+                    v
+                } else {
+                    0
+                };
+
+                // We need to first take a snapshot of media channel
+                // This is mainly the thing that will let us resume in new process
+                let snapshot = media_broadcast.snapshot();
+                let info     = MigrateConnection::Source {
+                    info: MigrateSource {
+                        mountpoint,
+                        properties,
+                        broadcast_snapshot: (snapshot.0.len() as u64, snapshot.1, snapshot.2),
+                        fallback,
+                        metadata,
+                        queue_size: queue_size as u64,
+                        chunked
+                    }
+                };
+                let info: VersionedMigrateConnection = info.into();
+                if let Ok(info) = postcard::to_stdvec(&info) {
+                    _ = migrate.source.send(MigrateSourceInfo {
                         info,
-                        mountpoint: mountpoint.clone(),
-                        sock: ()
-                    });*/
+                        media: snapshot.0,
+                        sock: rguard
+                    });
                 }
                 return;
             }
@@ -251,17 +291,10 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
     }
 }
 
-fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool,
-                      mut broadcast: SourceBroadcast, stats: Arc<SourceStats>) -> Result<()> {
-    let reader: Box<dyn StreamReader>;
-    let base_reader = SimpleReader::new(session.stream, session.server.config.limits.source_timeout, stats);
-    if chunked {
-        reader      = Box::new(ChunkedReader::new(base_reader));
-    } else {
-        reader      = Box::new(base_reader);
-    }
-    let mss         = MediaSourceStream::new(Box::new(ReadOnlySource::new(reader)), Default::default());
-
+fn blocking_broadcast(mountpoint: &str, st: &'static mut dyn StreamReader,
+                      server: &Server, mut broadcast: SourceBroadcast,
+                      abort_handle: Arc<AtomicBool>, queue_size: usize) -> Result<usize> {
+    let mss  = MediaSourceStream::new(Box::new(ReadOnlySource::new(st)), Default::default());
     let hint = Hint::new();
 
     // Use the default options for metadata and format readers.
@@ -277,7 +310,7 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool,
     let mut format = probed.format;
 
     // Current total size we are holding in broadcast queue
-    let mut size       = 0;
+    let mut size       = queue_size;
     // Size of every chunk in broadcast queue
     let mut chunk_size = VecDeque::new();
 
@@ -290,11 +323,11 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool,
                 chunk_size.push_front(slice.len());
 
                 // We check if new buffer added will overflow broadcast
-                if size > session.server.config.limits.queue_size {
+                if size > server.config.limits.queue_size {
                     // We will keep dropping elements in tail until
                     // we have queue size not bigger than limit
                     let mut count = 0;
-                    while size > session.server.config.limits.queue_size {
+                    while size > server.config.limits.queue_size {
                         size -= match chunk_size.pop_back() {
                             Some(v) => v,
                             None => {
@@ -336,7 +369,11 @@ fn blocking_broadcast(mountpoint: &str, session: ClientSession, chunked: bool,
         while !format.metadata().is_latest() {
             format.metadata().pop();
         }
+
+        if abort_handle.load(Ordering::Relaxed) {
+            break;
+        }
     };
 
-    Ok(())
+    Ok(size)
 }

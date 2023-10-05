@@ -1,6 +1,6 @@
-use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}, net::SocketAddr, hash::BuildHasher, os::fd::AsRawFd};
+use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}, net::SocketAddr, hash::BuildHasher, os::fd::AsRawFd, time::Duration};
 use chrono::{DateTime, Local};
-use futures_util::StreamExt;
+use futures::StreamExt;
 use llq::broadcast::{channel, Receiver, Sender};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -245,8 +245,27 @@ async fn tls_connection_acceptor(serv: &Arc<Server>, listener: &TcpListener, adm
     }
 }
 
+fn set_socket(bind: &SocketAddr) -> Result<TcpListener> {
+    let s = socket2::Socket::new(
+        match bind {
+            SocketAddr::V4(_) => socket2::Domain::IPV4,
+            SocketAddr::V6(_) => socket2::Domain::IPV6
+        },
+        socket2::Type::STREAM,
+        None
+    )?;
+    s.set_reuse_port(true)?;
+    s.set_reuse_address(true)?;
+    s.set_nonblocking(true)?;
+    s.bind(&bind.clone().into())?;
+    s.listen(8192)?;
+
+    let s = TcpListener::from_std(s.into())?;
+    Ok(s)
+}
+
 async fn bind(bind: &SocketAddr) -> TcpListener {
-    match TcpListener::bind(bind).await {
+    match set_socket(bind) {
         Ok(v) => {
             v
         },
@@ -257,10 +276,11 @@ async fn bind(bind: &SocketAddr) -> TcpListener {
     }
 }
 
-pub async fn listener(config: ServerSettings) {
-    let start_time = chrono::offset::Utc::now();
-    let (tx, rx)   = channel(1.try_into().expect("1 should not be 0"));
-    let serv       = Arc::new(Server {
+pub async fn listener(config: ServerSettings, migrate_op: Option<String>) {
+    let start_time  = chrono::offset::Utc::now();
+    let (tx, rx)    = channel(1.try_into().expect("1 should not be 0"));
+    let mut migrate = rx.clone();
+    let serv        = Arc::new(Server {
         max_clients: Arc::new(Semaphore::new(config.limits.clients)),
         sources: RwLock::new(HashMap::new()),
         config,
@@ -305,8 +325,21 @@ pub async fn listener(config: ServerSettings) {
         let local: DateTime<Local> = DateTime::from(start_time);
         info!("Server started on {}", local);
     }
+    
+    if let Some(migrate_op) = migrate_op {
+        crate::migrate::handle_successor(serv, migrate_op).await;
+    }
 
-    set.join_next().await;
-    error!("A listener abrubtly exited, shutting down server");
-    std::process::exit(1);
+    tokio::select! {
+        _ = set.join_next() => {
+            error!("A listener abrubtly exited, shutting down server");
+            std::process::exit(1);
+        },
+        _ = migrate.recv() => {
+            // We have a migrate operation, idling until the times come...
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            };
+        }
+    }
 }

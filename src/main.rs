@@ -21,6 +21,9 @@ struct ArgParse {
     #[arg(short = "v", long = "verify")]
     /// Verify if specified config file is valid
     pub verify: bool,
+    #[arg(short = "m", long = "migrate")]
+    /// For migration purposes only, this command shouldn't be used by user
+    pub migrate: Option<String>,
     /// Configuration file path
     pub config_file: String
 }
@@ -60,8 +63,10 @@ async fn main() {
         config::ServerSettings::verify(&config);
         std::process::exit(0);
     }
+    let migrate = args.migrate.clone();
     
     let config = config::ServerSettings::load(&args.config_file);
     config::ServerSettings::verify(&config);
-    server::listener(config).await;
+    drop(args);
+    server::listener(config, migrate).await;
 }

@@ -145,9 +145,12 @@ pub enum MoveClientsType {
 
 
 impl Source {
-    pub fn new(properties: IcyProperties) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
-        let size: NonZeroUsize = 1.try_into().expect("1 should be posetif");
-        let (tx, rx)           = llq::broadcast::channel(size);
+    pub fn new(properties: IcyProperties, migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
+        let size: NonZeroUsize  = 1.try_into().expect("1 should be posetif");
+        let (tx, rx)            = match migrated {
+            Some(v)            => v,
+            None               => llq::broadcast::channel(size)
+        };
         let (tx1, rx1)         = llq::broadcast::channel(size);
         let (tx2, rx2)         = llq::broadcast::channel(size);
         let (tx3, rx3)         = oneshot::channel();
@@ -238,12 +241,19 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
     properties.populate_from_http_headers(&request.headers);
 
 
-    handle_source(session, req.mountpoint, properties, request.headers_buf.len() as u64, chunked).await
+    handle_source(session, req.mountpoint, properties, request.headers_buf.len() as u64, 0, chunked, None, None).await
 }
 
 pub async fn handle_source(session: ClientSession, mountpoint: String,
-                           properties: IcyProperties, initial_bytes_read: u64, chunked: bool) -> Result<()> {
-    let (source, broadcast, kill_notifier) = Source::new(properties);
+                           properties: IcyProperties, initial_bytes_read: u64, queue_size: usize,
+                           chunked: bool, migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,
+                           metadata: Option<Vec<u8>>) -> Result<()> {
+    let (source, mut broadcast, kill_notifier) = Source::new(properties, migrated);
+
+    // To prevent early readers from having no header
+    if let Some(metadata) = metadata {
+        broadcast.metadata.send(Arc::new(metadata));
+    }
 
     // We must write initial read length to stats
     source.stats.bytes_read.fetch_add(initial_bytes_read, Ordering::Relaxed);
@@ -257,7 +267,7 @@ pub async fn handle_source(session: ClientSession, mountpoint: String,
     session.server.stats.active_sources.fetch_add(1, Ordering::Acquire);
     
     // Then handle media stream coming for this mountpoint
-    stream::broadcast(&mountpoint, session, chunked, broadcast, kill_notifier).await;
+    stream::broadcast(&mountpoint, session, queue_size, chunked, broadcast, kill_notifier).await;
 
     Ok(())
 }
