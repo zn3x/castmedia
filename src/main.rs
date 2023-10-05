@@ -37,15 +37,9 @@ async fn main() {
     let args = match ArgParse::from_args(args) {
         Ok(v) => v,
         Err(e) => {
-            match &e {
-                ParseKind::Top(e) => match e {
-                    ParseError::HelpRequested(help) => {
-                        eprintln!("{}", help);
-                        std::process::exit(1);
-                    }
-                    _ => ()
-                },
-                _ => ()
+            if let ParseKind::Top(ParseError::HelpRequested(help)) = e {
+                eprintln!("{}", help);
+                std::process::exit(1);
             }
             eprintln!("Error parsing cmd line args: {}", e);
             std::process::exit(1);

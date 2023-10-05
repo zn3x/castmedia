@@ -38,7 +38,7 @@ impl Read for SimpleReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let r = match block_on(timeout(self.timeout, self.stream.read(buf))) {
             Ok(Ok(v)) => v,
-            Ok(Err(e)) => return Err(e.into()),
+            Ok(Err(e)) => return Err(e),
             Err(e) => return Err(e.into())
         };
 
@@ -202,7 +202,7 @@ pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
                 Ok(v) => Ok(v),
                 Err(e) => {
                     error!("Source stream for {} closed: {}", omountpoint, e);
-                    return Err(e);
+                    Err(e)
                 }
             }
         });

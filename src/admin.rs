@@ -22,8 +22,8 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
                 return Ok(());
             }
 
-            if let Some(mut source) = session.server.sources.write().await.get_mut(mount) {
-                broadcast_metadata(&mut source, &song, &url).await;
+            if let Some(source) = session.server.sources.write().await.get_mut(mount) {
+                broadcast_metadata(source, &song, &url).await;
                 info!("Updated mountpoint metadata for {} by {}", mount, user_id);
                 response::ok_200(&mut session.stream, sid).await?;
             } else {
@@ -46,10 +46,7 @@ async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Resu
         &[Some(mount), fallback] => {
             match session.server.sources.write().await.get_mut(mount) {
                 Some(mount_ref) => {
-                    mount_ref.fallback = match fallback {
-                        Some(v) => Some(v.to_owned()),
-                        None => None
-                    };
+                    mount_ref.fallback = fallback.map(|x| x.to_owned());
                     info!("New fallback {:?} set for {} by {}", fallback, mount, user_id);
                     response::ok_200(&mut session.stream, sid).await?;
                 },
@@ -130,22 +127,21 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
 
     match utils::get_queries_val_for_keys(&["mount", "destination"], &req.queries).as_slice() {
         &[Some(mount), Some(destination)] => {
-            let move_comm;
-            match session.server.sources.read().await.get(destination) {
+            let move_comm = match session.server.sources.read().await.get(destination) {
                 Some(destination) => {
-                    move_comm = MoveClientsCommand {
+                    MoveClientsCommand {
                         broadcast: destination.broadcast.clone(),
                         meta_broadcast: destination.meta_broadcast.clone(),
                         move_listeners_receiver: destination.move_listeners_receiver.clone(),
                         clients: destination.clients.clone(),
                         move_type: MoveClientsType::Move
-                    };
+                    }
                 },
                 None => {
                     response::bad_request(&mut session.stream, sid, "Destination not found").await?;
                     return Ok(());
                 }
-            }
+            };
 
             match session.server.sources.read().await.get(mount) {
                 Some(mount_ref) => {

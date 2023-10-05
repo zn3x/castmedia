@@ -12,12 +12,12 @@ pub fn clean_path(path: &str) -> String {
     }
 
     let mut out = vec![];
-    let is_root = path.starts_with("/");
+    let is_root = path.starts_with('/');
 
-    let path = path.trim_end_matches("/");
-    let num_segments = path.split("/").count();
+    let path = path.trim_end_matches('/');
+    let num_segments = path.split('/').count();
 
-    for segment in path.split("/") {
+    for segment in path.split('/') {
         match segment {
             "" => continue,
             "." => {
@@ -48,7 +48,7 @@ pub fn clean_path(path: &str) -> String {
         out_str = format!("/{}", out_str);
     }
 
-    if out_str.len() == 0 {
+    if out_str.is_empty() {
         return ".".to_string();
     }
 
@@ -73,7 +73,7 @@ pub fn get_queries(path: &str) -> Vec<Query> {
     let mut queries = Vec::new();
     if let Some(i) = path.find('?') {
         for query in path[i+1..].split('&') {
-            if let Some((key, val)) = query.replace( "+", " " ).split_once('=') {
+            if let Some((key, val)) = query.replace( '+', " " ).split_once('=') {
                 let key = urlencoding::decode(key);
                 let val = urlencoding::decode(val);
                 if let Ok(key) = key {
@@ -115,9 +115,9 @@ pub fn get_header< 'a >(key: &str, headers: &[httparse::Header< 'a >]) -> Option
 
 pub fn get_basic_auth( headers: &[httparse::Header] ) -> Result<Option<(String, String)>> {
     if let Some(auth) = get_header("Authorization", headers) {
-        let basic_auth = std::str::from_utf8(&auth)?.replace("Basic ", "");
+        let basic_auth = std::str::from_utf8(auth)?.replace("Basic ", "");
         let bs64       = base64::engine::general_purpose::URL_SAFE;
-        if let Some((name, pass)) = std::str::from_utf8(&bs64.decode(&basic_auth)?)?.split_once(":") {
+        if let Some((name, pass)) = std::str::from_utf8(&bs64.decode(basic_auth)?)?.split_once(':') {
             return Ok(Some((String::from(name), String::from(pass))))
         }
     }

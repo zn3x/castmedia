@@ -16,10 +16,10 @@ pub struct Request<'a> {
 
 #[derive(Debug)]
 pub enum RequestType {
-    SourceRequest(SourceRequest),
-    ListenRequest(ListenRequest),
-    AdminRequest(AdminRequest),
-    ApiRequest(ApiRequest)
+    Source(SourceRequest),
+    Listen(ListenRequest),
+    Admin(AdminRequest),
+    Api(ApiRequest)
 }
 
 #[derive(Debug)]
@@ -99,8 +99,8 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
         None => return Err(anyhow::Error::msg("Request header has no path"))
     };
 
-    let queries = utils::get_queries(&path);
-    let path    = utils::clean_path(&path);
+    let queries = utils::get_queries(path);
+    let path    = utils::clean_path(path);
 
     // Now we check request made by user
     match request.method {
@@ -108,7 +108,7 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
         "PUT" | "SOURCE" => {
             let auth = get_basic_auth(&request.headers)?;
 
-            Ok(RequestType::SourceRequest(SourceRequest {
+            Ok(RequestType::Source(SourceRequest {
                 mountpoint: path,
                 auth
             }))
@@ -124,11 +124,11 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
                 }
 
                 let auth = get_basic_auth(&request.headers)?;
-                let p    = path.split("?").collect::<Vec<&str>>();
-                return Ok(RequestType::AdminRequest(AdminRequest { path: p[0].to_owned(), queries, auth }));
+                let p    = path.split('?').collect::<Vec<&str>>();
+                return Ok(RequestType::Admin(AdminRequest { path: p[0].to_owned(), queries, auth }));
             } else if source_id.starts_with("/api/") {
-                let p    = path.split("?").collect::<Vec<&str>>();
-                return Ok(RequestType::ApiRequest(ApiRequest { path: p[0].to_owned(), queries }));
+                let p    = path.split('?').collect::<Vec<&str>>();
+                return Ok(RequestType::Api(ApiRequest { path: p[0].to_owned(), queries }));
             }
 
             if !session.server.sources.read().await.contains_key(&source_id) {
@@ -136,8 +136,8 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
                 return Err(anyhow::Error::msg("Unknewn method sent by user"));
             }
 
-            Ok(RequestType::ListenRequest(ListenRequest { mountpoint: source_id }))
+            Ok(RequestType::Listen(ListenRequest { mountpoint: source_id }))
         },
-        _ => return Err(anyhow::Error::msg("Unknewn method sent by user"))
+        _ => Err(anyhow::Error::msg("Unknewn method sent by user"))
     }
 }

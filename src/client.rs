@@ -39,7 +39,7 @@ pub struct ClientStats {
     pub bytes_sent: AtomicU64
 }
 
-pub async fn handle_client<'a>(session: ClientSession, request: Request<'a>, req: ListenRequest) -> Result<()> {
+pub async fn handle_client(session: ClientSession, request: Request<'_>, req: ListenRequest) -> Result<()> {
     let metadata   = utils::get_header("icy-metadata", &request.headers).unwrap_or(b"0") == b"1";
     let user_agent = match utils::get_header("user-agent", &request.headers) {
         Some(v) => match std::str::from_utf8(v) {
@@ -354,10 +354,10 @@ pub async fn handle(mut session: ClientSession) {
     }
 
     _ = match _type {
-        RequestType::AdminRequest(v)  => admin::handle_request(session, v).await,
-        RequestType::ApiRequest(v)    => api::handle_request(session, v).await,
-        RequestType::SourceRequest(v) => source::handle(session, &request, v).await,
-        RequestType::ListenRequest(v) => handle_client(session, request, v).await,
+        RequestType::Admin(v)  => admin::handle_request(session, v).await,
+        RequestType::Api(v)    => api::handle_request(session, v).await,
+        RequestType::Source(v) => source::handle(session, &request, v).await,
+        RequestType::Listen(v) => handle_client(session, request, v).await,
     };
 }
 

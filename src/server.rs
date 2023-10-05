@@ -245,7 +245,7 @@ async fn tls_connection_acceptor(serv: &Arc<Server>, listener: &TcpListener, adm
     }
 }
 
-fn set_socket(bind: &SocketAddr) -> Result<TcpListener> {
+fn set_socket(bind: SocketAddr) -> Result<TcpListener> {
     let s = socket2::Socket::new(
         match bind {
             SocketAddr::V4(_) => socket2::Domain::IPV4,
@@ -257,14 +257,14 @@ fn set_socket(bind: &SocketAddr) -> Result<TcpListener> {
     s.set_reuse_port(true)?;
     s.set_reuse_address(true)?;
     s.set_nonblocking(true)?;
-    s.bind(&bind.clone().into())?;
+    s.bind(&bind.into())?;
     s.listen(8192)?;
 
     let s = TcpListener::from_std(s.into())?;
     Ok(s)
 }
 
-async fn bind(bind: &SocketAddr) -> TcpListener {
+async fn bind(bind: SocketAddr) -> TcpListener {
     match set_socket(bind) {
         Ok(v) => {
             v
@@ -292,7 +292,7 @@ pub async fn listener(config: ServerSettings, migrate_op: Option<String>) {
     let mut set = JoinSet::new();
 
     if serv.config.admin_access.enabled {
-        let bind_addr = &serv.config.admin_access.address.bind;
+        let bind_addr = serv.config.admin_access.address.bind;
         let listener  = bind(
             bind_addr,
         ).await;
@@ -311,7 +311,7 @@ pub async fn listener(config: ServerSettings, migrate_op: Option<String>) {
     }
 
     for addr in &serv.config.address {
-        let listener = bind(&addr.bind).await;
+        let listener = bind(addr.bind).await;
         let tls = addr.tls.as_ref().is_some_and(|x| x.enabled);
         info!("Listening on {}:{} (Tls:{tls})", addr.bind.ip(), addr.bind.port());
         if tls {

@@ -204,7 +204,7 @@ impl ServerSettings {
 
     pub fn create_default(config_path: &str) {
         let settings = serde_yaml::to_string(&Self::default()).expect("Can't serialize server settings");
-        match std::fs::write(config_path, &settings) {
+        match std::fs::write(config_path, settings) {
             Ok(_) => info!("Default config file written to {}", config_path),
             Err(e) => error!("Creating default config at {} failed: {}", config_path, e)
         }
@@ -213,7 +213,7 @@ impl ServerSettings {
     /// Method to verify if current settings are sane
     pub fn verify(config: &ServerSettings) {
         // First we verify no duplicate addresses are supplied to us
-        let mut addresses = config.address.iter().map(|x| x).collect::<Vec<_>>();
+        let mut addresses = config.address.iter().collect::<Vec<_>>();
         if config.admin_access.enabled {
             addresses.push(&config.admin_access.address);
         }

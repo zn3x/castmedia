@@ -131,26 +131,21 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
     let mut source_count = 0;
     // We first read all sources
     loop {
-        loop {
-            match rx.try_recv() {
-                Ok(v) => {
-                    source_count += 1;
+        while let Ok(v) = rx.try_recv() {
+            source_count += 1;
 
-                    // We first write source info
-                    successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
-                    successor.write_all(&v.info)?;
-                    // Then media stream
-                    for frame in v.media {
-                        successor.write_all(&frame.0.to_be_bytes())?;
-                        successor.write_all(&frame.1.len().to_be_bytes())?;
-                        successor.write_all(&frame.1[..])?;
-                    }
-                    // Then pass on fd
-                    successor.send_fd(v.sock.fd())?;
-                },
-                _ => break
+            // We first write source info
+            successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
+            successor.write_all(&v.info)?;
+            // Then media stream
+            for frame in v.media {
+                successor.write_all(&frame.0.to_be_bytes())?;
+                successor.write_all(&frame.1.len().to_be_bytes())?;
+                successor.write_all(&frame.1[..])?;
             }
-        };
+            // Then pass on fd
+            successor.send_fd(v.sock.fd())?;
+        }
 
         if server.sources.blocking_read().len() == source_count {
             // We got all sources and now exiting
@@ -163,18 +158,13 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
     // To make sure we read all sources
     // We iterate over each source and make sure no client is active
     loop {
-        loop {
-            match rx1.try_recv() {
-                Ok(v) => {
-                    // We send info first
-                    successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
-                    successor.write_all(&v.info)?;
-                    // Then fd
-                    successor.send_fd(v.sock.fd())?;
-                },
-                _ => break
-            }
-        };
+        while let Ok(v) = rx1.try_recv() {
+            // We send info first
+            successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
+            successor.write_all(&v.info)?;
+            // Then fd
+            successor.send_fd(v.sock.fd())?;
+        }
 
         // We check if all client have been removed
         // Then we remove source, if there is no source then we are finished
@@ -261,7 +251,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
         let fd   = predeseccor.recv_fd()?;
         // Safety: We just got the fd from older instance, we are sure it's a tcp socket
         let std_sock = unsafe { std::net::TcpStream::from_raw_fd(fd) };
-        if let Err(_) = std_sock.set_nonblocking(true) {
+        if std_sock.set_nonblocking(true).is_err() {
             continue;
         }
         let sock = match TcpStream::from_std(std_sock) {
