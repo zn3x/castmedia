@@ -4,7 +4,7 @@ use futures::StreamExt;
 use llq::broadcast::{channel, Receiver, Sender};
 use tokio::{
     net::{TcpListener, TcpStream},
-    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock, Mutex}
+    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock, Mutex, mpsc}
 };
 use tokio_native_tls::{native_tls, TlsStream, TlsAcceptor};
 use tracing::{info, error};
@@ -12,7 +12,11 @@ use hashbrown::{HashMap, hash_map::DefaultHashBuilder};
 use inotify::{Inotify, WatchMask};
 use anyhow::Result;
 
-use crate::{config::{ServerSettings, TlsIdentity}, client, source::Source, migrate::MigrateCommand};
+use crate::{
+    config::{ServerSettings, TlsIdentity}, 
+    client, source::Source, migrate::MigrateCommand,
+    auth::{self, HashCalculation}
+};
 
 pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {
     fn fd(&self) -> i32;
@@ -45,6 +49,8 @@ pub struct Server {
     pub migrate_tx: Mutex<Option<Sender<Arc<MigrateCommand>>>>,
     /// Receiver to listener when migration happens
     pub migrate: Receiver<Arc<MigrateCommand>>,
+    /// In order not to block async tasks, we have dedicated thread to calculate hashes
+    pub hash_calculator: mpsc::UnboundedSender<HashCalculation>
 }
 
 pub struct ServerStats {
@@ -280,13 +286,20 @@ pub async fn listener(config: ServerSettings, migrate_op: Option<String>) {
     let start_time  = chrono::offset::Utc::now();
     let (tx, rx)    = channel(1.try_into().expect("1 should not be 0"));
     let mut migrate = rx.clone();
+    let (tx1, rx1)  = mpsc::unbounded_channel();
     let serv        = Arc::new(Server {
         max_clients: Arc::new(Semaphore::new(config.limits.clients)),
         sources: RwLock::new(HashMap::new()),
         config,
         stats: ServerStats::new(start_time.timestamp()),
         migrate_tx: Mutex::new(Some(tx)),
-        migrate: rx
+        migrate: rx,
+        hash_calculator: tx1
+    });
+
+    let serv_clone = serv.clone();
+    tokio::task::spawn_blocking(move || {
+        auth::password_hasher_thread(serv_clone, rx1);
     });
 
     let mut set = JoinSet::new();

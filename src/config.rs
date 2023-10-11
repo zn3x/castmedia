@@ -3,6 +3,14 @@ use std::net::SocketAddr;
 use serde::{Serialize, Deserialize};
 use tracing::{error, info, warn};
 
+use scrypt::{
+    password_hash::{
+        rand_core::OsRng,
+        PasswordHash, PasswordHasher, SaltString
+    },
+    Scrypt
+};
+
 // Sane defaults for CastRadio
 const BIND: &str             = "127.0.0.1:9000";
 const METAINT: usize         = 32000;
@@ -41,7 +49,25 @@ pub struct ServerSettings {
     pub limits: ServerLimits,
     /// Access for admin accounts
     #[serde(default = "default_val_admin_access")]
-    pub admin_access: AdminAccess
+    pub admin_access: AdminAccess,
+    /// Accounts credentials
+    #[serde(default = "default_val_accounts")]
+    pub account: Vec<Account>
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "role")]
+#[serde(rename_all = "lowercase")]
+pub enum Account {
+    Admin {
+        user: String,
+        pass: String,
+    },
+    Source {
+        user: String,
+        pass: String,
+        mount: Vec<String>
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -119,7 +145,8 @@ impl Default for ServerSettings {
             metaint: default_val_metaint(),
             info: default_val_info(),
             limits: default_val_limits(),
-            admin_access: default_val_admin_access()
+            admin_access: default_val_admin_access(),
+            account: default_val_accounts()
         }
     }
 }
@@ -180,6 +207,8 @@ fn default_val_limit_http_max_len() -> usize { HTTP_MAX_LEN }
 fn default_val_adminacc_enabled() -> bool { ADMINACC_ENABLED }
 fn default_val_adminacc_address() -> ServerAddress { ServerAddress { bind: ADMINACC_BIND.parse().expect("Should be a valid socket address"), tls: None } }
 
+fn default_val_accounts() -> Vec<Account> { Vec::new() }
+
 impl ServerSettings {
     pub fn load(config_path: &str) -> Self {
         match std::fs::read_to_string(config_path) {
@@ -202,6 +231,29 @@ impl ServerSettings {
         }
     }
 
+    pub fn hash_passwords(config: &mut ServerSettings) {
+        // Converting plaintext passwords to hash
+        for account in &mut config.account {
+            let pass = match account {
+                Account::Source { pass, .. } => pass,
+                Account::Admin { pass, .. } => pass
+            };
+            
+            match pass.split_at(2) {
+                ("1$", _) => (),
+                ("0$", rawpass) => {
+                    let salt = SaltString::generate(&mut OsRng);
+                    let hash = Scrypt.hash_password(rawpass.as_bytes(), &salt)
+                        .expect("Should be able to hash password")
+                        .to_string();
+                    *pass    = "1$".to_string();
+                    pass.push_str(&hash);
+                },
+                _ => ()
+            }
+        }
+    }
+
     pub fn create_default(config_path: &str) {
         let settings = serde_yaml::to_string(&Self::default()).expect("Can't serialize server settings");
         match std::fs::write(config_path, settings) {
@@ -211,7 +263,7 @@ impl ServerSettings {
     }
 
     /// Method to verify if current settings are sane
-    pub fn verify(config: &ServerSettings) {
+    pub fn verify(config: &ServerSettings, unsafe_pass: bool) {
         // First we verify no duplicate addresses are supplied to us
         let mut addresses = config.address.iter().collect::<Vec<_>>();
         if config.admin_access.enabled {
@@ -229,6 +281,64 @@ impl ServerSettings {
             if let Some(tls) = address.tls.as_ref() {
                 if !std::path::Path::new(&tls.cert).is_file() {
                     error!("Tls identity {} for [{}] not found.", tls.cert, address.bind);
+                }
+            }
+        }
+
+        // Verifying accounts credentials
+        for account in &config.account {
+            let (user, pass, mounts) = match account {
+                Account::Admin { user, pass } => (user, pass, None),
+                Account::Source { user, pass, mount } => (user, pass, Some(mount))
+            };
+
+            // Checking if we don't have duplicates
+            for raccount in &config.account {
+                let (ruser, rmounts) = match raccount {
+                    Account::Admin { user, .. } => (user, None),
+                    Account::Source { user, mount, .. } => (user, Some(mount))
+                };
+                // Skip if we are identic
+                if std::ptr::eq(user, ruser) {
+                    continue;
+                }
+
+                if user.eq(ruser) {
+                    error!("Two accounts with identical username: {}", user);
+                }
+
+                if let (Some(mounts), Some(rmounts)) = (mounts, rmounts) {
+                    for mount in mounts {
+                        for rmount in rmounts {
+                            if mount.eq(rmount) && mount.ne("*") {
+                                warn!("Sources {} and {} have access to same mountpoint {}", user, ruser, mount);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !unsafe_pass {
+                // Checking if we have strong password if it's plaintext
+                match pass.split_at(2) {
+                    ("0$", rawpass) => {
+                        let estimate = zxcvbn::zxcvbn(rawpass, &[user])
+                            .expect("Should be able to calculate password entropy");
+
+                        if estimate.score() <= 3 {
+                            error!("Password for {} is not strong with a score of {}/4", user, estimate.score());
+                            continue;
+                        }
+                    },
+                    ("1$", hash) => {
+                        if let Err(e) = PasswordHash::new(hash) {
+                            error!("Invalid scrypt password hash for {}: {}", user, e);
+                        }
+                    },
+                    _ => {
+                        error!("Invalid password prefix for {}", user);
+                        continue;
+                    }
                 }
             }
         }

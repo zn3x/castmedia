@@ -12,11 +12,11 @@ use crate::{
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let user_id = auth::admin_or_source_auth(session, req.auth).await?;
-    let sid     = &session.server.config.info.id;
-
     match utils::get_queries_val_for_keys(&["mode", "mount", "song", "url"], &req.queries).as_slice() {
         &[Some(mode), Some(mount), song, url] => {
+            let user_id = auth::admin_or_source_auth(session, req.auth, mount).await?;
+            let sid     = &session.server.config.info.id;
+
             if !mode.eq("updinfo") {
                 response::bad_request(&mut session.stream, sid, "Metadata update request only supports updinfo mode").await?;
                 return Ok(());
@@ -31,7 +31,7 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
             }
         },
         _ => {
-            response::bad_request(&mut session.stream, sid, "Metadata update request need valid queries").await?;
+            response::bad_request(&mut session.stream, &session.server.config.info.id, "Metadata update request need valid queries").await?;
         }
     }
 
@@ -39,11 +39,11 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
 }
 
 async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let user_id = auth::admin_or_source_auth(session, req.auth).await?;
-    let sid     = &session.server.config.info.id;
-
     match utils::get_queries_val_for_keys(&["mount", "fallback"], &req.queries).as_slice() {
         &[Some(mount), fallback] => {
+            let user_id = auth::admin_or_source_auth(session, req.auth, mount).await?;
+            let sid     = &session.server.config.info.id;
+
             match session.server.sources.write().await.get_mut(mount) {
                 Some(mount_ref) => {
                     mount_ref.fallback = fallback.map(|x| x.to_owned());
@@ -56,7 +56,7 @@ async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Resu
             }
         },
         _ => {
-            response::bad_request(&mut session.stream, sid, "Invalid query").await?;
+            response::bad_request(&mut session.stream, &session.server.config.info.id, "Invalid query").await?;
         }
     }
 

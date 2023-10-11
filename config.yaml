@@ -32,6 +32,25 @@ limits:
   source_timeout: 10000
   # To avoid large requests from clients that may cause denial of service, we limit request size in bytes
   http_max_len: 8192
+# Accounts credentials
+account:
+  # WARNING! Avoid using default credentials like these
+  # Account can either be a source or admin
+  - user: admin
+    # A password can either be either plaintext or hashed by specifying a prefix:
+    # - 0$: Plaintext
+    # - 1$: A hashed scrypt password digest
+    # In case a plaintext is specified, it is encrypted by default at start-time, however it should be considired
+    # if an attacker can get read access to this configuration file
+    pass: 0$pass
+    role: admin
+  - user: source
+    pass: 0$pass
+    role: source
+    # Mount must be specified, if mounting to any path is needed, wildcard (*) can be used.
+    # If user tries to mount to any other location, access won't be granted.
+    # If two sources accounts have same mount, access will only be given to first one mounting.
+    mount: ['/stream']
 # This is a specific interface for admin access only
 admin_access:
   enabled: true

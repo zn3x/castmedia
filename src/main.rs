@@ -24,6 +24,9 @@ struct ArgParse {
     #[arg(short = "m", long = "migrate")]
     /// For migration purposes only, this command shouldn't be used by user
     pub migrate: Option<String>,
+    #[arg(short = "u", long = "unsafe-password")]
+    /// Allow unsafe passwords, this is highly discouraged and should only be used for testing!!
+    pub unsafe_pass: bool,
     /// Configuration file path
     pub config_file: String
 }
@@ -54,13 +57,14 @@ async fn main() {
     }
     if args.verify {
         let config = config::ServerSettings::load(&args.config_file);
-        config::ServerSettings::verify(&config);
+        config::ServerSettings::verify(&config, args.unsafe_pass);
         std::process::exit(0);
     }
     let migrate = args.migrate.clone();
     
-    let config = config::ServerSettings::load(&args.config_file);
-    config::ServerSettings::verify(&config);
+    let mut config = config::ServerSettings::load(&args.config_file);
+    config::ServerSettings::verify(&config, args.unsafe_pass);
+    config::ServerSettings::hash_passwords(&mut config);
     drop(args);
     server::listener(config, migrate).await;
 }
