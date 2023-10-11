@@ -271,7 +271,6 @@ pub async fn listener_broadcast<'a>(mut session: ClientSession,
                     Err(RecvError::Closed) => break
                 },
                 migrate = migrate_comm.recv() => {
-                    println!("gergreergr");
                     // Safety only task of client will ever remove itself
                     let client = clients.write().await
                         .remove(id)

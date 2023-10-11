@@ -14,7 +14,7 @@ mod migrate;
 use arg::{Args, ParseError, ParseKind};
 
 #[derive(Debug, Args)]
-struct ArgParse {
+pub struct ArgParse {
     #[arg(short = "g", long = "gen")]
     /// Generate a config file with default values
     pub gen: bool,
@@ -33,10 +33,13 @@ struct ArgParse {
 
 #[tokio::main]
 async fn main() {
-    let args     = Vec::from_iter(std::env::args());
-    let mut args = args.iter().map(AsRef::as_ref).collect::<Vec<_>>();
+    let args                = Vec::from_iter(std::env::args());
+    let mut args: Vec<&str> = args.iter().map(AsRef::as_ref).collect::<Vec<_>>();
     // Remove executable
-    args.remove(0);
+    if !args.remove(0).starts_with('/') {
+        eprintln!("Must be run with absolute path");
+        std::process::exit(1);
+    }
     let args = match ArgParse::from_args(args) {
         Ok(v) => v,
         Err(e) => {
@@ -65,6 +68,6 @@ async fn main() {
     let mut config = config::ServerSettings::load(&args.config_file);
     config::ServerSettings::verify(&config, args.unsafe_pass);
     config::ServerSettings::hash_passwords(&mut config);
-    drop(args);
-    server::listener(config, migrate).await;
+
+    server::listener(config, args, migrate).await;
 }

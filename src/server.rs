@@ -15,7 +15,7 @@ use anyhow::Result;
 use crate::{
     config::{ServerSettings, TlsIdentity}, 
     client, source::Source, migrate::MigrateCommand,
-    auth::{self, HashCalculation}
+    auth::{self, HashCalculation}, ArgParse
 };
 
 pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {
@@ -39,6 +39,8 @@ pub type Stream = Box<dyn Socket>;
 /// Struct holding all info related to server
 pub struct Server {
     pub config: ServerSettings,
+    /// argument to be used on restart
+    pub args: ArgParse,
     /// Semaphore intended to cap concurrent connection to server
     pub max_clients: Arc<Semaphore>,
     /// List of all sources whereas the mountpoint is the key
@@ -282,7 +284,7 @@ async fn bind(bind: SocketAddr) -> TcpListener {
     }
 }
 
-pub async fn listener(config: ServerSettings, migrate_op: Option<String>) {
+pub async fn listener(config: ServerSettings, args: ArgParse, migrate_op: Option<String>) {
     let start_time  = chrono::offset::Utc::now();
     let (tx, rx)    = channel(1.try_into().expect("1 should not be 0"));
     let mut migrate = rx.clone();
@@ -291,6 +293,7 @@ pub async fn listener(config: ServerSettings, migrate_op: Option<String>) {
         max_clients: Arc::new(Semaphore::new(config.limits.clients)),
         sources: RwLock::new(HashMap::new()),
         config,
+        args,
         stats: ServerStats::new(start_time.timestamp()),
         migrate_tx: Mutex::new(Some(tx)),
         migrate: rx,
