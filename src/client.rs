@@ -141,80 +141,68 @@ async fn prepare_listener(mut session: ClientSession, mountpoint: String, migrat
     }
     drop(props);
 
-    let mut metaint      = match migrated {
+    let mut metaint = match migrated {
         Some(v) => {
             stream.restore(v.resume_point);
             v.metaint
         },
         None => 0
     };
-    let mut migrate_comm = session.server.migrate.clone();
 
-    let ret = tokio::select! {
-        r = listener_broadcast(&mut session, &mut stream, meta_stream, mover, 
+    let server = session.server.clone();
+    let ret    = tokio::select! {
+        r = listener_broadcast(session, &mut stream, meta_stream, mover, 
                              &stats, metadata, &mut metaint,
-                             &mut id, &mut clients, &client_stats) => {
+                             &mut id, &mut clients, &client_stats, mountpoint) => {
             r
         },
         _ = kill_rx => {
             Err(anyhow::Error::msg("Client killed by admininstrator command"))
-        },
-        migrate = migrate_comm.recv() => {
-            // Safety only task of client will ever remove itself
-            let client = clients.write().await
-                .remove(&id)
-                .expect("Should be able to get Client");
-            // Safety: migrate sender half is NEVER dropped until process exits
-            let migrate = migrate
-                .expect("Got migrate notice with closed mpsc");
-            let info = MigrateConnection::Client {
-                info: MigrateClient {
-                    mountpoint: mountpoint.clone(),
-                    properties: client.properties,
-                    resume_point: stream.last_index(),
-                    metaint: metaint as u64
-                }
-            };
-            let info: VersionedMigrateConnection = info.into();
-            // Well, can't do nothing if we ran out of memory here
-            if let Ok(info) = postcard::to_stdvec(&info) {
-                _ = migrate.listener.send(MigrateClientInfo {
-                    info,
-                    mountpoint,
-                    sock: session.stream
-                });
-            }
-            return Ok(());
         }
     };
 
-    // If it's a client error we must remove client from list of active clients
-    // Otherwise that means source disconnected and we reached end
-    if ret.is_err() {
-        clients.write().await.remove(&id);
+    // Checking whether it's a normal exit or migration
+    match ret {
+        Ok(true) => {
+            // We got migration
+            // We don't need to update stats
+            Ok(())
+        },
+        Ok(false) => {
+            // If it's a client error we must remove client from list of active clients
+            // Otherwise that means source disconnected and we reached end
+            if ret.is_err() {
+                clients.write().await.remove(&id);
+            }
+
+            // End of connection
+            server.stats.active_listeners.fetch_sub(1, Ordering::Release);
+            stats.active_listeners.fetch_sub(1, Ordering::Release);
+
+            Ok(())
+        },
+        Err(e) => {
+            Err(e)
+        }
     }
-
-    // End of connection
-    session.server.stats.active_listeners.fetch_sub(1, Ordering::Release);
-    stats.active_listeners.fetch_sub(1, Ordering::Release);
-
-    ret
 }
 
 #[inline(always)]
-pub async fn listener_broadcast<'a>(session: &mut ClientSession,
+pub async fn listener_broadcast<'a>(mut session: ClientSession,
                                   stream: &mut Receiver<Arc<Vec<u8>>>,
                                   mut meta_stream: Receiver<Arc<Vec<u8>>>,
                                   mut mover: Receiver<Arc<MoveClientsCommand>>,
                                   stats: &SourceStats, with_metadata: bool,
                                   metaint: &mut usize, id: &mut Uuid,
                                   clients: &mut Arc<RwLock<HashMap<Uuid, Client>>>,
-                                  client_stats: &ClientStats) -> Result<()> {
+                                  client_stats: &ClientStats, mountpoint: String) -> Result<bool> {
     let mut fallback   = None;
 
     let mut metadata   = Arc::new(Vec::new());
     let mut bytes_sent = 0;
     let mut stat_int   = tokio::time::interval(Duration::from_secs(30));
+
+    let mut migrate_comm = session.server.migrate.clone();
 
     loop {
         loop {
@@ -281,6 +269,34 @@ pub async fn listener_broadcast<'a>(session: &mut ClientSession,
                     },
                     Err(RecvError::Lagged(_)) => (),
                     Err(RecvError::Closed) => break
+                },
+                migrate = migrate_comm.recv() => {
+                    println!("gergreergr");
+                    // Safety only task of client will ever remove itself
+                    let client = clients.write().await
+                        .remove(id)
+                        .expect("Should be able to get Client");
+                    // Safety: migrate sender half is NEVER dropped until process exits
+                    let migrate = migrate
+                        .expect("Got migrate notice with closed mpsc");
+                    let info = MigrateConnection::Client {
+                        info: MigrateClient {
+                            mountpoint: mountpoint.clone(),
+                            properties: client.properties,
+                            resume_point: stream.last_index(),
+                            metaint: *metaint as u64
+                        }
+                    };
+                    let info: VersionedMigrateConnection = info.into();
+                    // Well, can't do nothing if we ran out of memory here
+                    if let Ok(info) = postcard::to_stdvec(&info) {
+                        _ = migrate.listener.send(MigrateClientInfo {
+                            info,
+                            mountpoint,
+                            sock: session.stream
+                        });
+                    }
+                    return Ok(false);
                 }
             }
         };
@@ -294,7 +310,7 @@ pub async fn listener_broadcast<'a>(session: &mut ClientSession,
         break;
     };
 
-    Ok(())
+    Ok(true)
 }
 
 async fn change_mount(stream: &mut Receiver<Arc<Vec<u8>>>, meta_stream: &mut Receiver<Arc<Vec<u8>>>,
