@@ -39,15 +39,6 @@ pub fn password_hasher_thread(server: Arc<Server>, mut rx: mpsc::UnboundedReceiv
     }
 }
 
-pub async fn source_mount_auth(auth: Option<(String, String)>) -> Result<bool> {
-    if let Some(v) = auth {
-        if v.0.eq("1") && v.1.eq("2") {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 pub async fn admin_or_source_auth(session: &mut ClientSession, auth: Option<(String, String)>, req_mount: &str) -> Result<String> {
     // Making sure we are receiving this through admin interface
     if session.admin_addr {
