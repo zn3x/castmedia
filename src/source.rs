@@ -217,8 +217,6 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
         chunked = false;
     } else {
         // PUT METHOD
-        // No support for encoding
-        // TODO Add support for transfer encoding options as specified here: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Transfer-Encoding
         chunked = match utils::get_header("Transger-Encoding", &request.headers) {
             Some(b"identity") | None => false,
             Some(b"chunked") => true,
