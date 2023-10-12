@@ -302,6 +302,16 @@ async fn server_restart(session: &mut ClientSession, req: AdminRequest) -> Resul
     let user_id = auth::admin_auth(session, req.auth).await?;
     let sid     = &session.server.config.info.id;
 
+    // Checking if all interfaces are not tls
+    let uses_tls = session.server.config.address
+        .iter()
+        .any(|x| x.tls.is_some() && x.tls.as_ref().unwrap().enabled);
+    if uses_tls || (session.server.config.admin_access.address.tls.is_some()
+        && session.server.config.admin_access.address.tls.as_ref().unwrap().enabled) {
+        response::forbidden(&mut session.stream, sid, "Migration with Tls not supported").await?;
+        return Ok(());
+    }
+
     match session.server.migrate_tx.lock().await.take() {
         Some(migrate) => {
             info!("Starting zero downtime migration requested by admin {}", user_id);
