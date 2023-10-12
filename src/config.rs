@@ -264,7 +264,8 @@ impl ServerSettings {
 
     /// Method to verify if current settings are sane returning number of errors found
     pub fn verify(config: &ServerSettings, unsafe_pass: bool) -> usize {
-        let mut errors = 0;
+        let mut errors   = 0;
+        let mut with_tls = false;
         // First we verify no duplicate addresses are supplied to us
         let mut addresses = config.address.iter().collect::<Vec<_>>();
         if config.admin_access.enabled {
@@ -281,11 +282,16 @@ impl ServerSettings {
                 }
             }
             if let Some(tls) = address.tls.as_ref() {
+                with_tls = true;
                 if !std::path::Path::new(&tls.cert).is_file() {
                     error!("Tls identity {} for [{}] not found.", tls.cert, address.bind);
                     errors += 1;
                 }
             }
+        }
+
+        if with_tls {
+            warn!("Migration not supported with tls, an tls termination proxy must be set if needed");
         }
 
         // Verifying accounts credentials
