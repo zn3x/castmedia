@@ -73,8 +73,6 @@ pub struct MigrateCommand {
 }
 
 pub async fn handle(server: Arc<Server>, migrate: Sender<Arc<MigrateCommand>>) {
-    // TODO: Can we remove all expect calls??
-
     // Spawning another task that will handle migration
     tokio::task::spawn_blocking(move || {
         if let Err(e) = migrate_operation(server, migrate) {
@@ -108,12 +106,12 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
 
     let migrate_file = format!("/tmp/castradio_{}.migrate", std::process::id());
     let migrate_sock = UnixListener::bind(&migrate_file)
-        .expect("We should be able to create a unix socket");
+        .map_err(|_| anyhow::Error::msg("We should be able to create a unix socket"))?;
 
     // Now we actually spawn successor
     let name = std::env::args()
         .next()
-        .expect("Should be able to get process name");
+        .ok_or(anyhow::Error::msg("Should be able to get current process name"))?;
     let mut successor_fh = std::process::Command::new(name);
     successor_fh.args(["-m", &migrate_file]);
     if server.args.unsafe_pass {
@@ -121,13 +119,13 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
     }
     successor_fh.arg(&server.args.config_file);
     let successor_fh = successor_fh.spawn()
-        .expect("Should be able to spawn successor in migration");
+        .map_err(|_| anyhow::Error::msg("Should be able to spawn successor in migration"))?;
 
     // Our job pretty much done
     // Our child will take care of the rest :')
     // It was a good life afterall
     let (mut successor, _) = migrate_sock.accept()
-        .expect("Can't accept connection from spawned child");
+        .map_err(|_| anyhow::Error::msg("Can't accept connection from spawned child"))?;
 
 
     // The migration is done in the following way because we don't have any efficied way to
