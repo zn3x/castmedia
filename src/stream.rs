@@ -164,7 +164,8 @@ pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, ur
 
 // Getting a future lifetime error, a workaround for now
 pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
-                     queue_size: usize, chunked: bool, broadcast: SourceBroadcast,
+                     queue_size: usize, chunked: bool,
+                     broadcast: SourceBroadcast,
                      kill_notifier: oneshot::Receiver<()>)
     -> impl Future<Output = ()> + 'a {
     async move {

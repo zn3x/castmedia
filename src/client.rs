@@ -55,13 +55,19 @@ pub async fn handle_client(session: ClientSession, request: Request<'_>, req: Li
 
     drop(request);
 
-    prepare_listener(session, req.mountpoint, None, ClientProperties { user_agent, metadata }).await
+    prepare_listener(
+        session,
+        ListenerInfo {
+            mountpoint: req.mountpoint,
+            migrated: None,
+            properties: ClientProperties { user_agent, metadata }
+        }
+    ).await
 }
 
-async fn prepare_listener(mut session: ClientSession, mountpoint: String, migrated: Option<ListenerRestoreInfo>,
-                          properties: ClientProperties) -> Result<()> {
+async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Result<()> {
     let (props, mut stream, meta_stream,
-         mover, stats, mut clients) = match session.server.sources.read().await.get(&mountpoint) {
+         mover, stats, mut clients) = match session.server.sources.read().await.get(&info.mountpoint) {
         Some(v) => {
             (
                 v.properties.clone(),
@@ -73,10 +79,10 @@ async fn prepare_listener(mut session: ClientSession, mountpoint: String, migrat
             )
         },
         None => {
-            if migrated.is_none() {
+            if info.migrated.is_none() {
                 response::not_found(&mut session.stream, &session.server.config.info.id).await?;
             }
-            error!("Source for {} suddenly vanished after client connection", mountpoint);
+            error!("Source for {} suddenly vanished after client connection", info.mountpoint);
             return Ok(());
         }
     };
@@ -91,7 +97,7 @@ async fn prepare_listener(mut session: ClientSession, mountpoint: String, migrat
         if new_count > session.server.config.limits.listeners {
             // We must not surpass limit of possible listeners
             session.server.stats.active_listeners.fetch_sub(1, Ordering::Release);
-            if migrated.is_none() {
+            if info.migrated.is_none() {
                 response::internal_error(&mut session.stream, &session.server.config.info.id).await?;
             }
             return Ok(());
@@ -107,7 +113,7 @@ async fn prepare_listener(mut session: ClientSession, mountpoint: String, migrat
         start_time: AtomicI64::new(chrono::offset::Utc::now().timestamp()),
         bytes_sent: AtomicU64::new(0)
     });
-    let metadata = properties.metadata;
+    let metadata = info.properties.metadata;
     let mut id;
     // We need to insert listener to list of active clients of mountpoint
     {
@@ -119,7 +125,7 @@ async fn prepare_listener(mut session: ClientSession, mountpoint: String, migrat
                 continue;
             }
             lock.insert(id, Client {
-                properties,
+                properties: info.properties,
                 kill: Some(kill),
                 stats: client_stats.clone()
             });
@@ -127,7 +133,7 @@ async fn prepare_listener(mut session: ClientSession, mountpoint: String, migrat
         };
     }
 
-    if migrated.is_none() {
+    if info.migrated.is_none() {
         if metadata {
             response::ok_200_icy_metadata(
                 &mut session.stream,
@@ -141,7 +147,7 @@ async fn prepare_listener(mut session: ClientSession, mountpoint: String, migrat
     }
     drop(props);
 
-    let mut metaint = match migrated {
+    let mut metaint = match info.migrated {
         Some(v) => {
             stream.restore(v.resume_point);
             v.metaint
@@ -153,7 +159,7 @@ async fn prepare_listener(mut session: ClientSession, mountpoint: String, migrat
     let ret    = tokio::select! {
         r = listener_broadcast(session, &mut stream, meta_stream, mover, 
                              &stats, metadata, &mut metaint,
-                             &mut id, &mut clients, &client_stats, mountpoint) => {
+                             &mut id, &mut clients, &client_stats, info.mountpoint) => {
             r
         },
         _ = kill_rx => {
@@ -382,19 +388,25 @@ pub struct ListenerRestoreInfo {
 }
 
 pub enum ClientInfo {
-    Source {
-        mountpoint: String,
-        properties: IcyProperties,
-        metadata: Vec<u8>,
-        chunked: bool,
-        queue_size: usize,
-        broadcast: (Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)
-    },
-    Listener {
-        mountpoint: String,
-        migrated: ListenerRestoreInfo,
-        properties: ClientProperties
-    }
+    Source(SourceInfo),
+    Listener(ListenerInfo)
+}
+
+pub struct SourceInfo {
+    pub mountpoint: String,
+    pub properties: IcyProperties,
+    pub initial_bytes_read: u64,
+    pub chunked: bool,
+    pub fallback: Option<String>,
+    pub queue_size: usize,
+    pub broadcast: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,
+    pub metadata: Option<Vec<u8>>
+}
+
+pub struct ListenerInfo {
+    pub mountpoint: String,
+    pub migrated: Option<ListenerRestoreInfo>,
+    pub properties: ClientProperties
 }
 
 pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: ClientInfo) {
@@ -414,11 +426,11 @@ pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: Clien
     };
 
     match client {
-        ClientInfo::Source { mountpoint, properties, metadata, chunked, broadcast, queue_size } => {
-            _ = handle_source(session, mountpoint, properties, 0, queue_size, chunked, Some(broadcast), Some(metadata)).await;
+        ClientInfo::Source(info) => {
+            _ = handle_source(session, info).await;
         },
-        ClientInfo::Listener { mountpoint, migrated, properties } => {
-            _ = prepare_listener(session, mountpoint, Some(migrated), properties).await;
+        ClientInfo::Listener(info) => {
+            _ = prepare_listener(session, info).await;
         }
     }
 }

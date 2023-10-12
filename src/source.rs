@@ -11,7 +11,7 @@ use tokio::sync::{oneshot, RwLock};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream, auth, client::Client};
+use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream, auth, client::{Client, SourceInfo}};
 
 #[obake::versioned]
 #[obake(version("0.1.0"))]
@@ -243,26 +243,36 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
 
     properties.populate_from_http_headers(&request.headers);
 
-
-    handle_source(session, req.mountpoint, properties, request.headers_buf.len() as u64, 0, chunked, None, None).await
+    handle_source(
+        session,
+        SourceInfo {
+            mountpoint: req.mountpoint,
+            properties,
+            initial_bytes_read: request.headers_buf.len() as u64,
+            chunked,
+            fallback: None,
+            queue_size: 0,
+            broadcast: None,
+            metadata: None
+        }
+    ).await
 }
 
-pub async fn handle_source(session: ClientSession, mountpoint: String,
-                           properties: IcyProperties, initial_bytes_read: u64, queue_size: usize,
-                           chunked: bool, migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,
-                           metadata: Option<Vec<u8>>) -> Result<()> {
-    let (source, mut broadcast, kill_notifier) = Source::new(properties, migrated);
+pub async fn handle_source(session: ClientSession, info: SourceInfo) -> Result<()> {
+    let (mut source, mut broadcast, kill_notifier) = Source::new(info.properties, info.broadcast);
+
+    source.fallback = info.fallback;
 
     // To prevent early readers from having no header
-    if let Some(metadata) = metadata {
+    if let Some(metadata) = info.metadata {
         broadcast.metadata.send(Arc::new(metadata));
     }
 
     // We must write initial read length to stats
-    source.stats.bytes_read.fetch_add(initial_bytes_read, Ordering::Relaxed);
+    source.stats.bytes_read.fetch_add(info.initial_bytes_read, Ordering::Relaxed);
 
     // Add this mountpoint to mountpoints hashmap
-    session.server.sources.write().await.insert(mountpoint.clone(), source);
+    session.server.sources.write().await.insert(info.mountpoint.clone(), source);
 
     // Server stats
     session.server.stats.source_client_connections.fetch_add(1, Ordering::Relaxed);
@@ -270,7 +280,11 @@ pub async fn handle_source(session: ClientSession, mountpoint: String,
     session.server.stats.active_sources.fetch_add(1, Ordering::Acquire);
     
     // Then handle media stream coming for this mountpoint
-    stream::broadcast(&mountpoint, session, queue_size, chunked, broadcast, kill_notifier).await;
+    stream::broadcast(
+        &info.mountpoint, session,
+        info.queue_size, info.chunked,
+        broadcast, kill_notifier
+    ).await;
 
     Ok(())
 }

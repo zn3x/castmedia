@@ -10,7 +10,7 @@ use passfd::FdPassingExt;
 use tracing::{error, info};
 
 use crate::{
-    source::IcyProperties_v0_1_0, client::{ClientProperties_v0_1_0, handle_migrated, ListenerRestoreInfo},
+    source::IcyProperties_v0_1_0, client::{ClientProperties_v0_1_0, handle_migrated, ListenerRestoreInfo, SourceInfo, ListenerInfo},
     server::{Socket, Server}, stream::StreamReader
 };
 
@@ -230,24 +230,26 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
 
                 let snapshot = restore_channel_from_snapshot((snapshot_msgs, info.broadcast_snapshot.1, info.broadcast_snapshot.2));
 
-                crate::client::ClientInfo::Source {
+                crate::client::ClientInfo::Source(SourceInfo {
                     mountpoint: info.mountpoint,
                     properties: info.properties,
-                    metadata: info.metadata,
+                    initial_bytes_read: 0,
+                    metadata: Some(info.metadata),
                     chunked: info.chunked,
+                    fallback: info.fallback,
                     queue_size: info.queue_size as usize,
-                    broadcast: snapshot
-                }
+                    broadcast: Some(snapshot)
+                })
             },
             MigrateConnection_v0_1_0::Client { info } => {
-                crate::client::ClientInfo::Listener {
+                crate::client::ClientInfo::Listener(ListenerInfo {
                     mountpoint: info.mountpoint,
-                    migrated: ListenerRestoreInfo {
+                    migrated: Some(ListenerRestoreInfo {
                         resume_point: info.resume_point,
                         metaint: info.metaint as usize,
-                    },
+                    }),
                     properties: info.properties
-                }
+                })
             }
         };
 
