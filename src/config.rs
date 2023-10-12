@@ -262,8 +262,9 @@ impl ServerSettings {
         }
     }
 
-    /// Method to verify if current settings are sane
-    pub fn verify(config: &ServerSettings, unsafe_pass: bool) {
+    /// Method to verify if current settings are sane returning number of errors found
+    pub fn verify(config: &ServerSettings, unsafe_pass: bool) -> usize {
+        let mut errors = 0;
         // First we verify no duplicate addresses are supplied to us
         let mut addresses = config.address.iter().collect::<Vec<_>>();
         if config.admin_access.enabled {
@@ -276,11 +277,13 @@ impl ServerSettings {
                 if &address.bind as *const _ != &address1.bind as *const _
                     && address.bind.eq(&address1.bind) {
                     error!("Two addresses can't have same bind tuple [{}].", address.bind);
+                    errors += 1;
                 }
             }
             if let Some(tls) = address.tls.as_ref() {
                 if !std::path::Path::new(&tls.cert).is_file() {
                     error!("Tls identity {} for [{}] not found.", tls.cert, address.bind);
+                    errors += 1;
                 }
             }
         }
@@ -305,6 +308,7 @@ impl ServerSettings {
 
                 if user.eq(ruser) {
                     error!("Two accounts with identical username: {}", user);
+                    errors += 1;
                 }
 
                 if let (Some(mounts), Some(rmounts)) = (mounts, rmounts) {
@@ -327,16 +331,19 @@ impl ServerSettings {
 
                         if estimate.score() <= 3 {
                             error!("Password for {} is not strong with a score of {}/4", user, estimate.score());
+                            errors += 1;
                             continue;
                         }
                     },
                     ("1$", hash) => {
                         if let Err(e) = PasswordHash::new(hash) {
                             error!("Invalid scrypt password hash for {}: {}", user, e);
+                            errors += 1;
                         }
                     },
                     _ => {
                         error!("Invalid password prefix for {}", user);
+                        errors += 1;
                         continue;
                     }
                 }
@@ -352,6 +359,9 @@ impl ServerSettings {
         }
         if config.limits.sources + config.limits.listeners > config.limits.clients {
             error!("limits.sources + limits.listeners should never be bigger than limits.clients");
+            errors += 1;
         }
+
+        errors
     }
 }

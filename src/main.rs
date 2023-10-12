@@ -11,6 +11,8 @@ mod auth;
 mod utils;
 mod migrate;
 
+use tracing::error;
+
 use arg::{Args, ParseError, ParseKind};
 
 #[derive(Debug, Args)]
@@ -66,7 +68,13 @@ async fn main() {
     let migrate = args.migrate.clone();
     
     let mut config = config::ServerSettings::load(&args.config_file);
-    config::ServerSettings::verify(&config, args.unsafe_pass);
+    {
+        let e = config::ServerSettings::verify(&config, args.unsafe_pass);
+        if e > 0 {
+            error!("{} errors found in configuration, exiting...", e);
+            std::process::exit(1);
+        }
+    }
     config::ServerSettings::hash_passwords(&mut config);
 
     server::listener(config, args, migrate).await;
