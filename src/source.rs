@@ -188,7 +188,13 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
 
     let sid = &session.server.config.info.id;
 
-    // TODO: CHECK PATH
+    // Do not allow mounting on /admin and /api folders
+    // and also files with same name to not confuse things
+    if req.mountpoint.eq("/admin") || req.mountpoint.eq("/api")
+        || req.mountpoint.starts_with("/admin/") || req.mountpoint.starts_with("/api/") {
+        response::forbidden(&mut session.stream, sid, "You can't mount on paths reserved for api").await?;
+        return Ok(());
+    }
 
     // Check if mountpoint used
     if session.server.sources.read().await.contains_key(&req.mountpoint) {
