@@ -243,6 +243,13 @@ impl ServerSettings {
                 ("1$", _) => (),
                 ("0$", rawpass) => {
                     let salt = SaltString::generate(&mut OsRng);
+                    // Speeding up debug
+                    // Should never be used for prod
+                    #[cfg(debug_assertions)]
+                    let hash = Scrypt.hash_password_customized(rawpass.as_bytes(), None, None, scrypt::Params::new(1, 1, 1, 10).unwrap(), &salt)
+                        .expect("Should be able to hash password")
+                        .to_string();
+                    #[cfg(not(debug_assertions))]
                     let hash = Scrypt.hash_password(rawpass.as_bytes(), &salt)
                         .expect("Should be able to hash password")
                         .to_string();
