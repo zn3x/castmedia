@@ -50,7 +50,11 @@ account:
     # Mount must be specified, if mounting to any path is needed, wildcard (*) can be used.
     # If user tries to mount to any other location, access won't be granted.
     # If two sources accounts have same mount, access will only be given to first one mounting.
-    mount: ['/stream']
+    # A fallback mount can also be specified that all clients will be moved to if source disconnects
+    mount:
+      - path: '/stream'
+        fallback: '/stream1'
+      - path: '/stream1'
 # This is a specific interface for admin access only
 admin_access:
   enabled: true

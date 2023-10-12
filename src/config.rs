@@ -66,8 +66,14 @@ pub enum Account {
     Source {
         user: String,
         pass: String,
-        mount: Vec<String>
+        mount: Vec<Mount>
     }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Mount {
+    pub path: String,
+    pub fallback: Option<String>
 }
 
 #[derive(Serialize, Deserialize)]
@@ -327,8 +333,8 @@ impl ServerSettings {
                 if let (Some(mounts), Some(rmounts)) = (mounts, rmounts) {
                     for mount in mounts {
                         for rmount in rmounts {
-                            if mount.eq(rmount) && mount.ne("*") {
-                                warn!("Sources {} and {} have access to same mountpoint {}", user, ruser, mount);
+                            if mount.path.eq(&rmount.path) && mount.path.ne("*") {
+                                warn!("Sources {} and {} have access to same mountpoint {}", user, ruser, mount.path);
                             }
                         }
                     }

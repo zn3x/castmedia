@@ -50,7 +50,7 @@ pub async fn admin_or_source_auth(session: &mut ClientSession, auth: Option<(Str
                 .position(|x| {
                     v.0.eq(match x {
                         Account::Source { user, mount, .. } => {
-                            has_permission = mount.iter().any(|x| x.eq("*") || x.eq(req_mount));
+                            has_permission = mount.iter().any(|x| x.path.eq("*") || x.path.eq(req_mount));
                             user
                         },
                         Account::Admin { user, .. } => {

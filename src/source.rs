@@ -11,7 +11,7 @@ use tokio::sync::{oneshot, RwLock};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream, auth, client::{Client, SourceInfo}};
+use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream, auth, client::{Client, SourceInfo}, config::Account};
 
 #[obake::versioned]
 #[obake(version("0.1.0"))]
@@ -176,15 +176,16 @@ impl Source {
 }
 
 pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: SourceRequest) -> Result<()> {
-    match auth::admin_or_source_auth(&mut session, req.auth, &req.mountpoint).await {
+    let user_id = match auth::admin_or_source_auth(&mut session, req.auth, &req.mountpoint).await {
         Ok(v) => {
             info!("New source request from {} to mount on {}", v, req.mountpoint);
+            v
         },
         Err(e) => {
             response::internal_error(&mut session.stream, &session.server.config.info.id).await?;
             return Err(anyhow::Error::msg(format!("Source authentication failed, cause: {}", e)));
         }
-    }
+    };
 
     let sid = &session.server.config.info.id;
 
@@ -243,6 +244,26 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
 
     properties.populate_from_http_headers(&request.headers);
 
+    let mut fallback = None;
+    for account in &session.server.config.account {
+        match account {
+            Account::Admin { user, .. } => if user.eq(&user_id) {
+                break;
+            },
+            Account::Source { user, mount, .. } => {
+                if user.eq(&user_id) {
+                    for mount in mount {
+                        if mount.path.eq(&req.mountpoint) {
+                            fallback = mount.fallback.clone();
+                            break;
+                        }
+                    }
+                    break;
+                }
+            },
+        }
+    }
+
     handle_source(
         session,
         SourceInfo {
@@ -250,7 +271,7 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
             properties,
             initial_bytes_read: request.headers_buf.len() as u64,
             chunked,
-            fallback: None,
+            fallback,
             queue_size: 0,
             broadcast: None,
             metadata: None
