@@ -6,7 +6,7 @@ address:
 metadata_interval: 32000
 # General server info
 info:
-  id: CastRadio 0.1.0
+  id: CastMedia 0.1.0
   admin: admin@localhost
   location: '1.064646'
   description: Internet radio!

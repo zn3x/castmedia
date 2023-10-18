@@ -104,7 +104,7 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
 
     info!("Preparing launch of new instance");
 
-    let migrate_file = format!("/tmp/castradio_{}.migrate", std::process::id());
+    let migrate_file = format!("/tmp/castmedia_{}.migrate", std::process::id());
     let migrate_sock = UnixListener::bind(&migrate_file)
         .map_err(|_| anyhow::Error::msg("We should be able to create a unix socket"))?;
 
