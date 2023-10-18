@@ -162,7 +162,6 @@ pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, ur
 
 }
 
-// Getting a future lifetime error, a workaround for now
 pub async fn broadcast(mountpoint: &str, session: ClientSession,
                      queue_size: usize, chunked: bool,
                      broadcast: SourceBroadcast,
