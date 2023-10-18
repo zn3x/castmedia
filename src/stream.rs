@@ -163,133 +163,130 @@ pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, ur
 }
 
 // Getting a future lifetime error, a workaround for now
-pub fn broadcast<'a>(mountpoint: &'a str, session: ClientSession,
+pub async fn broadcast(mountpoint: &str, session: ClientSession,
                      queue_size: usize, chunked: bool,
                      broadcast: SourceBroadcast,
-                     kill_notifier: oneshot::Receiver<()>)
-    -> impl Future<Output = ()> + 'a {
-    async move {
-        info!("Mounted source on {}", mountpoint);
+                     kill_notifier: oneshot::Receiver<()>) {
+    info!("Mounted source on {}", mountpoint);
 
-        let omountpoint = mountpoint.to_owned();
-        let stats       = match session.server.sources
-            .read()
-            .await
-            .get(mountpoint) {
-            Some(v) => v.stats.clone(),
-            None => {
-                error!("Can't find stats for {}, did it get removed?", mountpoint);
-                return;
-            }
-        };
-
-        let reader: Box<dyn StreamReader>;
-        let base_reader = SimpleReader::new(session.stream, session.server.config.limits.source_timeout, stats);
-        if chunked {
-            reader      = Box::new(ChunkedReader::new(base_reader));
-        } else {
-            reader      = Box::new(base_reader);
+    let omountpoint = mountpoint.to_owned();
+    let stats       = match session.server.sources
+        .read()
+        .await
+        .get(mountpoint) {
+        Some(v) => v.stats.clone(),
+        None => {
+            error!("Can't find stats for {}, did it get removed?", mountpoint);
+            return;
         }
-        let reader = Box::leak(reader);
-        let rguard = unsafe { Box::from_raw(reader) };
+    };
 
-        let media_broadcast = broadcast.audio.clone();
-        let server          = session.server.clone();
-        // For now we are using threads for source
-        let abort_handle  = Arc::new(AtomicBool::new(false));
-        let abort_cl      = abort_handle.clone();
-        let mut fut       = tokio::task::spawn_blocking(move || {
-            match blocking_broadcast(&omountpoint, reader, &session.server, broadcast, abort_cl, queue_size) {
-                Ok(v) => Ok(v),
-                Err(e) => {
-                    error!("Source stream for {} closed: {}", omountpoint, e);
-                    Err(e)
-                }
-            }
-        });
-        
-        // Here we either wait for source to broadcast till it disconnects
-        // Or we receive a command to kill it from admin
-        // Or we receive command for a migration
-        let mut migrate_comm = server.migrate.clone();
-        tokio::select! {
-            _ = &mut fut => (),
-            _ = kill_notifier => {
-                abort_handle.store(true, Ordering::Relaxed);
-            },
-            migrate = migrate_comm.recv() => {
-                abort_handle.store(true, Ordering::Relaxed);
-                // Safety: migrate sender half is NEVER dropped until process exits
-                let migrate = migrate
-                    .expect("Got migrate notice with closed mpsc");
-                // Now we fetch all info needed
-                let (properties, fallback, metadata);
-                {
-                    let lock   = server.sources.read().await;
-                    let source = lock.get(mountpoint)
-                        .expect("Source should still exist at this point");
-                    // Can we not clone here?
-                    properties = source.properties.as_ref().clone();
-                    fallback   = source.fallback.clone();
-                    metadata   = match source.meta_broadcast.clone().try_recv().ok() {
-                        Some(v) => v.as_ref().clone(),
-                        None  => metadata_encode(&None, &None)
-                    };
-                }
-                let mountpoint = mountpoint.to_owned();
-                let queue_size = if let Ok(Ok(v)) = fut.await {
-                    v
-                } else {
-                    0
-                };
-
-                // We need to first take a snapshot of media channel
-                // This is mainly the thing that will let us resume in new process
-                let snapshot = media_broadcast.snapshot();
-                let info     = MigrateConnection::Source {
-                    info: MigrateSource {
-                        mountpoint,
-                        properties,
-                        broadcast_snapshot: (snapshot.0.len() as u64, snapshot.1, snapshot.2),
-                        fallback,
-                        metadata,
-                        queue_size: queue_size as u64,
-                        chunked
-                    }
-                };
-                let info: VersionedMigrateConnection = info.into();
-                if let Ok(info) = postcard::to_stdvec(&info) {
-                    _ = migrate.source.send(MigrateSourceInfo {
-                        info,
-                        media: snapshot.0,
-                        sock: rguard
-                    });
-                }
-                return;
-            }
-        }
-
-        // Cleanup
-        let mount = server.sources.write().await.remove(mountpoint);
-
-        // Before closing, we need to give clients a fallback if one is configured
-        if let Some(mut mount) = mount {
-            if let Some(fallback) = mount.fallback {
-                if let Some(fallback_mount) = server.sources.read().await.get(&fallback) {
-                    mount.move_listeners_sender.send(Arc::new(MoveClientsCommand {
-                        broadcast: fallback_mount.broadcast.clone(),
-                        meta_broadcast: fallback_mount.meta_broadcast.clone(),
-                        move_listeners_receiver: fallback_mount.move_listeners_receiver.clone(),
-                        clients: fallback_mount.clients.clone(),
-                        move_type: MoveClientsType::Fallback
-                    }));
-                }
-            }
-        }
-
-        info!("Unmounted source on {}", mountpoint);
-        server.stats.active_sources.fetch_sub(1, Ordering::Release);
+    let reader: Box<dyn StreamReader>;
+    let base_reader = SimpleReader::new(session.stream, session.server.config.limits.source_timeout, stats);
+    if chunked {
+        reader      = Box::new(ChunkedReader::new(base_reader));
+    } else {
+        reader      = Box::new(base_reader);
     }
+    let reader = Box::leak(reader);
+    let rguard = unsafe { Box::from_raw(reader) };
+
+    let media_broadcast = broadcast.audio.clone();
+    let server          = session.server.clone();
+    // For now we are using threads for source
+    let abort_handle  = Arc::new(AtomicBool::new(false));
+    let abort_cl      = abort_handle.clone();
+    let mut fut       = tokio::task::spawn_blocking(move || {
+        match blocking_broadcast(&omountpoint, reader, &session.server, broadcast, abort_cl, queue_size) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                error!("Source stream for {} closed: {}", omountpoint, e);
+                Err(e)
+            }
+        }
+    });
+    
+    // Here we either wait for source to broadcast till it disconnects
+    // Or we receive a command to kill it from admin
+    // Or we receive command for a migration
+    let mut migrate_comm = server.migrate.clone();
+    tokio::select! {
+        _ = &mut fut => (),
+        _ = kill_notifier => {
+            abort_handle.store(true, Ordering::Relaxed);
+        },
+        migrate = migrate_comm.recv() => {
+            abort_handle.store(true, Ordering::Relaxed);
+            // Safety: migrate sender half is NEVER dropped until process exits
+            let migrate = migrate
+                .expect("Got migrate notice with closed mpsc");
+            // Now we fetch all info needed
+            let (properties, fallback, metadata);
+            {
+                let lock   = server.sources.read().await;
+                let source = lock.get(mountpoint)
+                    .expect("Source should still exist at this point");
+                // Can we not clone here?
+                properties = source.properties.as_ref().clone();
+                fallback   = source.fallback.clone();
+                metadata   = match source.meta_broadcast.clone().try_recv().ok() {
+                    Some(v) => v.as_ref().clone(),
+                    None  => metadata_encode(&None, &None)
+                };
+            }
+            let mountpoint = mountpoint.to_owned();
+            let queue_size = if let Ok(Ok(v)) = fut.await {
+                v
+            } else {
+                0
+            };
+
+            // We need to first take a snapshot of media channel
+            // This is mainly the thing that will let us resume in new process
+            let snapshot = media_broadcast.snapshot();
+            let info     = MigrateConnection::Source {
+                info: MigrateSource {
+                    mountpoint,
+                    properties,
+                    broadcast_snapshot: (snapshot.0.len() as u64, snapshot.1, snapshot.2),
+                    fallback,
+                    metadata,
+                    queue_size: queue_size as u64,
+                    chunked
+                }
+            };
+            let info: VersionedMigrateConnection = info.into();
+            if let Ok(info) = postcard::to_stdvec(&info) {
+                _ = migrate.source.send(MigrateSourceInfo {
+                    info,
+                    media: snapshot.0,
+                    sock: rguard
+                });
+            }
+            return;
+        }
+    }
+
+    // Cleanup
+    let mount = server.sources.write().await.remove(mountpoint);
+
+    // Before closing, we need to give clients a fallback if one is configured
+    if let Some(mut mount) = mount {
+        if let Some(fallback) = mount.fallback {
+            if let Some(fallback_mount) = server.sources.read().await.get(&fallback) {
+                mount.move_listeners_sender.send(Arc::new(MoveClientsCommand {
+                    broadcast: fallback_mount.broadcast.clone(),
+                    meta_broadcast: fallback_mount.meta_broadcast.clone(),
+                    move_listeners_receiver: fallback_mount.move_listeners_receiver.clone(),
+                    clients: fallback_mount.clients.clone(),
+                    move_type: MoveClientsType::Fallback
+                }));
+            }
+        }
+    }
+
+    info!("Unmounted source on {}", mountpoint);
+    server.stats.active_sources.fetch_sub(1, Ordering::Release);
 }
 
 fn blocking_broadcast(mountpoint: &str, st: &'static mut dyn StreamReader,
