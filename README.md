@@ -13,4 +13,4 @@ It's still in early development and any use in production is **highly** discoura
 - Updates without downtime (without Tls).
 
 
-For more [docs](./docs/getting_started.md) can be found here.
+For more docs can be found [here](./docs/getting_started.md).
