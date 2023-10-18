@@ -14,3 +14,9 @@ It's still in early development and any use in production is **highly** discoura
 
 
 For more docs can be found [here](./docs/getting_started.md).
+
+
+## Todo
+
+- Add replication
+- Add per mount configuration
