@@ -281,6 +281,12 @@ impl ServerSettings {
         let mut with_tls = false;
         // First we verify no duplicate addresses are supplied to us
         let mut addresses = config.address.iter().collect::<Vec<_>>();
+
+        if addresses.is_empty() {
+            error!("At least one public bind address must be specified");
+            errors += 1;
+        }
+
         if config.admin_access.enabled {
             addresses.push(&config.admin_access.address);
         }
@@ -304,7 +310,7 @@ impl ServerSettings {
         }
 
         if with_tls {
-            warn!("Migration not supported with tls, an tls termination proxy must be set if needed");
+            warn!("Migration not supported with tls, a tls termination proxy must be set if needed");
         }
 
         // Verifying accounts credentials

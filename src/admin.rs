@@ -302,7 +302,7 @@ async fn server_restart(session: &mut ClientSession, req: AdminRequest) -> Resul
     let user_id = auth::admin_auth(session, req.auth).await?;
     let sid     = &session.server.config.info.id;
 
-    // Checking if all interfaces are not tls
+    // Checking if all bind addresses are not tls
     let uses_tls = session.server.config.address
         .iter()
         .any(|x| x.tls.is_some() && x.tls.as_ref().unwrap().enabled);

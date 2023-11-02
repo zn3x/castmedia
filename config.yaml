@@ -40,7 +40,7 @@ account:
     # A password can either be either plaintext or hashed by specifying a prefix:
     # - 0$: Plaintext
     # - 1$: A hashed scrypt password digest
-    # In case a plaintext is specified, it is encrypted by default at start-time, however it should be considired
+    # In case a plaintext is specified, it is hashed by default at start-time, however it should be considired
     # if an attacker can get read access to this configuration file
     pass: 0$pass
     role: admin
@@ -55,7 +55,7 @@ account:
       - path: '/stream'
         fallback: '/stream1'
       - path: '/stream1'
-# This is a specific interface for admin access only
+# This is a specific bind address for admin access only
 admin_access:
   enabled: true
   address:
