@@ -352,6 +352,11 @@ pub async fn listener(config: ServerSettings, args: ArgParse, migrate_op: Option
             std::process::exit(1);
         },
         _ = migrate.recv() => {
+            // Stopping accepting new connections by dropping listener futures
+            set.abort_all();
+            while !set.is_empty() {
+                _ = set.join_next().await;
+            }
             // We have a migrate operation, idling until the times come...
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
