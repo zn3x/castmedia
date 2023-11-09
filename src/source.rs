@@ -212,6 +212,12 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
         }
     });
 
+    // We need to check stream type from content-type header
+    if !["audio/mpeg"].contains(&properties.content_type.as_str()) {
+        response::forbidden(&mut session.stream, sid, "Insuported stream codec").await?;
+        return Ok(());
+    }
+
     let chunked;
     if request.method == "SOURCE" {
         response::ok_200(&mut session.stream, sid).await?;
