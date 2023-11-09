@@ -142,7 +142,11 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
                 session.server.config.metaint
             ).await?;
         } else {
-            response::ok_200(&mut session.stream, &session.server.config.info.id).await?;
+            response::ok_200_listener(
+                &mut session.stream,
+                &session.server.config.info.id,
+                &props
+            ).await?;
         }
     }
     drop(props);

@@ -135,12 +135,14 @@ Content-Type: application/json; charset=utf-8\r\n").await?;
 pub async fn ok_200_icy_metadata(stream: &mut Stream, server_id: &str, properties: &IcyProperties, metaint: usize) -> Result<()> {
     stream.write_all(format!("HTTP/1.1 200 OK\r\n\
 Connection: close\r\n\
+Content-Type: {}\r\n\
 icy-metaint: {}\r\n\
 icy-description: {}\r\n\
 icy-genre: {}\r\n\
 icy-name: {}\r\n\
 icy-pub: {}\r\n\
 icy-url: {}\r\n",
+    properties.content_type,
     metaint,
     properties.description.as_ref().unwrap_or(&"Unknewn".to_string()),
     properties.genre.as_ref().unwrap_or(&"Unknewn".to_string()),
@@ -152,6 +154,17 @@ icy-url: {}\r\n",
     if let Some(bitrate) = properties.bitrate.as_ref() {
         stream.write_all(format!("icy-bitrate: {}\r\n", bitrate).as_bytes()).await?;
     }
+
+    server_info(stream, server_id).await?;
+    Ok(())
+}
+
+pub async fn ok_200_listener(stream: &mut Stream, server_id: &str, properties: &IcyProperties) -> Result<()> {
+    stream.write_all(format!("HTTP/1.0 200 OK\r\n\
+Connection: close\r\n\
+Content-Type: {}\r\n",
+        properties.content_type
+    ).as_bytes()).await?;
 
     server_info(stream, server_id).await?;
     Ok(())
