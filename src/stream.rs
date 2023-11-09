@@ -1,4 +1,11 @@
-use std::{time::Duration, future::Future, collections::VecDeque, io::Read, num::NonZeroUsize, sync::{Arc, atomic::{Ordering, AtomicBool}}};
+use std::{
+    time::Duration, collections::VecDeque, io::Read,
+    num::NonZeroUsize,
+    sync::{
+        Arc,
+        atomic::{Ordering, AtomicBool}
+    }
+};
 use futures::executor::block_on;
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};

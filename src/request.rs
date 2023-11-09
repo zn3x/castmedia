@@ -5,7 +5,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::{
     server::{ClientSession, Stream},
-    utils::{self, get_basic_auth, Query}, response
+    utils::{self, get_basic_auth, Query}
 };
 
 pub struct Request<'a> {
