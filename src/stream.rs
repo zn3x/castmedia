@@ -296,8 +296,7 @@ fn blocking_broadcast(mountpoint: &str, st: &'static mut dyn StreamReader,
 
     // Use the default options for metadata and format readers.
     let meta_opts: MetadataOptions  = Default::default();
-    let mut fmt_opts: FormatOptions = Default::default();
-    fmt_opts.enable_gapless         = true;
+    let fmt_opts: FormatOptions     = Default::default();
 
     let probed = symphonia::default::get_probe()
         .format(&hint, mss, &fmt_opts, &meta_opts)?;
