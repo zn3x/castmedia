@@ -298,6 +298,10 @@ pub async fn handle_source(session: ClientSession, info: SourceInfo) -> Result<(
     // We must write initial read length to stats
     source.stats.bytes_read.fetch_add(info.initial_bytes_read, Ordering::Relaxed);
 
+    // If source never ever broadcasts metadata
+    // we do this to respect metadata interval for reader
+    crate::stream::broadcast_metadata(&mut source, &None, &None).await;
+
     // Add this mountpoint to mountpoints hashmap
     session.server.sources.write().await.insert(info.mountpoint.clone(), source);
 
