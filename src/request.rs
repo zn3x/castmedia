@@ -119,7 +119,6 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
             if source_id.starts_with("/admin/") {
                 if !session.admin_addr {
                     // If this is not an admin interface we properly block this request
-                    response::not_found(&mut session.stream, &session.server.config.info.id).await?;
                     return Err(anyhow::Error::msg("Attempt to access admin api from public interface"));
                 }
 
@@ -132,8 +131,7 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
             }
 
             if !session.server.sources.read().await.contains_key(&source_id) {
-                response::not_found(&mut session.stream, &session.server.config.info.id).await?;
-                return Err(anyhow::Error::msg("Unknewn method sent by user"));
+                return Err(anyhow::Error::msg("Unknewn path wanted by client"));
             }
 
             Ok(RequestType::Listen(ListenRequest { mountpoint: source_id }))
