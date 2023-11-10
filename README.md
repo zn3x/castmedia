@@ -20,3 +20,5 @@ For more docs can be found [here](./docs/getting_started.md).
 
 - Add replication
 - Add per mount configuration
+- Add ogg stream support, for this we should have a way to parse initial stream header from source,
+which currently there is no way todo with symphonia
