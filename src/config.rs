@@ -52,7 +52,10 @@ pub struct ServerSettings {
     pub admin_access: AdminAccess,
     /// Accounts credentials
     #[serde(default = "default_val_accounts")]
-    pub account: Vec<Account>
+    pub account: Vec<Account>,
+    /// Master server relaying for slave instance
+    #[serde(default = "default_val_accounts")]
+    pub master: Vec<MasterServer>
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -67,6 +70,16 @@ pub enum Account {
         user: String,
         pass: String,
         mount: Vec<Mount>
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type")]
+#[serde(rename_all = "lowercase")]
+pub struct MasterServer {
+    Transparent {
+        url: String,
+        update_interval: usize
     }
 }
 
@@ -385,6 +398,17 @@ impl ServerSettings {
         if config.limits.sources + config.limits.listeners > config.limits.clients {
             error!("limits.sources + limits.listeners should never be bigger than limits.clients");
             errors += 1;
+        }
+
+        // Verifying if relaying settings are sane
+        for master in &config.master {
+            if let Err(e) = url::Url::parse(master.url) {
+                error!("Master URL can't be parsed: {}", e);
+                errors += 1;
+            }
+            if master.update_interval > 1000 {
+                warn!("Update interval {} for {} may be too big", master.url, master.update_interval);
+            }
         }
 
         errors
