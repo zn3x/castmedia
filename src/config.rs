@@ -10,6 +10,7 @@ use scrypt::{
     },
     Scrypt
 };
+use url::Url;
 
 // Sane defaults for CastRadio
 const BIND: &str             = "127.0.0.1:9000";
@@ -54,7 +55,7 @@ pub struct ServerSettings {
     #[serde(default = "default_val_accounts")]
     pub account: Vec<Account>,
     /// Master server relaying for slave instance
-    #[serde(default = "default_val_accounts")]
+    #[serde(default = "default_val_master")]
     pub master: Vec<MasterServer>
 }
 
@@ -76,9 +77,9 @@ pub enum Account {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]
-pub struct MasterServer {
+pub enum MasterServer {
     Transparent {
-        url: String,
+        url: Url,
         update_interval: usize
     }
 }
@@ -165,7 +166,8 @@ impl Default for ServerSettings {
             info: default_val_info(),
             limits: default_val_limits(),
             admin_access: default_val_admin_access(),
-            account: default_val_accounts()
+            account: default_val_accounts(),
+            master: default_val_master()
         }
     }
 }
@@ -227,6 +229,8 @@ fn default_val_adminacc_enabled() -> bool { ADMINACC_ENABLED }
 fn default_val_adminacc_address() -> ServerAddress { ServerAddress { bind: ADMINACC_BIND.parse().expect("Should be a valid socket address"), tls: None } }
 
 fn default_val_accounts() -> Vec<Account> { Vec::new() }
+
+fn default_val_master() -> Vec<MasterServer> { Vec::new() }
 
 impl ServerSettings {
     pub fn load(config_path: &str) -> Self {
@@ -402,12 +406,28 @@ impl ServerSettings {
 
         // Verifying if relaying settings are sane
         for master in &config.master {
-            if let Err(e) = url::Url::parse(master.url) {
-                error!("Master URL can't be parsed: {}", e);
-                errors += 1;
-            }
-            if master.update_interval > 1000 {
-                warn!("Update interval {} for {} may be too big", master.url, master.update_interval);
+            match master {
+                MasterServer::Transparent { url, update_interval } => {
+                    match (url.host(), url.port_or_known_default()) {
+                        (Some(_), Some(_)) => {
+                            if !["http", "https"].contains(&url.scheme()) {
+                                error!("Master instance url {} is invalid!", url);
+                                errors += 1;
+                            }
+                        },
+                        (None, _) => {
+                            error!("Master instance url {} missing hostname!", url);
+                            errors += 1;
+                        },
+                        (_, None) => {
+                            error!("Master instance url {} has no port", url);
+                            errors += 1;
+                        }
+                    }
+                    if *update_interval > 1000 {
+                        warn!("Update interval {} for {} may be too big", url, update_interval);
+                    }
+                }
             }
         }
 
