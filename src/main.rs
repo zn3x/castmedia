@@ -10,6 +10,8 @@ mod api;
 mod auth;
 mod utils;
 mod migrate;
+mod relay;
+mod http;
 
 use tracing::error;
 

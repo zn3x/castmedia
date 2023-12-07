@@ -15,7 +15,7 @@ use anyhow::Result;
 use crate::{
     config::{ServerSettings, TlsIdentity}, 
     client, source::Source, migrate::MigrateCommand,
-    auth::{self, HashCalculation}, ArgParse
+    auth::{self, HashCalculation}, ArgParse, relay
 };
 
 pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {
@@ -318,6 +318,15 @@ pub async fn listener(config: ServerSettings, args: ArgParse, migrate_op: Option
             set.spawn(tls_accept_connections(serv.clone(), listener, true));
         } else {
             set.spawn(accept_connections(serv.clone(), listener, true));
+        }
+    }
+    
+    if !serv.config.master.is_empty() {
+        for i in 0..serv.config.master.len() {
+            let serv_clone = serv.clone();
+            tokio::spawn(async move {
+                relay::slave_instance(serv_clone, i).await;
+            });
         }
     }
 

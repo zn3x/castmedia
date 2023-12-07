@@ -13,24 +13,26 @@ use scrypt::{
 use url::Url;
 
 // Sane defaults for CastRadio
-const BIND: &str             = "127.0.0.1:9000";
-const METAINT: usize         = 32000;
+const BIND: &str                 = "127.0.0.1:9000";
+const METAINT: usize             = 32000;
 
-const SERVER_ID: &str        = "CastMedia 0.1.0";
-const SERVER_ADMIN: &str     = "admin@localhost";
-const LOCATION: &str         = "1.064646";
-const DESCRIPTION: &str      = "Internet radio!";
+const SERVER_ID: &str            = "CastMedia 0.1.0";
+const SERVER_ADMIN: &str         = "admin@localhost";
+const LOCATION: &str             = "1.064646";
+const DESCRIPTION: &str          = "Internet radio!";
 
-const MAX_CLIENTS: usize     = 400;
-const MAX_SOURCES: usize     = 4;
-const MAX_LISTENERS: usize   = 370;
-const QUEUE_SIZE: usize      = 102400;
-const HEADER_TIMEOUT: u64    = 15000;
-const SOURCE_TIMEOUT: u64    = 10000;
-const HTTP_MAX_LEN: usize    = 8192;
+const MAX_CLIENTS: usize         = 400;
+const MAX_SOURCES: usize         = 4;
+const MAX_LISTENERS: usize       = 370;
+const QUEUE_SIZE: usize          = 102400;
+const HEADER_TIMEOUT: u64        = 15000;
+const SOURCE_TIMEOUT: u64        = 10000;
+const HTTP_MAX_LEN: usize        = 8192;
+const MASTER_HTTP_MAX_LEN: usize = 16384;
+const MASTER_TIMEOUT: u64        = 20000;
 
-const ADMINACC_ENABLED: bool = true;
-const ADMINACC_BIND: &str    = "127.0.0.1:9100";
+const ADMINACC_ENABLED: bool     = true;
+const ADMINACC_BIND: &str        = "127.0.0.1:9100";
 
 /// Server configuration
 #[derive(Serialize, Deserialize)]
@@ -80,7 +82,7 @@ pub enum Account {
 pub enum MasterServer {
     Transparent {
         url: Url,
-        update_interval: usize
+        update_interval: u64
     }
 }
 
@@ -147,7 +149,13 @@ pub struct ServerLimits {
     pub source_timeout: u64,
     /// Max http request size in bytes sent by client that we are willing to accept
     #[serde(default = "default_val_limit_http_max_len")]
-    pub http_max_len: usize
+    pub http_max_len: usize,
+    /// Max http response size in bytes sent by master server in master/slave replication
+    #[serde(default = "default_val_limit_master_http_max_len")]
+    pub master_http_max_len: usize,
+    #[serde(default = "default_val_limit_master_timeout")]
+    /// Max time in millis we wait for master response including media stream read
+    pub master_timeout: u64
 }
 
 #[derive(Serialize, Deserialize)]
@@ -192,7 +200,9 @@ impl Default for ServerLimits {
             queue_size: default_val_limit_queue_size(),
             header_timeout: default_val_limit_header_timeout(),
             source_timeout: default_val_limit_source_timeout(),
-            http_max_len: default_val_limit_http_max_len()
+            http_max_len: default_val_limit_http_max_len(),
+            master_http_max_len: default_val_limit_master_http_max_len(),
+            master_timeout: default_val_limit_master_timeout()
         }
     }
 }
@@ -224,6 +234,8 @@ fn default_val_limit_queue_size() -> usize { QUEUE_SIZE }
 fn default_val_limit_header_timeout() -> u64 { HEADER_TIMEOUT }
 fn default_val_limit_source_timeout() -> u64 { SOURCE_TIMEOUT }
 fn default_val_limit_http_max_len() -> usize { HTTP_MAX_LEN }
+fn default_val_limit_master_http_max_len() -> usize { MASTER_HTTP_MAX_LEN }
+fn default_val_limit_master_timeout() -> u64 { MASTER_TIMEOUT }
 
 fn default_val_adminacc_enabled() -> bool { ADMINACC_ENABLED }
 fn default_val_adminacc_address() -> ServerAddress { ServerAddress { bind: ADMINACC_BIND.parse().expect("Should be a valid socket address"), tls: None } }
