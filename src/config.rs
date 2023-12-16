@@ -77,11 +77,18 @@ pub enum Account {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "type")]
 #[serde(rename_all = "lowercase")]
-pub enum MasterServer {
+pub struct MasterServer {
+    pub url: Url,
+    pub mounts_limit: usize,
+    pub relay_scheme: MasterServerRelayScheme
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "lowercase")]
+#[serde(tag = "type")]
+pub enum MasterServerRelayScheme {
     Transparent {
-        url: Url,
         update_interval: u64
     }
 }
@@ -418,26 +425,27 @@ impl ServerSettings {
 
         // Verifying if relaying settings are sane
         for master in &config.master {
-            match master {
-                MasterServer::Transparent { url, update_interval } => {
-                    match (url.host(), url.port_or_known_default()) {
-                        (Some(_), Some(_)) => {
-                            if !["http", "https"].contains(&url.scheme()) {
-                                error!("Master instance url {} is invalid!", url);
-                                errors += 1;
-                            }
-                        },
-                        (None, _) => {
-                            error!("Master instance url {} missing hostname!", url);
-                            errors += 1;
-                        },
-                        (_, None) => {
-                            error!("Master instance url {} has no port", url);
-                            errors += 1;
-                        }
+            match (master.url.host(), master.url.port_or_known_default()) {
+                (Some(_), Some(_)) => {
+                    if !["http", "https"].contains(&master.url.scheme()) {
+                        error!("Master instance url {} is invalid!", master.url);
+                        errors += 1;
                     }
+                },
+                (None, _) => {
+                    error!("Master instance url {} missing hostname!", master.url);
+                    errors += 1;
+                },
+                (_, None) => {
+                    error!("Master instance url {} has no port", master.url);
+                    errors += 1;
+                }
+            }
+
+            match &master.relay_scheme {
+                MasterServerRelayScheme::Transparent { update_interval } => {
                     if *update_interval > 1000 {
-                        warn!("Update interval {} for {} may be too big", url, update_interval);
+                        warn!("Update interval {} for {} may be too big", master.url, update_interval);
                     }
                 }
             }

@@ -3,14 +3,14 @@ use std::{sync::Arc, time::Duration};
 use anyhow::Result;
 use tokio::{
     net::TcpStream,
-    io::{BufStream, AsyncWriteExt, AsyncReadExt}
+    io::{BufStream, AsyncWriteExt}
 };
 use tokio_native_tls::native_tls::TlsConnector;
-use tracing::info;
+use tracing::{info, error};
 use url::Url;
 use serde::Deserialize;
 
-use crate::{server::{Server, Stream}, utils::get_header, config::MasterServer, http::ResponseReader};
+use crate::{server::{Server, Stream}, utils::get_header, config::MasterServerRelayScheme, http::ResponseReader};
 
 #[derive(Debug, Deserialize)]
 struct MasterMounts {
@@ -61,18 +61,48 @@ async fn fetch_available_sources(server: &Server, url: &Url) -> Result<MasterMou
     ).await?
 }
 
-async fn relay_mountpoint(serv: Arc<Server>, master_ind: usize, mount: &str) -> Result<()> {
-    let url = {
-        let master_server  = &serv.config.master[master_ind];
-        match master_server {
-            MasterServer::Transparent { url, .. } => url
-        }
+async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mount: &str) -> Result<()> {
+    let url = &serv.config.master[master_ind].url;
+
+    // Fetching media stream from master
+    let mut stream  = http_get_request(url, mount, "Icy-Metadata:1\r\n").await?;
+    let mut reader  = ResponseReader::new(&mut stream, serv.config.limits.master_http_max_len);
+    let headers_buf = reader.read_headers().await?;
+
+    // Parsing response headers
+    let mut headers = [httparse::EMPTY_HEADER; 32];
+    let mut resp    = httparse::Response::new(&mut headers);
+
+    match resp.parse(&headers_buf) {
+        Ok(httparse::Status::Complete(_)) => {},
+        Ok(httparse::Status::Partial) => return Err(anyhow::Error::msg("Incomplete response")),
+        Err(e) => return Err(e.into())
     };
 
-    let mut stream = http_get_request(url, mount, "Icy-Metadata:1\r\n").await?;
-    let mut reader = ResponseReader::new(&mut stream, serv.config.limits.master_http_max_len);
+    if !resp.code.is_some_and(|c| c == 200) {
+        return Err(anyhow::Error::msg("Unexpected response status code"));
+    }
+    
+    // We should check if this is an icecast server
+    if get_header("icy-name", resp.headers).is_none() {
+        return Err(anyhow::Error::msg("not an icecast server"));
+    }
 
-    reader.read_headers().await?;
+    // TODO: Support chunked
+    // If nothing is set then it's identity
+    if let Some(header) = get_header("Transfer-Encoding", resp.headers) {
+        if header.ne(b"identity") {
+            return Err(anyhow::Error::msg("Unsupported transfer encoding"));
+        }
+    }
+
+    // Getting metaint
+    let metaint = match get_header("Icy-Metaint", resp.headers) {
+        Some(metaint) => std::str::from_utf8(metaint)?.parse::<usize>()?,
+        None => {
+            return Err(anyhow::Error::msg("missing icy-metaint header"));
+        }
+    };
 
     Ok(())
 }
@@ -81,18 +111,27 @@ pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
     // Here we should be fine a we did check bounds before
     let master_server  = &serv.config.master[master_ind];
 
-    match master_server {
-        MasterServer::Transparent { url, update_interval } => {
+    match &master_server.relay_scheme {
+        MasterServerRelayScheme::Transparent { update_interval } => {
             let mut interval = tokio::time::interval(Duration::from_millis(*update_interval));
             loop {
                 interval.tick().await;
 
-                match fetch_available_sources(&serv, url).await {
+                match fetch_available_sources(&serv, &master_server.url).await {
                     Ok(mounts) => {
                         let lock = serv.sources.read().await;
                         for mount in &mounts.mounts {
                             if !lock.contains_key(mount) {
+                                let serv_clone  = serv.clone();
+                                let mount_clone = mount.clone();
                                 tokio::spawn(async move {
+                                    if let Err(e) = transparent_relay_mountpoint(&serv_clone, master_ind, &mount_clone).await {
+                                        error!(
+                                            "Master server {}: {}",
+                                            serv_clone.config.master[master_ind].url,
+                                            e
+                                        );
+                                    }
                                 });
                             }
                         }
