@@ -303,7 +303,9 @@ pub async fn handle_source(session: ClientSession, info: SourceInfo) -> Result<(
     crate::stream::broadcast_metadata(&mut source, &None, &None).await;
 
     // Add this mountpoint to mountpoints hashmap
-    session.server.sources.write().await.insert(info.mountpoint.clone(), source);
+    if session.server.sources.write().await.try_insert(info.mountpoint.clone(), source).is_err() {
+        return Err(anyhow::Error::msg(format!("Mountpoint {} already exists", info.mountpoint)));
+    }
 
     // Server stats
     session.server.stats.source_client_connections.fetch_add(1, Ordering::Relaxed);
