@@ -245,6 +245,9 @@ pub async fn broadcast(mountpoint: &str, session: Session,
         _ = &mut fut => (),
         _ = kill_notifier => {
             abort_handle.store(true, Ordering::Relaxed);
+            // We also need to wait here so we don't free rguard while other thread
+            // may still be accessing it's pointer
+            _ = fut.await;
         },
         migrate = migrate_comm.recv() => {
             abort_handle.store(true, Ordering::Relaxed);
@@ -297,11 +300,6 @@ pub async fn broadcast(mountpoint: &str, session: Session,
             return;
         }
     }
-
-    
-    // We also need to wait here so we don't free rguard while other thread
-    // may still be accessing it's pointer
-    _ = fut.await;
 
     // Cleanup
     let mount = server.sources.write().await.remove(mountpoint);
