@@ -71,7 +71,6 @@ async fn transparent_get_mountpoint (serv: &Arc<Server>, url: &Url, mount: &str)
     let mut reader  = ResponseReader::new(&mut stream, serv.config.limits.master_http_max_len);
     let headers_buf = reader.read_headers().await?;
 
-    println!("egergreger {:?}", std::str::from_utf8(&headers_buf));
     // Parsing response headers
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut resp    = httparse::Response::new(&mut headers);
