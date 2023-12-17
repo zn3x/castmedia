@@ -82,8 +82,12 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
     let occurences  = request.headers_buf
         .windows(2)
         .filter(|x| x.eq(b"\r\n"))
-        .count() - 2;
-    request.headers = vec![ httparse::EMPTY_HEADER; occurences ];
+        .count();
+    if occurences <= 2 {
+        // Avoid empty headers attack
+        return Err(anyhow::Error::msg("Received empty header"));
+    }
+    request.headers = vec![ httparse::EMPTY_HEADER; occurences - 2 ];
     let mut req     = httparse::Request::new(&mut request.headers);
     if req.parse(&request.headers_buf)? == Status::Partial {
         return Err(anyhow::Error::msg("Received an incomplete request"));
