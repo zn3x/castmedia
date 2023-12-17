@@ -11,7 +11,7 @@ use tracing::{info, error};
 use uuid::Uuid;
 
 use crate::{
-    server::{ClientSession, Stream, Server},
+    server::{ClientSession, Stream, Server, Session},
     request::{read_request, Request, RequestType, ListenRequest},
     source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source},
     response, utils, admin, api,
@@ -399,12 +399,22 @@ pub enum ClientInfo {
 pub struct SourceInfo {
     pub mountpoint: String,
     pub properties: IcyProperties,
-    pub initial_bytes_read: u64,
+    pub initial_bytes_read: usize,
     pub chunked: bool,
     pub fallback: Option<String>,
     pub queue_size: usize,
     pub broadcast: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,
-    pub metadata: Option<Vec<u8>>
+    pub metadata: Option<Vec<u8>>,
+    pub relayed: Option<RelayedInfo>
+}
+
+#[derive(Debug)]
+pub struct RelayedInfo {
+    pub metaint: usize,
+    pub metaint_position: usize,
+    pub metadata_reading: bool,
+    pub metadata_remaining: usize,
+    pub metadata_buffer: Vec<u8>
 }
 
 pub struct ListenerInfo {
@@ -422,18 +432,23 @@ pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: Clien
         }
     };
     let stream: Stream = Box::new(BufStream::new(sock));
-    let session        = ClientSession {
-        admin_addr: false,
-        server,
-        stream,
-        addr
-    };
 
     match client {
         ClientInfo::Source(info) => {
+            let session = Session {
+                server,
+                stream,
+                addr
+            };
             _ = handle_source(session, info).await;
         },
         ClientInfo::Listener(info) => {
+            let session = ClientSession {
+                admin_addr: false,
+                server,
+                stream,
+                addr
+            };
             _ = prepare_listener(session, info).await;
         }
     }

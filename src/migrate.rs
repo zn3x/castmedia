@@ -230,6 +230,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
 
                 let snapshot = restore_channel_from_snapshot((snapshot_msgs, info.broadcast_snapshot.1, info.broadcast_snapshot.2));
 
+                // TODO: Relayed should be handled
                 crate::client::ClientInfo::Source(SourceInfo {
                     mountpoint: info.mountpoint,
                     properties: info.properties,
@@ -238,7 +239,8 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     chunked: info.chunked,
                     fallback: info.fallback,
                     queue_size: info.queue_size as usize,
-                    broadcast: Some(snapshot)
+                    broadcast: Some(snapshot),
+                    relayed: None
                 })
             },
             MigrateConnection_v0_1_0::Client { info } => {

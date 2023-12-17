@@ -68,7 +68,6 @@ async fn read_request_header(stream: &mut Stream, buf: &mut Vec<u8>, max_len: us
 }
 
 pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Request<'a>) -> Result<RequestType> {
-    request.headers_buf = Vec::new();
     // We first read header using predefined timeout
     tokio::time::timeout(
         Duration::from_millis(session.server.config.limits.header_timeout),
@@ -91,6 +90,13 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
     let mut req     = httparse::Request::new(&mut request.headers);
     if req.parse(&request.headers_buf)? == Status::Partial {
         return Err(anyhow::Error::msg("Received an incomplete request"));
+    }
+
+    if !req.headers.first().is_some_and(|x| !x.name.is_empty()) {
+        // Httparse may parse faulty headers (ie. one without value)
+        // without sanity checks
+        // doing it here
+        return Err(anyhow::Error::msg("Parsed invalid headers"));
     }
 
     request.method = match req.method {

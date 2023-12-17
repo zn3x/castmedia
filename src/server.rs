@@ -111,6 +111,16 @@ pub struct ClientSession {
     pub addr: SocketAddr
 }
 
+/// A generic session
+pub struct Session {
+    /// Server info
+    pub server: Arc<Server>,
+    /// Socket of this client session
+    pub stream: Box<dyn Socket>,
+    /// Address of our peer
+    pub addr: SocketAddr
+}
+
 async fn accept_connections(serv: Arc<Server>, listener: TcpListener, admin_addr: bool) {
     loop {
         match listener.accept().await {

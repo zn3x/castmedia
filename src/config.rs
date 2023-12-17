@@ -16,7 +16,7 @@ use url::Url;
 const BIND: &str                 = "127.0.0.1:9000";
 const METAINT: usize             = 32000;
 
-const SERVER_ID: &str            = "CastMedia 0.1.0";
+pub const SERVER_ID: &str        = "CastMedia 0.1.0";
 const SERVER_ADMIN: &str         = "admin@localhost";
 const LOCATION: &str             = "1.064646";
 const DESCRIPTION: &str          = "Internet radio!";

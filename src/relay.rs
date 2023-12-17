@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration, net::SocketAddr};
 
 use anyhow::Result;
 use tokio::{
@@ -10,14 +10,14 @@ use tracing::{info, error};
 use url::Url;
 use serde::Deserialize;
 
-use crate::{server::{Server, Stream}, utils::get_header, config::MasterServerRelayScheme, http::ResponseReader};
+use crate::{server::{Server, Stream, Socket, Session}, utils::get_header, config::MasterServerRelayScheme, http::ResponseReader, client::{SourceInfo, RelayedInfo}, source::IcyProperties};
 
 #[derive(Debug, Deserialize)]
 struct MasterMounts {
     mounts: Vec<String>
 }
 
-async fn http_get_request(url: &Url, path: &str, headers: &str) -> Result<Stream> {
+async fn http_get_request(url: &Url, path: &str, headers: &str) -> Result<(Stream, SocketAddr)> {
     // We did already check before running
     let host = url.host()
         .expect("Should be able to fetch master host")
@@ -25,23 +25,26 @@ async fn http_get_request(url: &Url, path: &str, headers: &str) -> Result<Stream
     let port = url.port()
         .expect("Should be able to fetch master port");
     let stream     = TcpStream::connect(format!("{}:{}", host, port)).await?;
+    let addr       = stream.peer_addr()?;
     let mut stream = if url.scheme().eq("https") {
-        Box::new(BufStream::new(stream)) as Stream
-    } else {
-        let cx = tokio_native_tls::TlsConnector::from(TlsConnector::builder().build()?);
+        let cx     = tokio_native_tls::TlsConnector::from(TlsConnector::builder().build()?);
         Box::new(BufStream::new(cx.connect(&host, stream).await?))
+    } else {
+        Box::new(BufStream::new(stream)) as Stream
     };
 
-    stream.write_all(format!("GET {} HTTP/1.1\r\n
+    stream.write_all(format!("GET {} HTTP/1.1\r\n\
 Host: {}:{}\r\n\
-User-Agent: \r\n{}\
+User-Agent: {}\r\n{}\
 Connection: close\r\n\r\n",
         path,
         host, port,
+        crate::config::SERVER_ID,
         headers
     ).as_bytes()).await?;
+    stream.flush().await?;
 
-    Ok(stream)
+    Ok((stream, addr))
 }
 
 async fn fetch_available_sources(server: &Server, url: &Url) -> Result<MasterMounts> {
@@ -49,10 +52,9 @@ async fn fetch_available_sources(server: &Server, url: &Url) -> Result<MasterMou
     tokio::time::timeout(
         timeout,
         async {
-            let mut stream = http_get_request(url, "/api/serverinfo", "").await?;
-
-            let mut reader = ResponseReader::new(&mut stream, server.config.limits.master_http_max_len);
-            let body_buf   = reader.read_to_end("application/json").await?;
+            let (mut stream, _) = http_get_request(url, "/api/serverinfo", "").await?;
+            let mut reader      = ResponseReader::new(&mut stream, server.config.limits.master_http_max_len);
+            let body_buf        = reader.read_to_end("application/json").await?;
             // Now we go to parsing response
             let info: MasterMounts = serde_json::from_slice(&body_buf)?;
 
@@ -61,14 +63,15 @@ async fn fetch_available_sources(server: &Server, url: &Url) -> Result<MasterMou
     ).await?
 }
 
-async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mount: &str) -> Result<()> {
-    let url = &serv.config.master[master_ind].url;
-
+async fn transparent_get_mountpoint (serv: &Arc<Server>, url: &Url, mount: &str)
+    -> Result<(Box<dyn Socket>, SocketAddr, usize, usize, IcyProperties)> {
     // Fetching media stream from master
-    let mut stream  = http_get_request(url, mount, "Icy-Metadata:1\r\n").await?;
+    let (mut stream,
+         addr)      = http_get_request(url, mount, "Icy-Metadata: 1\r\n").await?;
     let mut reader  = ResponseReader::new(&mut stream, serv.config.limits.master_http_max_len);
     let headers_buf = reader.read_headers().await?;
 
+    println!("egergreger {:?}", std::str::from_utf8(&headers_buf));
     // Parsing response headers
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut resp    = httparse::Response::new(&mut headers);
@@ -82,7 +85,7 @@ async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mou
     if !resp.code.is_some_and(|c| c == 200) {
         return Err(anyhow::Error::msg("Unexpected response status code"));
     }
-    
+
     // We should check if this is an icecast server
     if get_header("icy-name", resp.headers).is_none() {
         return Err(anyhow::Error::msg("not an icecast server"));
@@ -104,7 +107,61 @@ async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mou
         }
     };
 
-    Ok(())
+    let properties = IcyProperties::new(match get_header("Content-Type", &resp.headers) {
+        Some(v) => std::str::from_utf8(v)?.to_owned(),
+        None => {
+            return Err(anyhow::Error::msg("missing content-type header"));
+        }
+    });
+
+    Ok((stream, addr, metaint, headers_buf.len(), properties))
+}
+
+async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mount: String) {
+    let url = &serv.config.master[master_ind].url;
+
+    match transparent_get_mountpoint(serv, url, &mount).await {
+        Ok((stream, addr, metaint, initial_bytes_read, properties)) => {
+            let ret = crate::source::handle_source(
+                Session {
+                    server: serv.clone(),
+                    stream,
+                    addr
+                },
+                SourceInfo {
+                    mountpoint: mount,
+                    properties,
+                    initial_bytes_read,
+                    chunked: false,
+                    fallback: None,
+                    queue_size: 0,
+                    broadcast: None,
+                    metadata: None,
+                    relayed: Some(RelayedInfo {
+                        metaint,
+                        metaint_position: 0,
+                        metadata_reading: false,
+                        metadata_remaining: 0,
+                        metadata_buffer: Vec::new()
+                    })
+                }
+            ).await;
+            if let Err(e) = ret {
+                error!(
+                    "Master server {} relayind ended with: {}",
+                    serv.config.master[master_ind].url,
+                    e
+                );
+            }
+        },
+        Err(e) => {
+            error!(
+                "Master server {} relaying failed: {}",
+                serv.config.master[master_ind].url,
+                e
+            );
+        }
+    }
 }
 
 pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
@@ -125,13 +182,7 @@ pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
                                 let serv_clone  = serv.clone();
                                 let mount_clone = mount.clone();
                                 tokio::spawn(async move {
-                                    if let Err(e) = transparent_relay_mountpoint(&serv_clone, master_ind, &mount_clone).await {
-                                        error!(
-                                            "Master server {}: {}",
-                                            serv_clone.config.master[master_ind].url,
-                                            e
-                                        );
-                                    }
+                                    transparent_relay_mountpoint(&serv_clone, master_ind, mount_clone).await
                                 });
                             }
                         }

@@ -14,9 +14,9 @@ use anyhow::Result;
 use tokio::{time::timeout, io::AsyncReadExt, sync::oneshot};
 
 use crate::{
-    server::{Stream, ClientSession, Server},
+    server::{Stream, Session, Server},
     source::{SourceBroadcast, Source, IcyMetadata, SourceStats, MoveClientsCommand, MoveClientsType},
-    migrate::{MigrateConnection, VersionedMigrateConnection, MigrateSource, MigrateSourceInfo}
+    migrate::{MigrateConnection, VersionedMigrateConnection, MigrateSource, MigrateSourceInfo}, client::RelayedInfo
 };
 
 pub trait StreamReader: Send + Sync + Read {
@@ -157,6 +157,12 @@ pub fn metadata_encode(song: &Option<&str>, url: &Option<&str>) -> Vec<u8> {
     vec
 }
 
+/*fn metadata_decode(metadata: &str) -> Result<()> {
+    //let split = metadata.split(";").collect::<Vec<_>>();
+
+    Ok(())
+}*/
+
 pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, url: &Option<&str>) {
     source.metadata.replace(IcyMetadata {
         title: song.unwrap_or("").to_string(),
@@ -169,23 +175,39 @@ pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, ur
 
 }
 
-pub async fn broadcast(mountpoint: &str, session: ClientSession,
-                     queue_size: usize, chunked: bool,
-                     broadcast: SourceBroadcast,
-                     kill_notifier: oneshot::Receiver<()>) {
+pub async fn relay_broadcast(mountpoint: &str, mut session: Session,
+                             stats: Arc<SourceStats>, mut relay: RelayedInfo,
+                             mut queue_size: usize,
+                             broadcast: SourceBroadcast,
+                             kill_notifier: oneshot::Receiver<()>) {
+    info!("Mounted source on {} from master", mountpoint);
+
+    let mut migrate_comm = session.server.migrate.clone();
+
+    let fut = handle_relay_stream(
+        &mut session, mountpoint, broadcast,
+        &mut queue_size, &mut relay
+    );
+
+    tokio::select! {
+        _ = fut => (),
+        _ = kill_notifier => {
+        },
+        migrate = migrate_comm.recv() => {
+        }
+    }
+
+    info!("Unmounted source on {}", mountpoint);
+}
+
+pub async fn broadcast(mountpoint: &str, session: Session,
+                       stats: Arc<SourceStats>,
+                       queue_size: usize, chunked: bool,
+                       broadcast: SourceBroadcast,
+                       kill_notifier: oneshot::Receiver<()>) {
     info!("Mounted source on {}", mountpoint);
 
     let omountpoint = mountpoint.to_owned();
-    let stats       = match session.server.sources
-        .read()
-        .await
-        .get(mountpoint) {
-        Some(v) => v.stats.clone(),
-        None => {
-            error!("Can't find stats for {}, did it get removed?", mountpoint);
-            return;
-        }
-    };
 
     let reader: Box<dyn StreamReader>;
     let base_reader = SimpleReader::new(session.stream, session.server.config.limits.source_timeout, stats);
@@ -194,6 +216,9 @@ pub async fn broadcast(mountpoint: &str, session: ClientSession,
     } else {
         reader      = Box::new(base_reader);
     }
+    // Safety: rguard is valid as long as reader is valid
+    // We explicitely await thread accessing reader before freeing
+    // rguard
     let reader = Box::leak(reader);
     let rguard = unsafe { Box::from_raw(reader) };
 
@@ -203,7 +228,7 @@ pub async fn broadcast(mountpoint: &str, session: ClientSession,
     let abort_handle  = Arc::new(AtomicBool::new(false));
     let abort_cl      = abort_handle.clone();
     let mut fut       = tokio::task::spawn_blocking(move || {
-        match blocking_broadcast(&omountpoint, reader, &session.server, broadcast, abort_cl, queue_size) {
+        match handle_source_stream(&omountpoint, reader, &session.server, broadcast, abort_cl, queue_size) {
             Ok(v) => Ok(v),
             Err(e) => {
                 error!("Source stream for {} closed: {}", omountpoint, e);
@@ -273,6 +298,11 @@ pub async fn broadcast(mountpoint: &str, session: ClientSession,
         }
     }
 
+    
+    // We also need to wait here so we don't free rguard while other thread
+    // may still be accessing it's pointer
+    _ = fut.await;
+
     // Cleanup
     let mount = server.sources.write().await.remove(mountpoint);
 
@@ -295,7 +325,7 @@ pub async fn broadcast(mountpoint: &str, session: ClientSession,
     server.stats.active_sources.fetch_sub(1, Ordering::Release);
 }
 
-fn blocking_broadcast(mountpoint: &str, st: &'static mut dyn StreamReader,
+fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReader,
                       server: &Server, mut broadcast: SourceBroadcast,
                       abort_handle: Arc<AtomicBool>, queue_size: usize) -> Result<usize> {
     let mss  = MediaSourceStream::new(Box::new(ReadOnlySource::new(st)), Default::default());
@@ -322,45 +352,11 @@ fn blocking_broadcast(mountpoint: &str, st: &'static mut dyn StreamReader,
         match format.next_packet() {
             Ok(packet) => {
                 let slice = packet.data.into_vec();
-                size += slice.len();
-                chunk_size.push_front(slice.len());
 
-                // We check if new buffer added will overflow broadcast
-                if size > server.config.limits.queue_size {
-                    // We will keep dropping elements in tail until
-                    // we have queue size not bigger than limit
-                    let mut count = 0;
-                    while size > server.config.limits.queue_size {
-                        size -= match chunk_size.pop_back() {
-                            Some(v) => v,
-                            None => {
-                                // Source is sending too big of chunk to be read by us??
-                                error!("Source for {} is sending too big chunk of data to process", mountpoint);
-                                break 'PACKET;
-                            }
-                        };
-                        count += 1;
-                    }
-                    // If number of elements is bigger than 1
-                    // We will resize broadcast queue by removing count-1
-                    // from capacity
-                    if count > 1 {
-                        let new_cap: NonZeroUsize = ((broadcast.audio.capacity()-(count-1)) as usize)
-                            .try_into()
-                            .expect("Can't have empty or negative size");
-                        broadcast.audio.set_capacity(new_cap);
-                    }
-                } else if broadcast.audio.capacity() == broadcast.audio.len() {
-                    // If broadcast capacity is full
-                    // We need to resize it
-                    let new_cap: NonZeroUsize = ((broadcast.audio.capacity()+1) as usize)
-                        .try_into()
-                        .expect("Can't have empty or negative size");
-                    broadcast.audio.set_capacity(new_cap);
+                if let Err(e) = push_to_queue(&mut broadcast, mountpoint, &mut size, &mut chunk_size, server, slice) {
+                    error!("Broadcast failed: {}", e);
+                    break 'PACKET;
                 }
-
-                // Now we push buffer to broadcast queue
-                broadcast.audio.send(Arc::new(slice));
             },
             Err(e) => {
                 // A unrecoverable error occurred, halt reading
@@ -379,4 +375,142 @@ fn blocking_broadcast(mountpoint: &str, st: &'static mut dyn StreamReader,
     };
 
     Ok(size)
+}
+
+async fn handle_relay_stream(session: &mut Session, mountpoint: &str,
+                         mut broadcast: SourceBroadcast, queue_size: &mut usize,
+                         relay: &mut RelayedInfo) -> Result<()> {
+    let mut buf  = [0u8; 2048];
+    let mut ret  = 0;
+    let mut data = Vec::new();
+
+    let mut chunk_size = VecDeque::new();
+    
+    loop {
+        // We need to properly read metadata at every metaint_position
+        if relay.metaint_position + ret > relay.metaint {
+            // We need to find at which position in buf the metadata starts
+            let pos                = relay.metaint - relay.metaint_position;
+            relay.metadata_reading = true;
+            relay.metaint_position = 0;
+            // Copying all media data befor metadata
+            data.extend_from_slice(&buf[..pos]);
+            if pos >= ret {
+                // Next byte to read is the start of metadata
+            } else {
+                // We read first byte which is the length of the metadata
+                relay.metadata_remaining = (buf[pos] as usize) << 4;
+                // Checking if we also have some other bytes left of metadata
+                // left to read
+                if pos < ret - 1 {
+                    let remaining = buf[pos+1..ret].len();
+                    let last_pos  = if relay.metadata_remaining >= remaining {
+                        ret
+                    } else {
+                        // Copying media data coming after metadata
+                        let last                = pos + 1 + relay.metadata_remaining;
+                        relay.metaint_position += buf[last..ret].len();
+                        data.extend_from_slice(&buf[last..ret]);
+
+                        last
+                    };
+
+                    relay.metadata_remaining -= buf[pos+1..last_pos].len();
+                    relay.metadata_buffer.extend_from_slice(&buf[pos+1..last_pos]);
+                    if relay.metadata_remaining == 0 {
+                        relay.metadata_reading = false;
+                        relay.metadata_buffer  = Vec::new();
+                    }
+                }
+            }
+        } else if relay.metadata_reading {
+            let start = if relay.metadata_remaining == 0 {
+                // We still didn't read first byte yet
+                relay.metadata_remaining = (buf[0] as usize) << 4;
+                1
+            } else {
+                0
+            };
+
+            if start < ret {
+                let remaining = buf[start..ret].len();
+                let last_pos  = if relay.metadata_remaining >= remaining {
+                    ret
+                } else {
+                    // Copying media data coming after metadata
+                    let last                = start + relay.metadata_remaining;
+                    relay.metaint_position += buf[last..ret].len();
+                    data.extend_from_slice(&buf[last..ret]);
+
+                    last
+                };
+
+                relay.metadata_remaining -= buf[start..last_pos].len();
+                relay.metadata_buffer.extend_from_slice(&buf[start..last_pos]);
+                if relay.metadata_remaining == 0 {
+                    relay.metadata_reading = false;
+                    relay.metadata_buffer  = Vec::new();
+                }
+            }
+        } else if ret > 0 {
+            relay.metaint_position += ret;
+            data.extend_from_slice(&buf[..ret]);
+        }
+
+        if data.len() > 1024 {
+            push_to_queue(&mut broadcast, mountpoint, queue_size, &mut chunk_size, &session.server, data)?;
+            data = Vec::new();
+        }
+
+        ret = session.stream.read(&mut buf).await?;
+
+        if ret == 0 {
+            return Err(anyhow::Error::msg("Reached end of stream"));
+        }
+    };
+}
+
+fn push_to_queue(broadcast: &mut SourceBroadcast, mountpoint: &str,
+          size: &mut usize, chunk_size: &mut VecDeque<usize>,
+          server: &Server, slice: Vec<u8>) -> Result<()> {
+    *size += slice.len();
+    chunk_size.push_front(slice.len());
+
+    // We check if new buffer added will overflow broadcast
+    if *size > server.config.limits.queue_size {
+        // We will keep dropping elements in tail until
+        // we have queue size not bigger than limit
+        let mut count = 0;
+        while *size > server.config.limits.queue_size {
+            *size -= match chunk_size.pop_back() {
+                Some(v) => v,
+                None => {
+                    // Source is sending too big of chunk to be read by us??
+                    return Err(anyhow::Error::msg(format!("Source for {} is sending too big chunk of data to process", mountpoint)));
+                }
+            };
+            count += 1;
+        }
+        // If number of elements is bigger than 1
+        // We will resize broadcast queue by removing count-1
+        // from capacity
+        if count > 1 {
+            let new_cap: NonZeroUsize = ((broadcast.audio.capacity()-(count-1)) as usize)
+                .try_into()
+                .expect("Can't have empty or negative size");
+            broadcast.audio.set_capacity(new_cap);
+        }
+    } else if broadcast.audio.capacity() == broadcast.audio.len() {
+        // If broadcast capacity is full
+        // We need to resize it
+        let new_cap: NonZeroUsize = ((broadcast.audio.capacity()+1) as usize)
+            .try_into()
+            .expect("Can't have empty or negative size");
+        broadcast.audio.set_capacity(new_cap);
+    }
+
+    // Now we push buffer to broadcast queue
+    broadcast.audio.send(Arc::new(slice));
+
+    Ok(())
 }

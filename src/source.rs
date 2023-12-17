@@ -11,7 +11,7 @@ use tokio::sync::{oneshot, RwLock};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::{server::ClientSession, request::{SourceRequest, Request}, response, utils, stream, auth, client::{Client, SourceInfo}, config::Account};
+use crate::{server::{ClientSession, Session}, request::{SourceRequest, Request}, response, utils, stream, auth, client::{Client, SourceInfo}, config::Account};
 
 #[obake::versioned]
 #[obake(version("0.1.0"))]
@@ -29,7 +29,7 @@ pub struct IcyProperties {
 }
 
 impl IcyProperties {
-    fn new(content_type: String) -> Self {
+    pub fn new(content_type: String) -> Self {
         IcyProperties {
             uagent: None,
             public: false,
@@ -271,21 +271,26 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
     }
 
     handle_source(
-        session,
+        Session {
+            server: session.server,
+            stream: session.stream,
+            addr: session.addr
+        },
         SourceInfo {
             mountpoint: req.mountpoint,
             properties,
-            initial_bytes_read: request.headers_buf.len() as u64,
+            initial_bytes_read: request.headers_buf.len(),
             chunked,
             fallback,
             queue_size: 0,
             broadcast: None,
-            metadata: None
+            metadata: None,
+            relayed: None
         }
     ).await
 }
 
-pub async fn handle_source(session: ClientSession, info: SourceInfo) -> Result<()> {
+pub async fn handle_source(session: Session, info: SourceInfo) -> Result<()> {
     let (mut source, mut broadcast, kill_notifier) = Source::new(info.properties, info.broadcast);
 
     source.fallback = info.fallback;
@@ -296,28 +301,43 @@ pub async fn handle_source(session: ClientSession, info: SourceInfo) -> Result<(
     }
 
     // We must write initial read length to stats
-    source.stats.bytes_read.fetch_add(info.initial_bytes_read, Ordering::Relaxed);
+    source.stats.bytes_read.fetch_add(info.initial_bytes_read as u64, Ordering::Relaxed);
 
     // If source never ever broadcasts metadata
     // we do this to respect metadata interval for reader
     crate::stream::broadcast_metadata(&mut source, &None, &None).await;
+
+    let source_stats = source.stats.clone();
 
     // Add this mountpoint to mountpoints hashmap
     if session.server.sources.write().await.try_insert(info.mountpoint.clone(), source).is_err() {
         return Err(anyhow::Error::msg(format!("Mountpoint {} already exists", info.mountpoint)));
     }
 
-    // Server stats
-    session.server.stats.source_client_connections.fetch_add(1, Ordering::Relaxed);
+    match info.relayed {
+        None => {
+            // Server stats
+            session.server.stats.source_client_connections.fetch_add(1, Ordering::Relaxed);
 
-    session.server.stats.active_sources.fetch_add(1, Ordering::Acquire);
-    
-    // Then handle media stream coming for this mountpoint
-    stream::broadcast(
-        &info.mountpoint, session,
-        info.queue_size, info.chunked,
-        broadcast, kill_notifier
-    ).await;
+            session.server.stats.active_sources.fetch_add(1, Ordering::Acquire);
+        
+
+            // Then handle media stream coming for this mountpoint
+            stream::broadcast(
+                &info.mountpoint, session,
+                source_stats,
+                info.queue_size, info.chunked,
+                broadcast, kill_notifier,
+            ).await;
+        },
+        Some(relay) => {
+            stream::relay_broadcast(
+                &info.mountpoint, session,
+                source_stats, relay, info.queue_size,
+                broadcast, kill_notifier
+            ).await;
+        }
+    }
 
     Ok(())
 }
