@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration, net::SocketAddr};
+use std::{sync::{Arc, atomic::Ordering}, time::Duration, net::SocketAddr};
 
 use anyhow::Result;
 use tokio::{
@@ -54,6 +54,7 @@ async fn fetch_available_sources(server: &Server, url: &Url) -> Result<MasterMou
         async {
             let (mut stream, _) = http_get_request(url, "/api/serverinfo", "").await?;
             let mut reader      = ResponseReader::new(&mut stream, server.config.limits.master_http_max_len);
+            server.stats.source_relay_connections.fetch_add(1, Ordering::Relaxed);
             let body_buf        = reader.read_to_end("application/json").await?;
             // Now we go to parsing response
             let info: MasterMounts = serde_json::from_slice(&body_buf)?;
@@ -70,6 +71,8 @@ async fn transparent_get_mountpoint (serv: &Arc<Server>, url: &Url, mount: &str)
          addr)      = http_get_request(url, mount, "Icy-Metadata: 1\r\n").await?;
     let mut reader  = ResponseReader::new(&mut stream, serv.config.limits.master_http_max_len);
     let headers_buf = reader.read_headers().await?;
+
+    serv.stats.source_relay_connections.fetch_add(1, Ordering::Relaxed);
 
     // Parsing response headers
     let mut headers = [httparse::EMPTY_HEADER; 32];
@@ -106,7 +109,7 @@ async fn transparent_get_mountpoint (serv: &Arc<Server>, url: &Url, mount: &str)
         }
     };
 
-    let properties = IcyProperties::new(match get_header("Content-Type", &resp.headers) {
+    let properties = IcyProperties::new(match get_header("Content-Type", resp.headers) {
         Some(v) => std::str::from_utf8(v)?.to_owned(),
         None => {
             return Err(anyhow::Error::msg("missing content-type header"));
@@ -121,6 +124,8 @@ async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mou
 
     match transparent_get_mountpoint(serv, url, &mount).await {
         Ok((stream, addr, metaint, initial_bytes_read, properties)) => {
+            serv.stats.active_relay.fetch_add(1, Ordering::Relaxed);
+
             let ret = crate::source::handle_source(
                 Session {
                     server: serv.clone(),

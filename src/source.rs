@@ -343,7 +343,6 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()>
         },
         Some(relay) => {
             session.server.stats.active_relay_streams.fetch_add(1, Ordering::Acquire);
-
             stream::relay_broadcast(
                 &info.mountpoint, session,
                 source_stats, relay, info.queue_size,

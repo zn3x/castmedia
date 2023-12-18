@@ -67,12 +67,16 @@ pub struct ServerStats {
     pub active_sources: AtomicUsize,
     /// Number of total active listening clients to mountpoints
     pub active_listeners: AtomicUsize,
+    /// Number of total active outbound connections to master server
+    pub active_relay: AtomicUsize,
     /// Number of peak listeners to mountpoints
     pub peak_listeners: AtomicUsize,
     /// Number of connections to mountpoints (accumulating counter)
     pub listener_connections: AtomicUsize,
     /// Number of connections made by source clients (accumulating counter)
     pub source_client_connections: AtomicUsize,
+    /// Number of outbound connections made to master server (accumulating counter)
+    pub source_relay_connections: AtomicUsize,
     /// Number of active streams that are relayed
     pub active_relay_streams: AtomicUsize,
     /// Number of connections made to admin api (accumulating counter)
@@ -91,9 +95,11 @@ impl ServerStats {
             //active_clients: AtomicUsize::new(0),
             active_sources: AtomicUsize::new(0),
             active_listeners: AtomicUsize::new(0),
+            active_relay: AtomicUsize::new(0),
             peak_listeners: AtomicUsize::new(0),
             listener_connections: AtomicUsize::new(0),
             source_client_connections: AtomicUsize::new(0),
+            source_relay_connections: AtomicUsize::new(0),
             active_relay_streams: AtomicUsize::new(0),
             admin_api_connections: AtomicUsize::new(0),
             admin_api_connections_success: AtomicUsize::new(0),
