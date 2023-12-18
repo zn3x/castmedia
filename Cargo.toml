@@ -48,3 +48,5 @@ socket2 = "0.5.4"
 zxcvbn = "2.2.2"
 
 scrypt = "0.11.0"
+
+async-trait = "0.1.74"
