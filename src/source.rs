@@ -11,7 +11,7 @@ use tokio::sync::{oneshot, RwLock};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::{server::{ClientSession, Session}, request::{SourceRequest, Request}, response, utils, stream, auth, client::{Client, SourceInfo}, config::Account};
+use crate::{server::{ClientSession, Session}, request::{SourceRequest, Request}, response, utils, stream::{self, BroadcastInfo}, auth, client::{Client, SourceInfo}, config::Account};
 
 #[obake::versioned]
 #[obake(version("0.1.0"))]
@@ -325,29 +325,31 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()>
         }
     }
 
+    let binfo = BroadcastInfo {
+        mountpoint: &info.mountpoint,
+        session,
+        stats: source_stats,
+        queue_size: info.queue_size,
+        chunked: info.chunked,
+        broadcast,
+        kill_notifier
+    };
+
     match info.relayed {
         None => {
             // Server stats
-            session.server.stats.source_client_connections.fetch_add(1, Ordering::Relaxed);
+            binfo.session.server.stats.source_client_connections.fetch_add(1, Ordering::Relaxed);
 
-            session.server.stats.active_sources.fetch_add(1, Ordering::Acquire);
+            binfo.session.server.stats.active_sources.fetch_add(1, Ordering::Acquire);
         
 
             // Then handle media stream coming for this mountpoint
-            stream::broadcast(
-                &info.mountpoint, session,
-                source_stats,
-                info.queue_size, info.chunked,
-                broadcast, kill_notifier,
-            ).await;
+            stream::broadcast(binfo).await;
         },
         Some(relay) => {
-            session.server.stats.active_relay_streams.fetch_add(1, Ordering::Acquire);
-            stream::relay_broadcast(
-                &info.mountpoint, session,
-                source_stats, relay, info.queue_size,
-                broadcast, kill_notifier
-            ).await;
+            binfo.session.server.stats.active_relay_streams.fetch_add(1, Ordering::Acquire);
+
+            stream::relay_broadcast(binfo, relay).await;
         }
     }
 

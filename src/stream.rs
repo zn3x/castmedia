@@ -19,8 +19,12 @@ use crate::{
     migrate::{MigrateConnection, VersionedMigrateConnection, MigrateSource, MigrateSourceInfo}, client::RelayedInfo
 };
 
+// TODO: Proper async interface...
+// TODO: Remove async_trait when async traits stabilized
+#[async_trait::async_trait]
 pub trait StreamReader: Send + Sync + Read {
     fn fd(&self) -> i32;
+    async fn async_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
 }
 
 pub struct SimpleReader {
@@ -35,15 +39,14 @@ impl SimpleReader {
     }
 }
 
+#[async_trait::async_trait]
 impl StreamReader for SimpleReader {
     fn fd(&self) -> i32 {
         self.stream.fd()
     }
-}
 
-impl Read for SimpleReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let r = match block_on(timeout(self.timeout, self.stream.read(buf))) {
+    async fn async_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let r = match timeout(self.timeout, self.stream.read(buf)).await {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return Err(e),
             Err(e) => return Err(e.into())
@@ -55,6 +58,12 @@ impl Read for SimpleReader {
 
         self.stats.bytes_read.fetch_add(r as u64, Ordering::Relaxed);
         Ok(r)
+    }
+}
+
+impl Read for SimpleReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        block_on(self.async_read(buf))
     }
 }
 
@@ -74,19 +83,18 @@ impl ChunkedReader {
     }
 }
 
+#[async_trait::async_trait]
 impl StreamReader for ChunkedReader {
     fn fd(&self) -> i32 {
         self.inner.stream.fd()
     }
-}
 
-impl Read for ChunkedReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+    async fn async_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         // We first need to read chunk length that is encoded as hex followed by \r\n
         if self.bytes_left == 0 {
             let mut hex_len = Vec::new();
             loop {
-                match self.inner.read_exact(&mut self.reader) {
+                match self.inner.async_read(&mut self.reader).await {
                     Ok(_) => {
                         hex_len.push(self.reader[0]);
                         // Avoiding a ddos here
@@ -122,13 +130,19 @@ impl Read for ChunkedReader {
             buf.len()
         };
 
-        match self.inner.read(&mut buf[..read_len]) {
+        match self.inner.async_read(&mut buf[..read_len]).await {
             Ok(r) => {
                 self.bytes_left -= r;
                 Ok(r)
             },
             Err(e) => Err(e)
         }
+    }
+}
+
+impl Read for ChunkedReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        block_on(self.async_read(buf))
     }
 }
 
@@ -175,43 +189,58 @@ pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, ur
 
 }
 
-pub async fn relay_broadcast(mountpoint: &str, mut session: Session,
-                             stats: Arc<SourceStats>, mut relay: RelayedInfo,
-                             mut queue_size: usize,
-                             broadcast: SourceBroadcast,
-                             kill_notifier: oneshot::Receiver<()>) {
-    info!("Mounted source on {} from master", mountpoint);
+pub struct BroadcastInfo<'a> {
+    pub mountpoint: &'a str,
+    pub session: Session,
+    pub stats: Arc<SourceStats>,
+    pub queue_size: usize,
+    pub chunked: bool,
+    pub broadcast: SourceBroadcast,
+    pub kill_notifier: oneshot::Receiver<()>
+}
 
-    let mut migrate_comm = session.server.migrate.clone();
+pub async fn relay_broadcast<'a>(mut s: BroadcastInfo<'a>, mut relay: RelayedInfo) {
+    info!("Mounted source on {} from master", s.mountpoint);
+
+    let reader = SimpleReader::new(
+        s.session.stream,
+        s.session.server.config.limits.source_timeout,
+        s.stats
+    );
+
+    let mut reader: Box<dyn StreamReader> = match s.chunked {
+        false => Box::new(reader),
+        true  => Box::new(ChunkedReader::new(reader))
+    };
+
+    let mut migrate_comm = s.session.server.migrate.clone();
 
     let fut = handle_relay_stream(
-        &mut session, mountpoint, broadcast,
-        &mut queue_size, &mut relay
+        reader.as_mut(), &s.session.server,
+        s.mountpoint, s.broadcast,
+        &mut s.queue_size, &mut relay
     );
 
     tokio::select! {
         _ = fut => (),
-        _ = kill_notifier => {
-        },
+        _ = s.kill_notifier => (),
         migrate = migrate_comm.recv() => {
         }
     }
 
-    info!("Unmounted source on {}", mountpoint);
+    info!("Unmounted source on {}", s.mountpoint);
+    s.session.server.stats.active_relay.fetch_sub(1, Ordering::Release);
+    s.session.server.stats.active_relay_streams.fetch_sub(1, Ordering::Release);
 }
 
-pub async fn broadcast(mountpoint: &str, session: Session,
-                       stats: Arc<SourceStats>,
-                       queue_size: usize, chunked: bool,
-                       broadcast: SourceBroadcast,
-                       kill_notifier: oneshot::Receiver<()>) {
-    info!("Mounted source on {}", mountpoint);
+pub async fn broadcast<'a>(s: BroadcastInfo<'a>) { 
+    info!("Mounted source on {}", s.mountpoint);
 
-    let omountpoint = mountpoint.to_owned();
+    let omountpoint = s.mountpoint.to_owned();
 
     let reader: Box<dyn StreamReader>;
-    let base_reader = SimpleReader::new(session.stream, session.server.config.limits.source_timeout, stats);
-    if chunked {
+    let base_reader = SimpleReader::new(s.session.stream, s.session.server.config.limits.source_timeout, s.stats);
+    if s.chunked {
         reader      = Box::new(ChunkedReader::new(base_reader));
     } else {
         reader      = Box::new(base_reader);
@@ -222,13 +251,13 @@ pub async fn broadcast(mountpoint: &str, session: Session,
     let reader = Box::leak(reader);
     let rguard = unsafe { Box::from_raw(reader) };
 
-    let media_broadcast = broadcast.audio.clone();
-    let server          = session.server.clone();
+    let media_broadcast = s.broadcast.audio.clone();
+    let server          = s.session.server.clone();
     // For now we are using threads for source
     let abort_handle  = Arc::new(AtomicBool::new(false));
     let abort_cl      = abort_handle.clone();
     let mut fut       = tokio::task::spawn_blocking(move || {
-        match handle_source_stream(&omountpoint, reader, &session.server, broadcast, abort_cl, queue_size) {
+        match handle_source_stream(&omountpoint, reader, &s.session.server, s.broadcast, abort_cl, s.queue_size) {
             Ok(v) => Ok(v),
             Err(e) => {
                 error!("Source stream for {} closed: {}", omountpoint, e);
@@ -243,7 +272,7 @@ pub async fn broadcast(mountpoint: &str, session: Session,
     let mut migrate_comm = server.migrate.clone();
     tokio::select! {
         _ = &mut fut => (),
-        _ = kill_notifier => {
+        _ = s.kill_notifier => {
             abort_handle.store(true, Ordering::Relaxed);
             // We also need to wait here so we don't free rguard while other thread
             // may still be accessing it's pointer
@@ -258,7 +287,7 @@ pub async fn broadcast(mountpoint: &str, session: Session,
             let (properties, fallback, metadata);
             {
                 let lock   = server.sources.read().await;
-                let source = lock.get(mountpoint)
+                let source = lock.get(s.mountpoint)
                     .expect("Source should still exist at this point");
                 // Can we not clone here?
                 properties = source.properties.as_ref().clone();
@@ -268,7 +297,7 @@ pub async fn broadcast(mountpoint: &str, session: Session,
                     None  => metadata_encode(&None, &None)
                 };
             }
-            let mountpoint = mountpoint.to_owned();
+            let mountpoint = s.mountpoint.to_owned();
             let queue_size = if let Ok(Ok(v)) = fut.await {
                 v
             } else {
@@ -286,7 +315,7 @@ pub async fn broadcast(mountpoint: &str, session: Session,
                     fallback,
                     metadata,
                     queue_size: queue_size as u64,
-                    chunked
+                    chunked: s.chunked
                 }
             };
             let info: VersionedMigrateConnection = info.into();
@@ -302,7 +331,7 @@ pub async fn broadcast(mountpoint: &str, session: Session,
     }
 
     // Cleanup
-    let mount = server.sources.write().await.remove(mountpoint);
+    let mount = server.sources.write().await.remove(s.mountpoint);
 
     // Before closing, we need to give clients a fallback if one is configured
     if let Some(mut mount) = mount {
@@ -319,7 +348,7 @@ pub async fn broadcast(mountpoint: &str, session: Session,
         }
     }
 
-    info!("Unmounted source on {}", mountpoint);
+    info!("Unmounted source on {}", s.mountpoint);
     server.stats.active_sources.fetch_sub(1, Ordering::Release);
 }
 
@@ -375,9 +404,11 @@ fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReader,
     Ok(size)
 }
 
-async fn handle_relay_stream(session: &mut Session, mountpoint: &str,
-                         mut broadcast: SourceBroadcast, queue_size: &mut usize,
-                         relay: &mut RelayedInfo) -> Result<()> {
+async fn handle_relay_stream(stream: &mut dyn StreamReader,
+                             server: &Server, mountpoint: &str,
+                             mut broadcast: SourceBroadcast,
+                             queue_size: &mut usize,
+                             relay: &mut RelayedInfo) -> Result<()> {
     let mut buf  = [0u8; 2048];
     let mut ret  = 0;
     let mut data = Vec::new();
@@ -456,11 +487,11 @@ async fn handle_relay_stream(session: &mut Session, mountpoint: &str,
         }
 
         if data.len() > 1024 {
-            push_to_queue(&mut broadcast, mountpoint, queue_size, &mut chunk_size, &session.server, data)?;
+            push_to_queue(&mut broadcast, mountpoint, queue_size, &mut chunk_size, server, data)?;
             data = Vec::new();
         }
 
-        ret = session.stream.read(&mut buf).await?;
+        ret = stream.async_read(&mut buf).await?;
 
         if ret == 0 {
             return Err(anyhow::Error::msg("Reached end of stream"));

@@ -65,7 +65,7 @@ async fn fetch_available_sources(server: &Server, url: &Url) -> Result<MasterMou
 }
 
 async fn transparent_get_mountpoint (serv: &Arc<Server>, url: &Url, mount: &str)
-    -> Result<(Box<dyn Socket>, SocketAddr, usize, usize, IcyProperties)> {
+    -> Result<(Box<dyn Socket>, SocketAddr, usize, usize, IcyProperties, bool)> {
     // Fetching media stream from master
     let (mut stream,
          addr)      = http_get_request(url, mount, "Icy-Metadata: 1\r\n").await?;
@@ -93,13 +93,12 @@ async fn transparent_get_mountpoint (serv: &Arc<Server>, url: &Url, mount: &str)
         return Err(anyhow::Error::msg("not an icecast server"));
     }
 
-    // TODO: Support chunked
-    // If nothing is set then it's identity
-    if let Some(header) = get_header("Transfer-Encoding", resp.headers) {
-        if header.ne(b"identity") {
-            return Err(anyhow::Error::msg("Unsupported transfer encoding"));
-        }
-    }
+    let chunked = match get_header("Transfer-Encoding", resp.headers) {
+        // If nothing is set then it's identity
+        Some(b"identity") | None => false,
+        Some(b"chunked") => true,
+        _ => return Err(anyhow::Error::msg("Unsupported transfer encoding"))
+    };
 
     // Getting metaint
     let metaint = match get_header("Icy-Metaint", resp.headers) {
@@ -116,14 +115,14 @@ async fn transparent_get_mountpoint (serv: &Arc<Server>, url: &Url, mount: &str)
         }
     });
 
-    Ok((stream, addr, metaint, headers_buf.len(), properties))
+    Ok((stream, addr, metaint, headers_buf.len(), properties, chunked))
 }
 
 async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mount: String) {
     let url = &serv.config.master[master_ind].url;
 
     match transparent_get_mountpoint(serv, url, &mount).await {
-        Ok((stream, addr, metaint, initial_bytes_read, properties)) => {
+        Ok((stream, addr, metaint, initial_bytes_read, properties, chunked)) => {
             serv.stats.active_relay.fetch_add(1, Ordering::Relaxed);
 
             let ret = crate::source::handle_source(
@@ -136,7 +135,7 @@ async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mou
                     mountpoint: mount,
                     properties,
                     initial_bytes_read,
-                    chunked: false,
+                    chunked,
                     fallback: None,
                     queue_size: 0,
                     broadcast: None,
