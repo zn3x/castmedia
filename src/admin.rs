@@ -108,6 +108,7 @@ async fn stats(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
         "peak_listeners": session.server.stats.peak_listeners.load(Ordering::Relaxed),
         "listener_connections": session.server.stats.listener_connections.load(Ordering::Relaxed),
         "source_client_connections": session.server.stats.source_client_connections.load(Ordering::Relaxed),
+        "active_relay_streams": session.server.stats.active_relay_streams.load(Ordering::Relaxed),
         "admin_api_connections": session.server.stats.admin_api_connections.load(Ordering::Relaxed),
         "admin_api_connections_success": session.server.stats.admin_api_connections_success.load(Ordering::Relaxed),
         "api_connections": session.server.stats.api_connections.load(Ordering::Relaxed)

@@ -73,6 +73,8 @@ pub struct ServerStats {
     pub listener_connections: AtomicUsize,
     /// Number of connections made by source clients (accumulating counter)
     pub source_client_connections: AtomicUsize,
+    /// Number of active streams that are relayed
+    pub active_relay_streams: AtomicUsize,
     /// Number of connections made to admin api (accumulating counter)
     pub admin_api_connections: AtomicUsize,
     /// Number of admin api connections with successful authentication (accumulating counter)
@@ -92,6 +94,7 @@ impl ServerStats {
             peak_listeners: AtomicUsize::new(0),
             listener_connections: AtomicUsize::new(0),
             source_client_connections: AtomicUsize::new(0),
+            active_relay_streams: AtomicUsize::new(0),
             admin_api_connections: AtomicUsize::new(0),
             admin_api_connections_success: AtomicUsize::new(0),
             api_connections: AtomicUsize::new(0)
