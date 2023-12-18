@@ -290,7 +290,7 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
     ).await
 }
 
-pub async fn handle_source(session: Session, info: SourceInfo) -> Result<()> {
+pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()> {
     let (mut source, mut broadcast, kill_notifier) = Source::new(info.properties, info.broadcast);
 
     source.fallback = info.fallback;
@@ -310,8 +310,19 @@ pub async fn handle_source(session: Session, info: SourceInfo) -> Result<()> {
     let source_stats = source.stats.clone();
 
     // Add this mountpoint to mountpoints hashmap
-    if session.server.sources.write().await.try_insert(info.mountpoint.clone(), source).is_err() {
-        return Err(anyhow::Error::msg(format!("Mountpoint {} already exists", info.mountpoint)));
+    {
+        let mut lock = session.server.sources.write().await;
+        if info.relayed.is_none() && lock.len() >= session.server.config.limits.sources {
+            response::forbidden(
+                &mut session.stream,
+                &session.server.config.info.id,
+                "Too many sources connected").await?;
+            return Ok(());
+        }
+
+        if lock.try_insert(info.mountpoint.clone(), source).is_err() {
+            return Err(anyhow::Error::msg(format!("Mountpoint {} already exists", info.mountpoint)));
+        }
     }
 
     match info.relayed {

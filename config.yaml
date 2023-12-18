@@ -17,7 +17,7 @@ limits:
   clients: 400
   # Max number of listeners that may concurrently access server
   listeners: 370
-  # Max number of sources ever accepted
+  # Max number of sources ever accepted supported by the server, this includes active relays and source clients
   sources: 4
   # The most important part
   # How much audio we want to keep in queue for new users
