@@ -199,7 +199,7 @@ pub struct BroadcastInfo<'a> {
     pub kill_notifier: oneshot::Receiver<()>
 }
 
-pub async fn relay_broadcast<'a>(mut s: BroadcastInfo<'a>, mut relay: RelayedInfo) {
+pub async fn relay_broadcast(mut s: BroadcastInfo<'_>, mut relay: RelayedInfo) {
     info!("Mounted source on {} from master", s.mountpoint);
 
     let reader = SimpleReader::new(
@@ -233,7 +233,7 @@ pub async fn relay_broadcast<'a>(mut s: BroadcastInfo<'a>, mut relay: RelayedInf
     s.session.server.stats.active_relay_streams.fetch_sub(1, Ordering::Release);
 }
 
-pub async fn broadcast<'a>(s: BroadcastInfo<'a>) { 
+pub async fn broadcast(s: BroadcastInfo<'_>) { 
     info!("Mounted source on {}", s.mountpoint);
 
     let omountpoint = s.mountpoint.to_owned();
