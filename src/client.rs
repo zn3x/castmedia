@@ -173,26 +173,24 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
 
     // Checking whether it's a normal exit or migration
     match ret {
-        Ok(true) => {
+        Ok(false) => {
             // We got migration
             // We don't need to update stats
             Ok(())
         },
-        Ok(false) => {
-            // If it's a client error we must remove client from list of active clients
-            // Otherwise that means source disconnected and we reached end
-            if ret.is_err() {
-                clients.write().await.remove(&id);
-            }
-
-            // End of connection
+        Ok(true) | Err(_) => {
+            // End of stream
             server.stats.active_listeners.fetch_sub(1, Ordering::Release);
             stats.active_listeners.fetch_sub(1, Ordering::Release);
 
+            // If it's a client error we must remove client from list of active clients
+            // Otherwise that means source disconnected and we reached end
+            if let Err(e) = ret {
+                clients.write().await.remove(&id);
+                return Err(e);
+            }
+
             Ok(())
-        },
-        Err(e) => {
-            Err(e)
         }
     }
 }

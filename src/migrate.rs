@@ -278,7 +278,12 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
         };
         let server_cl = server.clone();
         runtime_handle.spawn(async move {
-            handle_migrated(sock, server_cl, cl_info).await;
+            // Acquiring semaphore to respect max connection limit set in config
+            let sem = server_cl.max_clients.clone();
+            let aq  = sem.try_acquire();
+            if let Ok(_guard) = aq {
+                handle_migrated(sock, server_cl, cl_info).await;
+            }
         });
     };
     info!("Migration from old instance completed.");
