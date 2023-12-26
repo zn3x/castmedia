@@ -147,10 +147,10 @@ impl Read for ChunkedReader {
     }
 }
 
-pub fn metadata_encode(song: &Option<&str>, url: &Option<&str>) -> Vec<u8> {
+pub fn metadata_encode(title: &Option<&str>, url: &Option<&str>) -> Vec<u8> {
     let mut vec = vec![0];
     vec.extend_from_slice(b"StreamTitle='");
-    vec.extend_from_slice(song.unwrap_or("").as_bytes());
+    vec.extend_from_slice(title.unwrap_or("").as_bytes());
     vec.extend_from_slice(b"';StreamUrl='");
     vec.extend_from_slice(url.unwrap_or("").as_bytes());
     vec.extend_from_slice(b"';");
@@ -172,21 +172,44 @@ pub fn metadata_encode(song: &Option<&str>, url: &Option<&str>) -> Vec<u8> {
     vec
 }
 
-/*fn metadata_decode(metadata: &str) -> Result<()> {
-    //let split = metadata.split(";").collect::<Vec<_>>();
+fn metadata_decode(metadata: &str) -> Result<(Option<String>, Option<String>)> {
+    let mut title = None;
+    let mut url   = None;
 
-    Ok(())
-}*/
+    for kv in metadata.split(';') {
+        let spl    = kv.split('=').collect::<Vec<_>>();
+        let (k, v) = if spl.len() == 2 {
+            (spl[0], spl[1])
+        } else {
+            return Err(anyhow::Error::msg("Invalid metadata"));
+        };
+        
+        let v = if v.len() >= 2 && v.starts_with('\'') && v.ends_with('\'') {
+            v[1..v.len()-1].to_string()
+        } else {
+            return Err(anyhow::Error::msg("Metadata value uncorrect formatting"));
+        };
 
-pub async fn broadcast_metadata<'a>(source: &mut Source, song: &Option<&str>, url: &Option<&str>) {
+        // TODO: Are there other cases to handle?
+        match k {
+            "StreamTitle" => title = Some(v),
+            "StreamUrl"   => url = Some(v),
+            _             => ()
+        }
+    }
+
+    Ok((title, url))
+}
+
+pub async fn broadcast_metadata<'a>(source: &mut Source, title: &Option<&str>, url: &Option<&str>) {
     source.metadata.replace(IcyMetadata {
-        title: song.unwrap_or("").to_string(),
+        title: title.unwrap_or("").to_string(),
         url: url.unwrap_or("").to_string()
     });
 
 
     source.meta_broadcast_sender
-        .send(Arc::new(metadata_encode(song, url)));
+        .send(Arc::new(metadata_encode(title, url)));
 
 }
 
