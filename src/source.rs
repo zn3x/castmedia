@@ -347,6 +347,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()>
             stream::broadcast(binfo).await;
         },
         Some(relay) => {
+            binfo.session.server.stats.active_relay.fetch_add(1, Ordering::Relaxed);
             binfo.session.server.stats.active_relay_streams.fetch_add(1, Ordering::Acquire);
 
             stream::relay_broadcast(binfo, relay).await;

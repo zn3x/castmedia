@@ -123,8 +123,6 @@ async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mou
 
     match transparent_get_mountpoint(serv, url, &mount).await {
         Ok((stream, addr, metaint, initial_bytes_read, properties, chunked)) => {
-            serv.stats.active_relay.fetch_add(1, Ordering::Relaxed);
-
             let ret = crate::source::handle_source(
                 Session {
                     server: serv.clone(),

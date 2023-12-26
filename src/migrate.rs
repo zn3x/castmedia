@@ -10,7 +10,12 @@ use passfd::FdPassingExt;
 use tracing::{error, info};
 
 use crate::{
-    source::IcyProperties_v0_1_0, client::{ClientProperties_v0_1_0, handle_migrated, ListenerRestoreInfo, SourceInfo, ListenerInfo},
+    source::IcyProperties_v0_1_0,
+    client::{
+        ClientProperties_v0_1_0, handle_migrated,
+        ListenerRestoreInfo, SourceInfo,
+        ListenerInfo, RelayedInfo_v0_1_0
+    },
     server::{Socket, Server}, stream::StreamReader
 };
 
@@ -27,7 +32,11 @@ pub struct MigrateSource {
     pub fallback: Option<String>,
     pub metadata: Vec<u8>,
     pub chunked: bool,
-    pub queue_size: u64
+    pub queue_size: u64,
+    // TODO: Can we place this in an Option???
+    pub is_relay: bool,
+    #[obake(inherit)]
+    pub relay: RelayedInfo
 }
 
 #[obake::versioned]
@@ -230,7 +239,6 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
 
                 let snapshot = restore_channel_from_snapshot((snapshot_msgs, info.broadcast_snapshot.1, info.broadcast_snapshot.2));
 
-                // TODO: Relayed should be handled
                 crate::client::ClientInfo::Source(SourceInfo {
                     mountpoint: info.mountpoint,
                     properties: info.properties,
@@ -240,7 +248,10 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     fallback: info.fallback,
                     queue_size: info.queue_size as usize,
                     broadcast: Some(snapshot),
-                    relayed: None
+                    relayed: match info.is_relay {
+                        true  => Some(info.relay),
+                        false => None
+                    }
                 })
             },
             MigrateConnection_v0_1_0::Client { info } => {

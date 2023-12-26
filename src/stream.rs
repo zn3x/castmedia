@@ -7,6 +7,7 @@ use std::{
     }
 };
 use futures::executor::block_on;
+use llq::broadcast::Sender;
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};
 use anyhow::Result;
@@ -16,7 +17,7 @@ use tokio::{time::timeout, io::AsyncReadExt, sync::oneshot};
 use crate::{
     server::{Stream, Session, Server},
     source::{SourceBroadcast, Source, IcyMetadata, SourceStats, MoveClientsCommand, MoveClientsType},
-    migrate::{MigrateConnection, VersionedMigrateConnection, MigrateSource, MigrateSourceInfo}, client::RelayedInfo
+    migrate::{MigrateConnection, VersionedMigrateConnection, MigrateSource, MigrateSourceInfo, MigrateCommand}, client::RelayedInfo
 };
 
 // TODO: Proper async interface...
@@ -214,17 +215,41 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>, mut relay: RelayedInfo) {
     };
 
     let mut migrate_comm = s.session.server.migrate.clone();
+    let mut data         = Vec::new();
+    let mut chunk_size   = VecDeque::new();
 
     let fut = handle_relay_stream(
         reader.as_mut(), &s.session.server,
-        s.mountpoint, s.broadcast,
-        &mut s.queue_size, &mut relay
+        s.mountpoint, &mut s.broadcast,
+        &mut s.queue_size, &mut relay,
+        &mut chunk_size, &mut data
     );
 
     tokio::select! {
         _ = fut => (),
         _ = s.kill_notifier => (),
         migrate = migrate_comm.recv() => {
+            // We should broadcast all media data currently held before migrating
+            if !data.is_empty() {
+                _ = push_to_queue(
+                    &mut s.broadcast, s.mountpoint,
+                    &mut s.queue_size, &mut chunk_size,
+                    &s.session.server, data
+                );
+            }
+
+            migrate_stream(
+                MigrateStreamProps {
+                    server: &s.session.server,
+                    migrate,
+                    mountpoint: s.mountpoint,
+                    media_broadcast: s.broadcast.audio,
+                    chunked: s.chunked,
+                    queue_size: s.queue_size,
+                    stream: reader
+                },
+                Some(relay)
+            ).await;
         }
     }
 
@@ -280,52 +305,25 @@ pub async fn broadcast(s: BroadcastInfo<'_>) {
         },
         migrate = migrate_comm.recv() => {
             abort_handle.store(true, Ordering::Relaxed);
-            // Safety: migrate sender half is NEVER dropped until process exits
-            let migrate = migrate
-                .expect("Got migrate notice with closed mpsc");
-            // Now we fetch all info needed
-            let (properties, fallback, metadata);
-            {
-                let lock   = server.sources.read().await;
-                let source = lock.get(s.mountpoint)
-                    .expect("Source should still exist at this point");
-                // Can we not clone here?
-                properties = source.properties.as_ref().clone();
-                fallback   = source.fallback.clone();
-                metadata   = match source.meta_broadcast.clone().try_recv().ok() {
-                    Some(v) => v.as_ref().clone(),
-                    None  => metadata_encode(&None, &None)
-                };
-            }
-            let mountpoint = s.mountpoint.to_owned();
+
             let queue_size = if let Ok(Ok(v)) = fut.await {
                 v
             } else {
                 0
             };
 
-            // We need to first take a snapshot of media channel
-            // This is mainly the thing that will let us resume in new process
-            let snapshot = media_broadcast.snapshot();
-            let info     = MigrateConnection::Source {
-                info: MigrateSource {
-                    mountpoint,
-                    properties,
-                    broadcast_snapshot: (snapshot.0.len() as u64, snapshot.1, snapshot.2),
-                    fallback,
-                    metadata,
-                    queue_size: queue_size as u64,
-                    chunked: s.chunked
-                }
-            };
-            let info: VersionedMigrateConnection = info.into();
-            if let Ok(info) = postcard::to_stdvec(&info) {
-                _ = migrate.source.send(MigrateSourceInfo {
-                    info,
-                    media: snapshot.0,
-                    sock: rguard
-                });
-            }
+            migrate_stream(
+                MigrateStreamProps {
+                    server: &server,
+                    migrate,
+                    mountpoint: s.mountpoint,
+                    media_broadcast,
+                    chunked: s.chunked,
+                    queue_size,
+                    stream: rguard
+                },
+                None
+            ).await;
             return;
         }
     }
@@ -350,6 +348,67 @@ pub async fn broadcast(s: BroadcastInfo<'_>) {
 
     info!("Unmounted source on {}", s.mountpoint);
     server.stats.active_sources.fetch_sub(1, Ordering::Release);
+}
+
+struct MigrateStreamProps<'a> {
+    server: &'a Server,
+    migrate: Result<Arc<MigrateCommand>, llq::broadcast::RecvError>,
+    mountpoint: &'a str,
+    media_broadcast: Sender<Arc<Vec<u8>>>,
+    chunked: bool,
+    queue_size: usize,
+    stream: Box<dyn StreamReader>
+}
+
+async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>) {
+    // Safety: migrate sender half is NEVER dropped until process exits
+    let migrate = s.migrate
+        .expect("Got migrate notice with closed mpsc");
+    // Now we fetch all info needed
+    let (properties, fallback, metadata);
+    {
+        let lock   = s.server.sources.read().await;
+        let source = lock.get(s.mountpoint)
+            .expect("Source should still exist at this point");
+        // Can we not clone here?
+        properties = source.properties.as_ref().clone();
+        fallback   = source.fallback.clone();
+        metadata   = match source.meta_broadcast.clone().try_recv().ok() {
+            Some(v) => v.as_ref().clone(),
+            None  => metadata_encode(&None, &None)
+        };
+    }
+
+    let mountpoint = s.mountpoint.to_owned();
+    // We need to first take a snapshot of media channel
+    // This is mainly the thing that will let us resume in new process
+    let (is_relay, relay) = match relay {
+        Some(v) => (true, v),
+        None => (false, RelayedInfo::default())
+    };
+
+    let snapshot = s.media_broadcast.snapshot();
+    let info     = MigrateConnection::Source {
+        info: MigrateSource {
+            mountpoint,
+            properties,
+            broadcast_snapshot: (snapshot.0.len() as u64, snapshot.1, snapshot.2),
+            fallback,
+            metadata,
+            queue_size: s.queue_size as u64,
+            chunked: s.chunked,
+            is_relay,
+            relay
+        }
+    };
+    let info: VersionedMigrateConnection = info.into();
+    if let Ok(info) = postcard::to_stdvec(&info) {
+        _ = migrate.source.send(MigrateSourceInfo {
+            info,
+            media: snapshot.0,
+            sock: s.stream
+        });
+    }
 }
 
 fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReader,
@@ -406,14 +465,13 @@ fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReader,
 
 async fn handle_relay_stream(stream: &mut dyn StreamReader,
                              server: &Server, mountpoint: &str,
-                             mut broadcast: SourceBroadcast,
+                             broadcast: &mut SourceBroadcast,
                              queue_size: &mut usize,
-                             relay: &mut RelayedInfo) -> Result<()> {
+                             relay: &mut RelayedInfo,
+                             chunk_size: &mut VecDeque<usize>,
+                             data: &mut Vec<u8>) -> Result<()> {
     let mut buf  = [0u8; 2048];
     let mut ret  = 0;
-    let mut data = Vec::new();
-
-    let mut chunk_size = VecDeque::new();
     
     loop {
         // We need to properly read metadata at every metaint_position
@@ -487,8 +545,8 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
         }
 
         if data.len() > 1024 {
-            push_to_queue(&mut broadcast, mountpoint, queue_size, &mut chunk_size, server, data)?;
-            data = Vec::new();
+            let v = std::mem::take(data);
+            push_to_queue(broadcast, mountpoint, queue_size, chunk_size, server, v)?;
         }
 
         ret = stream.async_read(&mut buf).await?;

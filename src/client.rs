@@ -408,7 +408,10 @@ pub struct SourceInfo {
     pub relayed: Option<RelayedInfo>
 }
 
-#[derive(Debug)]
+#[obake::versioned]
+#[obake(version("0.1.0"))]
+#[obake(derive(Debug, Serialize, Deserialize))]
+#[derive(Default, Debug, Serialize, Deserialize)]
 pub struct RelayedInfo {
     pub metaint: usize,
     pub metaint_position: usize,
