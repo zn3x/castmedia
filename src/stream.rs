@@ -201,14 +201,15 @@ fn metadata_decode(metadata: &str) -> Result<(Option<String>, Option<String>)> {
     Ok((title, url))
 }
 
-pub async fn broadcast_metadata<'a>(source: &mut Source, title: &Option<&str>, url: &Option<&str>) {
-    source.metadata.replace(IcyMetadata {
+pub async fn broadcast_metadata<'a>(source: &Source, title: &Option<&str>, url: &Option<&str>) {
+    source.metadata.write().await.replace(IcyMetadata {
         title: title.unwrap_or("").to_string(),
         url: url.unwrap_or("").to_string()
     });
 
 
     source.meta_broadcast_sender
+        .clone()
         .send(Arc::new(metadata_encode(title, url)));
 
 }

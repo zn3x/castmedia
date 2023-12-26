@@ -22,7 +22,7 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
                 return Ok(());
             }
 
-            if let Some(source) = session.server.sources.write().await.get_mut(mount) {
+            if let Some(source) = session.server.sources.read().await.get(mount) {
                 broadcast_metadata(source, &song, &url).await;
                 info!("Updated mountpoint metadata for {} by {}", mount, user_id);
                 response::ok_200(&mut session.stream, sid).await?;
@@ -69,13 +69,12 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
 
     let mut sources = HashMap::new();
 
-    session.server.sources.read().await
-        .iter()
-        .for_each(|source| {
+    for source in session.server.sources.read().await.iter() {
         let prop_ref = source.1.properties.as_ref();
+        let metadata = source.1.metadata.read().await;
         sources.insert(source.0.to_owned(), json!({
             "fallback": source.1.fallback,
-            "metadata": source.1.metadata,
+            "metadata": metadata.as_ref(),
             "properties": prop_ref,
             "stats": {
                 "active_listeners": source.1.stats.active_listeners.load(Ordering::Relaxed),
@@ -85,7 +84,7 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
                 "start_time": source.1.stats.start_time
             }
         }));
-    });
+    }
 
     match serde_json::to_vec(&sources) {
         Ok(v) => response::ok_200_json_body(&mut session.stream, sid, &v).await?,

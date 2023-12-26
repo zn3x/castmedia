@@ -38,8 +38,9 @@ async fn mount_info(session: &mut ClientSession, req: ApiRequest) -> Result<()> 
     let source = match session.server.sources.read().await.get(mount) {
         Some(mount) => {
             let prop_ref = mount.properties.as_ref();
+            let metadata = mount.metadata.read().await;
             json!({
-                "metadata": mount.metadata,
+                "metadata": metadata.as_ref(),
                 "properties": prop_ref,
                 "stats": {
                     "active_listeners": mount.stats.active_listeners.load(Ordering::Relaxed),

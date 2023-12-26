@@ -100,7 +100,7 @@ impl SourceStats {
 
 pub struct Source {
     pub properties: Arc<IcyProperties>,
-    pub metadata: Option<IcyMetadata>,
+    pub metadata: Arc<RwLock<Option<IcyMetadata>>>,
     /// List of currently connected listeners to mount
     pub clients: Arc<RwLock<HashMap<Uuid, Client>>>,
     pub stats: Arc<SourceStats>,
@@ -156,7 +156,7 @@ impl Source {
         let (tx3, rx3)         = oneshot::channel();
         (Source {
             properties: Arc::new(properties),
-            metadata: None,
+            metadata: Arc::new(RwLock::new(None)),
             clients: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(SourceStats::new()),
             fallback: None,
