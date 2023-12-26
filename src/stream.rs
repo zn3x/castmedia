@@ -12,7 +12,7 @@ use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOpt
 use tracing::{error, info};
 use anyhow::Result;
 
-use tokio::{time::timeout, io::AsyncReadExt, sync::oneshot};
+use tokio::{time::timeout, io::AsyncReadExt, sync::{oneshot, RwLock}};
 
 use crate::{
     server::{Stream, Session, Server},
@@ -212,6 +212,26 @@ pub async fn broadcast_metadata<'a>(source: &Source, title: &Option<&str>, url: 
         .clone()
         .send(Arc::new(metadata_encode(title, url)));
 
+}
+
+pub async fn relay_broadcast_metadata<'a>(src_metadata: &RwLock<Option<IcyMetadata>>,
+                                          broadcast: &mut SourceBroadcast, metadatabuf: Vec<u8>) {
+    let metadata = match std::str::from_utf8(&metadatabuf) {
+        Ok(v) => v,
+        Err(_) => return
+    };
+
+    if let Ok((title, url)) = metadata_decode(metadata) {
+        src_metadata.write().await.replace(IcyMetadata {
+            title: title.unwrap_or("".to_string()),
+            url: url.unwrap_or("".to_string())
+        });
+
+
+        broadcast
+            .metadata
+            .send(Arc::new(metadatabuf));
+    }
 }
 
 pub struct BroadcastInfo<'a> {
@@ -496,6 +516,12 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
                              data: &mut Vec<u8>) -> Result<()> {
     let mut buf  = [0u8; 2048];
     let mut ret  = 0;
+
+    let src_metadata = server.sources.read().await
+        .get(mountpoint)
+        .expect("Mount should be on sources")
+        .metadata
+        .clone();
     
     loop {
         // We need to properly read metadata at every metaint_position
@@ -529,8 +555,9 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
                     relay.metadata_remaining -= buf[pos+1..last_pos].len();
                     relay.metadata_buffer.extend_from_slice(&buf[pos+1..last_pos]);
                     if relay.metadata_remaining == 0 {
+                        let metadatabuf = std::mem::take(&mut relay.metadata_buffer);
+                        relay_broadcast_metadata(&src_metadata, broadcast, metadatabuf).await;
                         relay.metadata_reading = false;
-                        relay.metadata_buffer  = Vec::new();
                     }
                 }
             }
@@ -559,8 +586,9 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
                 relay.metadata_remaining -= buf[start..last_pos].len();
                 relay.metadata_buffer.extend_from_slice(&buf[start..last_pos]);
                 if relay.metadata_remaining == 0 {
+                    let metadatabuf = std::mem::take(&mut relay.metadata_buffer);
+                    relay_broadcast_metadata(&src_metadata, broadcast, metadatabuf).await;
                     relay.metadata_reading = false;
-                    relay.metadata_buffer  = Vec::new();
                 }
             }
         } else if ret > 0 {
