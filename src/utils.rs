@@ -56,11 +56,7 @@ pub fn clean_path(path: &str) -> String {
 }
 
 fn can_backtrack(segment: &str) -> bool {
-    match segment {
-        "." => false,
-        ".." => false,
-        _ => true,
-    }
+    !matches!(segment, "." | "..")
 }
 
 #[derive(Debug)]
