@@ -403,7 +403,12 @@ pub struct SourceInfo {
     pub queue_size: usize,
     pub broadcast: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,
     pub metadata: Option<Vec<u8>>,
-    pub relayed: Option<RelayedInfo>
+    pub relayed: Option<RelayStream>
+}
+
+pub struct RelayStream {
+    pub url: String,
+    pub info: RelayedInfo
 }
 
 #[obake::versioned]

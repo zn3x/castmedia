@@ -70,9 +70,9 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
     let mut sources = HashMap::new();
 
     for source in session.server.sources.read().await.iter() {
-        let prop_ref = source.1.properties.as_ref();
-        let metadata = source.1.metadata.read().await;
-        sources.insert(source.0.to_owned(), json!({
+        let prop_ref  = source.1.properties.as_ref();
+        let metadata  = source.1.metadata.read().await;
+        let mut sinfo = json!({
             "fallback": source.1.fallback,
             "metadata": metadata.as_ref(),
             "properties": prop_ref,
@@ -83,7 +83,13 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
                 "bytes_sent": source.1.stats.bytes_sent.load(Ordering::Relaxed),
                 "start_time": source.1.stats.start_time
             }
-        }));
+        });
+        if let Some(s) = source.1.relayed_source.as_ref() {
+            sinfo.as_object_mut()
+                .expect("Listmounts json response should be an object")
+                .insert("stream_source".to_string(), serde_json::to_value(s)?);
+        }
+        sources.insert(source.0.to_owned(), sinfo);
     }
 
     match serde_json::to_vec(&sources) {

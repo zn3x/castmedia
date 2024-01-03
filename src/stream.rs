@@ -409,7 +409,7 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>) {
     let migrate = s.migrate
         .expect("Got migrate notice with closed mpsc");
     // Now we fetch all info needed
-    let (properties, fallback, metadata);
+    let (properties, fallback, metadata, relayed_stream);
     {
         let lock   = s.server.sources.read().await;
         let source = lock.get(s.mountpoint)
@@ -419,8 +419,12 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>) {
         fallback   = source.fallback.clone();
         metadata   = match source.meta_broadcast.clone().try_recv().ok() {
             Some(v) => v.as_ref().clone(),
-            None  => metadata_encode(&None, &None)
+            None    => metadata_encode(&None, &None)
         };
+        relayed_stream = match &source.relayed_source {
+            Some(v) => v.clone(),
+            None    => String::new()
+        }
     }
 
     let mountpoint = s.mountpoint.to_owned();
@@ -442,7 +446,8 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>) {
             queue_size: s.queue_size as u64,
             chunked: s.chunked,
             is_relay,
-            relay
+            relayed_stream,
+            relay_info: relay
         }
     };
     let info: VersionedMigrateConnection = info.into();

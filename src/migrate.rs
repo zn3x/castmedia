@@ -14,7 +14,7 @@ use crate::{
     client::{
         ClientProperties_v0_1_0, handle_migrated,
         ListenerRestoreInfo, SourceInfo,
-        ListenerInfo, RelayedInfo_v0_1_0
+        ListenerInfo, RelayedInfo_v0_1_0, RelayStream
     },
     server::{Socket, Server}, stream::StreamReader
 };
@@ -35,8 +35,9 @@ pub struct MigrateSource {
     pub queue_size: u64,
     // TODO: Can we place this in an Option???
     pub is_relay: bool,
+    pub relayed_stream: String,
     #[obake(inherit)]
-    pub relay: RelayedInfo
+    pub relay_info: RelayedInfo
 }
 
 #[obake::versioned]
@@ -249,7 +250,10 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     queue_size: info.queue_size as usize,
                     broadcast: Some(snapshot),
                     relayed: match info.is_relay {
-                        true  => Some(info.relay),
+                        true  => Some(RelayStream {
+                            url: info.relayed_stream,
+                            info: info.relay_info
+                        }),
                         false => None
                     }
                 })

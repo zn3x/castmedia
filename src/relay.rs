@@ -10,7 +10,7 @@ use tracing::{info, error};
 use url::Url;
 use serde::Deserialize;
 
-use crate::{server::{Server, Stream, Socket, Session}, utils::get_header, config::MasterServerRelayScheme, http::ResponseReader, client::{SourceInfo, RelayedInfo}, source::IcyProperties};
+use crate::{server::{Server, Stream, Socket, Session}, utils::get_header, config::MasterServerRelayScheme, http::ResponseReader, client::{SourceInfo, RelayedInfo, RelayStream}, source::IcyProperties};
 
 #[derive(Debug, Deserialize)]
 struct MasterMounts {
@@ -123,6 +123,17 @@ async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mou
 
     match transparent_get_mountpoint(serv, url, &mount).await {
         Ok((stream, addr, metaint, initial_bytes_read, properties, chunked)) => {
+            let url = {
+                let mut url = url.to_string();
+                if url.as_str().ends_with("/") {
+                    url.push_str(&mount[1..]);
+                } else {
+                    url.push_str(&mount[..]);
+                }
+
+                url
+            };
+
             let ret = crate::source::handle_source(
                 Session {
                     server: serv.clone(),
@@ -138,12 +149,15 @@ async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mou
                     queue_size: 0,
                     broadcast: None,
                     metadata: None,
-                    relayed: Some(RelayedInfo {
-                        metaint,
-                        metaint_position: 0,
-                        metadata_reading: false,
-                        metadata_remaining: 0,
-                        metadata_buffer: Vec::new()
+                    relayed: Some(RelayStream {
+                        info: RelayedInfo {
+                            metaint,
+                            metaint_position: 0,
+                            metadata_reading: false,
+                            metadata_remaining: 0,
+                            metadata_buffer: Vec::new()
+                        },
+                        url
                     })
                 }
             ).await;

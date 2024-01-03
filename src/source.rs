@@ -106,6 +106,8 @@ pub struct Source {
     pub stats: Arc<SourceStats>,
     /// Fallback mountpoint in case this one is down
     pub fallback: Option<String>,
+    /// URL stream source if this is a relayed stream
+    pub relayed_source: Option<String>,
     /// The stream broadcast receiver
     pub broadcast: Receiver<Arc<Vec<u8>>>,
     /// Receiver stream for metadata broadcast
@@ -145,7 +147,9 @@ pub enum MoveClientsType {
 
 
 impl Source {
-    pub fn new(properties: IcyProperties, migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
+    pub fn new(properties: IcyProperties,
+               migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,
+               relayed_source: Option<String>) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
         let size: NonZeroUsize  = 1.try_into().expect("1 should be posetif");
         let (tx, rx)            = match migrated {
             Some(v)            => v,
@@ -160,6 +164,7 @@ impl Source {
             clients: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(SourceStats::new()),
             fallback: None,
+            relayed_source,
             broadcast: rx,
             meta_broadcast_sender: tx1.clone(),
             meta_broadcast: rx1,
@@ -291,7 +296,12 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
 }
 
 pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()> {
-    let (mut source, mut broadcast, kill_notifier) = Source::new(info.properties, info.broadcast);
+    let (relayed, stream_source_url) = match info.relayed {
+        Some(v) => (Some(v.info), Some(v.url)),
+        None => (None, None)
+    };
+
+    let (mut source, mut broadcast, kill_notifier) = Source::new(info.properties, info.broadcast, stream_source_url);
 
     source.fallback = info.fallback;
 
@@ -312,7 +322,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()>
     // Add this mountpoint to mountpoints hashmap
     {
         let mut lock = session.server.sources.write().await;
-        if info.relayed.is_none() && lock.len() >= session.server.config.limits.sources {
+        if relayed.is_none() && lock.len() >= session.server.config.limits.sources {
             response::forbidden(
                 &mut session.stream,
                 &session.server.config.info.id,
@@ -335,7 +345,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()>
         kill_notifier
     };
 
-    match info.relayed {
+    match relayed {
         None => {
             // Server stats
             binfo.session.server.stats.source_client_connections.fetch_add(1, Ordering::Relaxed);
