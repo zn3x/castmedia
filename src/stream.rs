@@ -368,7 +368,6 @@ pub async fn broadcast(s: BroadcastInfo<'_>) {
                 },
                 None
             ).await;
-            return;
         }
     }
 
@@ -404,7 +403,7 @@ struct MigrateStreamProps<'a> {
     stream: Box<dyn StreamReader>
 }
 
-async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>) {
+async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>) -> ! {
     // Safety: migrate sender half is NEVER dropped until process exits
     let migrate = s.migrate
         .expect("Got migrate notice with closed mpsc");
@@ -457,6 +456,12 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>) {
             media: snapshot.0,
             sock: s.stream
         });
+    }
+
+    // We have finished all preparations for migration
+    // Idling here till process exits
+    loop {
+        tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
     }
 }
 

@@ -125,7 +125,7 @@ async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mou
         Ok((stream, addr, metaint, initial_bytes_read, properties, chunked)) => {
             let url = {
                 let mut url = url.to_string();
-                if url.as_str().ends_with("/") {
+                if url.as_str().ends_with('/') {
                     url.push_str(&mount[1..]);
                 } else {
                     url.push_str(&mount[..]);
