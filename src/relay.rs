@@ -64,7 +64,7 @@ async fn fetch_available_sources(server: &Server, url: &Url) -> Result<MasterMou
     ).await?
 }
 
-async fn transparent_get_mountpoint (serv: &Arc<Server>, url: &Url, mount: &str)
+async fn transparent_get_mountpoint(serv: &Arc<Server>, url: &Url, mount: &str)
     -> Result<(Box<dyn Socket>, SocketAddr, usize, usize, IcyProperties, bool)> {
     // Fetching media stream from master
     let (mut stream,
@@ -207,6 +207,7 @@ pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
                     }
                 }
             }
-        }
+        },
+        MasterServerRelayScheme::Authenticated { .. } => {}
     }
 }

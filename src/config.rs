@@ -73,6 +73,10 @@ pub enum Account {
         user: String,
         pass: String,
         mount: Vec<Mount>
+    },
+    Relay {
+        user: String,
+        pass: String
     }
 }
 
@@ -90,6 +94,12 @@ pub struct MasterServer {
 pub enum MasterServerRelayScheme {
     Transparent {
         update_interval: u64
+    },
+    Authenticated {
+        user: String,
+        pass: String,
+        #[serde(default = "default_val_master_auth_stream_on_demand")]
+        stream_on_demand: bool
     }
 }
 
@@ -251,6 +261,8 @@ fn default_val_accounts() -> Vec<Account> { Vec::new() }
 
 fn default_val_master() -> Vec<MasterServer> { Vec::new() }
 
+fn default_val_master_auth_stream_on_demand() -> bool { false }
+
 impl ServerSettings {
     pub fn load(config_path: &str) -> Self {
         match std::fs::read_to_string(config_path) {
@@ -278,7 +290,8 @@ impl ServerSettings {
         for account in &mut config.account {
             let pass = match account {
                 Account::Source { pass, .. } => pass,
-                Account::Admin { pass, .. } => pass
+                Account::Admin { pass, .. }  => pass,
+                Account::Relay { pass, .. }  => pass
             };
             
             match pass.split_at(2) {
@@ -353,14 +366,16 @@ impl ServerSettings {
         for account in &config.account {
             let (user, pass, mounts) = match account {
                 Account::Admin { user, pass } => (user, pass, None),
-                Account::Source { user, pass, mount } => (user, pass, Some(mount))
+                Account::Source { user, pass, mount } => (user, pass, Some(mount)),
+                Account::Relay { user, pass } => (user, pass, None)
             };
 
             // Checking if we don't have duplicates
             for raccount in &config.account {
                 let (ruser, rmounts) = match raccount {
                     Account::Admin { user, .. } => (user, None),
-                    Account::Source { user, mount, .. } => (user, Some(mount))
+                    Account::Source { user, mount, .. } => (user, Some(mount)),
+                    Account::Relay { user, .. } => (user, None)
                 };
                 // Skip if we are identic
                 if std::ptr::eq(user, ruser) {
@@ -447,7 +462,8 @@ impl ServerSettings {
                     if *update_interval > 1000 {
                         warn!("Update interval {} for {} may be too big", master.url, update_interval);
                     }
-                }
+                },
+                _ => ()
             }
         }
 

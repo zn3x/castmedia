@@ -272,6 +272,7 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
                     break;
                 }
             },
+            _ => ()
         }
     }
 

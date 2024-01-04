@@ -21,8 +21,9 @@ pub fn password_hasher_thread(server: Arc<Server>, mut rx: mpsc::UnboundedReceiv
     let mut hashes = Vec::new();
     for account in &server.config.account {
         let pass = match account {
-            Account::Admin { pass, .. } => pass,
-            Account::Source { pass, .. } => pass
+            Account::Admin { pass, .. }  => pass,
+            Account::Source { pass, .. } => pass,
+            Account::Relay { pass, .. }  => pass
         };
         // We have already guarded againt this in phase of config load
         let hash  = scrypt::password_hash::PasswordHash::new(pass.split_at(2).1)
@@ -51,12 +52,13 @@ pub async fn admin_or_source_auth(session: &mut ClientSession, auth: Option<(Str
                     v.0.eq(match x {
                         Account::Source { user, mount, .. } => {
                             has_permission = mount.iter().any(|x| x.path.eq("*") || x.path.eq(req_mount));
-                            user
+                            user.as_str()
                         },
                         Account::Admin { user, .. } => {
                             has_permission = true;
-                            user
-                        }
+                            user.as_str()
+                        },
+                        _ => ""
                     })
                 });
 
