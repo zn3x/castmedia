@@ -58,7 +58,10 @@ pub async fn admin_or_source_auth(session: &mut ClientSession, auth: Option<(Str
                             has_permission = true;
                             user.as_str()
                         },
-                        _ => ""
+                        _ => {
+                            has_permission = false;
+                            ""
+                        }
                     })
                 });
 

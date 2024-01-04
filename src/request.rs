@@ -133,10 +133,17 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
                 }
 
                 let auth = get_basic_auth(&request.headers)?;
-                let p    = path.split('?').collect::<Vec<&str>>();
+                // Warning!! Don't forget to check user && pass are empty
+                if let Some((u, p)) = auth.as_ref() {
+                    if u.is_empty() || p.is_empty() {
+                        return Err(anyhow::Error::msg("Empty Basic authentication"));
+                    }
+                }
+
+                let p = path.split('?').collect::<Vec<&str>>();
                 return Ok(RequestType::Admin(AdminRequest { path: p[0].to_owned(), queries, auth }));
             } else if source_id.starts_with("/api/") {
-                let p    = path.split('?').collect::<Vec<&str>>();
+                let p = path.split('?').collect::<Vec<&str>>();
                 return Ok(RequestType::Api(ApiRequest { path: p[0].to_owned(), queries }));
             }
 
