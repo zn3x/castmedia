@@ -23,7 +23,7 @@ pub fn password_hasher_thread(server: Arc<Server>, mut rx: mpsc::UnboundedReceiv
         let pass = match account {
             Account::Admin { pass, .. }  => pass,
             Account::Source { pass, .. } => pass,
-            Account::Relay { pass, .. }  => pass
+            Account::Slave { pass, .. }  => pass
         };
         // We have already guarded againt this in phase of config load
         let hash  = scrypt::password_hash::PasswordHash::new(pass.split_at(2).1)

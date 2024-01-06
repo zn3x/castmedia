@@ -298,7 +298,7 @@ impl ServerSettings {
             let pass = match account {
                 Account::Source { pass, .. } => pass,
                 Account::Admin { pass, .. }  => pass,
-                Account::Relay { pass, .. }  => pass
+                Account::Slave { pass, .. }  => pass
             };
             
             match pass.split_at(2) {
@@ -374,7 +374,7 @@ impl ServerSettings {
             let (user, pass, mounts) = match account {
                 Account::Admin { user, pass } => (user, pass, None),
                 Account::Source { user, pass, mount } => (user, pass, Some(mount)),
-                Account::Relay { user, pass } => (user, pass, None)
+                Account::Slave { user, pass } => (user, pass, None)
             };
 
             // Checking if we don't have duplicates
@@ -382,7 +382,7 @@ impl ServerSettings {
                 let (ruser, rmounts) = match raccount {
                     Account::Admin { user, .. } => (user, None),
                     Account::Source { user, mount, .. } => (user, Some(mount)),
-                    Account::Relay { user, .. } => (user, None)
+                    Account::Slave { user, .. } => (user, None)
                 };
                 // Skip if we are identic
                 if std::ptr::eq(user, ruser) {
