@@ -323,12 +323,16 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()>
     // Add this mountpoint to mountpoints hashmap
     {
         let mut lock = session.server.sources.write().await;
-        if relayed.is_none() && lock.len() >= session.server.config.limits.sources {
-            response::forbidden(
-                &mut session.stream,
-                &session.server.config.info.id,
-                "Too many sources connected").await?;
-            return Ok(());
+        if lock.len() >= session.server.config.limits.sources {
+            if relayed.is_none() {
+                response::forbidden(
+                    &mut session.stream,
+                    &session.server.config.info.id,
+                    "Too many sources connected").await?;
+                return Ok(());
+            } else {
+                return Err(anyhow::Error::msg("Max sources limit reached"));
+            }
         }
 
         if lock.try_insert(info.mountpoint.clone(), source).is_err() {

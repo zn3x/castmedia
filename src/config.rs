@@ -149,7 +149,7 @@ pub struct ServerLimits {
     /// Max number of concurrent clients
     #[serde(default = "default_val_limit_clients")]
     pub clients: usize,
-    /// Max number of concurrent sources
+    /// Max number of concurrent sources including relays
     #[serde(default = "default_val_limit_sources")]
     pub sources: usize,
     /// Max number of concurrent listeners
