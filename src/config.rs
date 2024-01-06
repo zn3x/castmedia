@@ -77,7 +77,7 @@ pub enum Account {
         pass: String,
         mount: Vec<Mount>
     },
-    Relay {
+    Slave {
         user: String,
         pass: String
     }
