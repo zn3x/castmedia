@@ -74,7 +74,8 @@ pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType, auth: O
                                 user.as_str()
                             },
                             Account::Slave { user, .. } => {
-                                if allowed == AllowedAuthType::Source {
+                                if allowed == AllowedAuthType::Slave {
+                                    has_permission = true;
                                     user.as_str()
                                 } else {
                                     ""

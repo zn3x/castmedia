@@ -4,7 +4,7 @@ use std::{
 };
 use hashbrown::HashMap;
 use serde::{Serialize, Deserialize};
-use llq::broadcast::{Receiver, Sender};
+use qanat::broadcast::{Receiver, Sender};
 
 use anyhow::Result;
 use tokio::sync::{oneshot, RwLock};
@@ -15,8 +15,8 @@ use crate::{server::{ClientSession, Session}, request::{SourceRequest, Request},
 
 #[obake::versioned]
 #[obake(version("0.1.0"))]
-#[obake(derive(Serialize, Deserialize, Clone))]
-#[derive(Serialize, Deserialize, Clone)]
+#[obake(derive(Debug, Serialize, Deserialize, Clone))]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IcyProperties {
     pub uagent: Option<String>,
     pub public: bool,
@@ -66,7 +66,7 @@ impl IcyProperties {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct IcyMetadata {
     pub title: String,
     pub url: String
@@ -153,10 +153,10 @@ impl Source {
         let size: NonZeroUsize  = 1.try_into().expect("1 should be posetif");
         let (tx, rx)            = match migrated {
             Some(v)            => v,
-            None               => llq::broadcast::channel(size)
+            None               => qanat::broadcast::channel(size)
         };
-        let (tx1, rx1)         = llq::broadcast::channel(size);
-        let (tx2, rx2)         = llq::broadcast::channel(size);
+        let (tx1, rx1)         = qanat::broadcast::channel(size);
+        let (tx2, rx2)         = qanat::broadcast::channel(size);
         let (tx3, rx3)         = oneshot::channel();
         (Source {
             properties: Arc::new(properties),
@@ -181,7 +181,7 @@ impl Source {
 }
 
 pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: SourceRequest) -> Result<()> {
-    let user_id = match auth::admin_or_source_auth(&mut session, req.auth, &req.mountpoint).await {
+    let user_id = match auth::auth(&mut session, auth::AllowedAuthType::Source, req.auth, &req.mountpoint).await {
         Ok(v) => {
             info!("New source request from {} to mount on {}", v, req.mountpoint);
             v
@@ -338,6 +338,15 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()>
         if lock.try_insert(info.mountpoint.clone(), source).is_err() {
             return Err(anyhow::Error::msg(format!("Mountpoint {} already exists", info.mountpoint)));
         }
+    }
+
+    // In case we are defined as a master server
+    // we must notify slaves here that a new mount is present
+    if session.server.relay_params.slave_auth_present {
+        session.server.relay_params
+            .new_source_event_tx
+            .clone()
+            .send(());
     }
 
     let binfo = BroadcastInfo {

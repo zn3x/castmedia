@@ -118,6 +118,11 @@ Content-Type: application/json; charset=utf-8\r\n").await?;
         Ok(Self {})
     }
 
+    /// Reuse stream already sent headers
+    pub fn new_ready() -> Self {
+        Self {}
+    }
+
     pub async fn send(&self, stream: &mut Stream, buf: &[u8]) -> Result<()> {
         stream.write_all(format!("{:x}\r\n", buf.len()).as_bytes()).await?;
         stream.write_all(buf).await?;

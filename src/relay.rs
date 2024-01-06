@@ -1,6 +1,12 @@
-use std::{sync::{Arc, atomic::Ordering}, time::Duration, net::SocketAddr};
-
+use std::{
+    sync::{Arc, atomic::Ordering},
+    time::Duration, net::SocketAddr
+};
 use anyhow::Result;
+use ::futures::{future::select_all, FutureExt};
+use hashbrown::{HashMap, hash_map::OccupiedError};
+use qanat::broadcast::RecvError;
+use serde_json::json;
 use tokio::{
     net::TcpStream,
     io::{BufStream, AsyncWriteExt}
@@ -8,13 +14,149 @@ use tokio::{
 use tokio_native_tls::native_tls::TlsConnector;
 use tracing::{info, error};
 use url::Url;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::{server::{Server, Stream, Socket, Session}, utils::get_header, config::MasterServerRelayScheme, http::ResponseReader, client::{SourceInfo, RelayedInfo, RelayStream}, source::IcyProperties};
+use crate::{
+    server::{Server, Stream, Socket, Session, ClientSession},
+    utils::get_header, config::MasterServerRelayScheme,
+    http::ResponseReader,
+    client::{SourceInfo, RelayedInfo, RelayStream},
+    source::IcyProperties, response::ChunkedResponse
+};
 
 #[derive(Debug, Deserialize)]
 struct MasterMounts {
     mounts: Vec<String>
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type")]
+#[serde(rename_all = "lowercase")]
+pub enum MountUpdate {
+    New {
+        mount: String,
+        properties: IcyProperties
+    },
+    Metadata {
+        mount: String,
+        metadata: Vec<u8>
+    },
+    Unmounted {
+        mount: String
+    }
+}
+
+pub async fn master_mount_updates(session: &mut ClientSession, user_id: String) -> Result<()> {
+    info!("Mount updates stream initialized for {} ({})", user_id, session.addr);
+
+    let chunked_writer = ChunkedResponse::new_ready();
+
+    let mut new_source_notify = session.server
+        .relay_params
+        .new_source_event_rx
+        .clone();
+
+    // map holding all mounts as tuple (mount, metadata_channel)
+    let mut mounts = HashMap::new();
+    // vec holding futures of reads we must perform on each source channel
+    let mut reads;
+    let mut ret;
+    let mut remove = None;
+
+    'NO_SOURCE: loop {
+        ret = new_source_notify.recv().await;
+        'SOURCE: loop {
+            if ret.is_err() {
+                // This should never happen
+                unreachable!("new_source_event_channel should not be closed");
+            }
+
+            let mut new_mounts = Vec::new();
+            // We here only insert new sources
+            for m in session.server.sources.read().await.iter() {
+                match mounts.try_insert(m.0.to_owned(), m.1.meta_broadcast.clone()) {
+                    Err(OccupiedError { mut entry, value }) => {
+                        if !entry.get().same_channel(&value) {
+                            entry.insert(value);
+                            new_mounts.push((m.0.clone(), m.1.properties.clone()));
+                        }
+                    },
+                    Ok(_) => {
+                        new_mounts.push((m.0.clone(), m.1.properties.clone()));
+                    },
+                }
+            }
+            
+            // Reread everything, we got premature notification
+            if mounts.is_empty() {
+                continue 'NO_SOURCE;
+            }
+            
+            // Now we write new sources to slave
+            for new_mount in new_mounts {
+                let ser = serde_json::to_vec(&json!({
+                    "mount": new_mount.0,
+                    "properties": new_mount.1.as_ref(),
+                    "type": "new"
+                }))?;
+
+                chunked_writer.send(&mut session.stream, &ser).await?;
+            }
+            session.stream.flush().await?;
+
+            loop {
+                reads = Vec::new();
+                if let Some(rem) = remove.take() {
+                    mounts.remove(&rem);
+                }
+                // we must prevent polling empty futures list
+                if mounts.is_empty() {
+                    continue 'NO_SOURCE;
+                }
+
+                for m in &mut mounts {
+                    reads.push(async {
+                        (m.0.clone(), m.1.recv().await)
+                    }.boxed());
+                }
+                tokio::select! {
+                    ((mount, metadata), _, _) = select_all(reads) => {
+                        let ser = match metadata {
+                            Ok(v) => {
+                                // TODO: Can we use futures returned by select_all directly
+                                // Holy borrowing hell
+                                // We need to re-add recv future for this channel
+                                serde_json::to_vec(&json!({
+                                    "mount": mount,
+                                    "metadata": v.as_ref(),
+                                    "type": "metadata"
+                                }))?
+                            },
+                            Err(RecvError::Lagged(_)) => continue,
+                            Err(RecvError::Closed) => {
+                                let ser = serde_json::to_vec(&json!({
+                                    "mount": mount,
+                                    "type": "unmounted"
+                                }))?;
+
+                                // We remove source because it's no longer active
+                                remove = Some(mount);
+
+                                ser
+                            }
+                        };
+                        
+                        chunked_writer.send(&mut session.stream, &ser).await?;
+                        session.stream.flush().await?;
+                    },
+                    r = new_source_notify.recv() => {
+                        ret = r;
+                        continue 'SOURCE;
+                    }
+                }
+            };
+        };
+    };
 }
 
 async fn http_get_request(url: &Url, path: &str, headers: &str) -> Result<(Stream, SocketAddr)> {

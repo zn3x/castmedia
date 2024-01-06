@@ -226,10 +226,10 @@ dependencies = [
  "httparse",
  "httpdate",
  "inotify",
- "llq",
  "obake",
  "passfd",
  "postcard",
+ "qanat",
  "scrypt",
  "serde",
  "serde_json",
@@ -402,6 +402,16 @@ checksum = "ebcda35c7a396850a55ffeac740804b40ffec779b98fffbb1738f4033f0ee79e"
 dependencies = [
  "derive_builder_core",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "diatomic-waker"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28025fb55a9d815acf7b0877555f437254f373036eec6ed265116c7a5c0825e9"
+dependencies = [
+ "loom",
+ "waker-fn",
 ]
 
 [[package]]
@@ -831,15 +841,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3852614a3bd9ca9804678ba6be5e3b8ce76dfc902cae004e3e0c44051b6e88db"
 
 [[package]]
-name = "llq"
-version = "0.1.0"
-source = "git+https://codeberg.org/zesty/LLQ#e9432fa949d9f1fc7c2ac527adb88cb9d16c654d"
-dependencies = [
- "async-event",
- "haphazard",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1132,6 +1133,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d433d9f1a3e8c1263d9456598b16fec66f4acc9a74dacffd35c7bb09b3a1328"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "qanat"
+version = "0.1.0"
+source = "git+https://codeberg.org/zesty/qanat#d2aff1ad40a9dcdcf48b4aa768df7c26ca64623c"
+dependencies = [
+ "async-event",
+ "diatomic-waker",
+ "haphazard",
 ]
 
 [[package]]
@@ -1865,6 +1876,12 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
+
+[[package]]
+name = "waker-fn"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3c4517f54858c779bbcbf228f4fca63d121bf85fbecb2dc578cdf4a39395690"
 
 [[package]]
 name = "wasi"

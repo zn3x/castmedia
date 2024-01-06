@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-llq = { git = "https://codeberg.org/zesty/LLQ" }
+qanat = { git = "https://codeberg.org/zesty/qanat" }
 
 tokio = { version = "1.29.0", features = [ "full" ] }
 tokio-native-tls = "0.3.1" 

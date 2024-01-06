@@ -7,7 +7,7 @@ use std::{
     }
 };
 use futures::executor::block_on;
-use llq::broadcast::Sender;
+use qanat::broadcast::Sender;
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};
 use anyhow::Result;
@@ -395,7 +395,7 @@ pub async fn broadcast(s: BroadcastInfo<'_>) {
 
 struct MigrateStreamProps<'a> {
     server: &'a Server,
-    migrate: Result<Arc<MigrateCommand>, llq::broadcast::RecvError>,
+    migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>,
     mountpoint: &'a str,
     media_broadcast: Sender<Arc<Vec<u8>>>,
     chunked: bool,

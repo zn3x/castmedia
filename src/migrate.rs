@@ -3,7 +3,7 @@ use std::{
     os::{unix::net::{UnixListener, UnixStream}, fd::FromRawFd}, io::{Write, Read}, time::Duration
 };
 use anyhow::Result;
-use llq::broadcast::{Sender, restore_channel_from_snapshot};
+use qanat::broadcast::{Sender, restore_channel_from_snapshot};
 use tokio::{sync::mpsc, runtime::Handle, net::TcpStream};
 use serde::{Serialize, Deserialize};
 use passfd::FdPassingExt;

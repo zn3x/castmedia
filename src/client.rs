@@ -5,7 +5,7 @@ use std::{
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
 use hashbrown::HashMap;
-use llq::broadcast::{Receiver, RecvError, Sender};
+use qanat::broadcast::{Receiver, RecvError, Sender};
 use tokio::{io::{AsyncWriteExt, BufStream}, sync::{RwLock, oneshot}, net::TcpStream};
 use tracing::{info, error};
 use uuid::Uuid;

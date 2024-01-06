@@ -1,7 +1,7 @@
 use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}, net::SocketAddr, hash::BuildHasher, os::fd::AsRawFd, time::Duration};
 use chrono::{DateTime, Local};
 use futures::StreamExt;
-use llq::broadcast::{channel, Receiver, Sender};
+use qanat::broadcast::{channel, Receiver, Sender};
 use tokio::{
     net::{TcpListener, TcpStream},
     task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock, Mutex, mpsc}
@@ -13,7 +13,7 @@ use inotify::{Inotify, WatchMask};
 use anyhow::Result;
 
 use crate::{
-    config::{ServerSettings, TlsIdentity}, 
+    config::{ServerSettings, TlsIdentity, Account}, 
     client, source::Source, migrate::MigrateCommand,
     auth::{self, HashCalculation}, ArgParse, relay
 };
@@ -52,7 +52,9 @@ pub struct Server {
     /// Receiver to listener when migration happens
     pub migrate: Receiver<Arc<MigrateCommand>>,
     /// In order not to block async tasks, we have dedicated thread to calculate hashes
-    pub hash_calculator: mpsc::UnboundedSender<HashCalculation>
+    pub hash_calculator: mpsc::UnboundedSender<HashCalculation>,
+    /// Relay specific parameters
+    pub relay_params: RelayParams
 }
 
 pub struct ServerStats {
@@ -106,6 +108,18 @@ impl ServerStats {
             api_connections: AtomicUsize::new(0)
         }
     }
+}
+
+/// Helper struct used to store attributs solely needed
+/// for relaying when master server is expected to receive
+/// authenticated slave connection
+pub struct RelayParams {
+    /// Flag used to check if there is a slave auth configured
+    pub slave_auth_present: bool,
+    /// Notification for new source (sender)
+    pub new_source_event_tx: Sender<()>,
+    /// Notification for new source (receiver)
+    pub new_source_event_rx: Receiver<()>
 }
 
 /// A client session
@@ -305,12 +319,21 @@ async fn bind(bind: SocketAddr) -> TcpListener {
 
 pub async fn listener(config: ServerSettings, args: ArgParse, migrate_op: Option<String>) {
     let start_time  = chrono::offset::Utc::now();
-    let (tx, rx)    = channel(1.try_into().expect("1 should not be 0"));
+    let init_size   = 1.try_into().expect("1 should not be 0");
+    let (tx, rx)    = channel(init_size);
     let mut migrate = rx.clone();
     let (tx1, rx1)  = mpsc::unbounded_channel();
+    let (tx2, rx2)  = channel(init_size);
     let serv        = Arc::new(Server {
         max_clients: Arc::new(Semaphore::new(config.limits.clients)),
         sources: RwLock::new(HashMap::new()),
+        relay_params: RelayParams {
+            slave_auth_present: config.account
+                .iter()
+                .any(|x| matches!(x, Account::Slave { .. })),
+            new_source_event_tx: tx2,
+            new_source_event_rx: rx2
+        },
         config,
         args,
         stats: ServerStats::new(start_time.timestamp()),
