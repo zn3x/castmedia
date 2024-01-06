@@ -6,6 +6,12 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{server::{ClientSession, Server}, response, config::Account};
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum AllowedAuthType {
+    Source,
+    Slave
+}
+
 pub struct HashCalculation {
     pub user_id: usize,
     pub pass: String,
@@ -40,27 +46,40 @@ pub fn password_hasher_thread(server: Arc<Server>, mut rx: mpsc::UnboundedReceiv
     }
 }
 
-pub async fn admin_or_source_auth(session: &mut ClientSession, auth: Option<(String, String)>, req_mount: &str) -> Result<String> {
+pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType, auth: Option<(String, String)>, req_mount: &str) -> Result<String> {
     // Making sure we are receiving this through admin interface
     if session.admin_addr {
         if let Some(v) = auth {
             // we are retrieving both index of account and if it can access mount
-            // for a source it can only access mount it has permission to
+            // In AllowedAuthType::Source: a source can only access mount it has permission to
+            // In AllowedAuthType::Slave: slave has access
+            // Admin has access to everything
+            // While others can only get access in their respective mode
             let mut has_permission = false;
             let user_id            = session.server.config.account.iter()
                 .position(|x| {
-                    v.0.eq(match x {
-                        Account::Source { user, mount, .. } => {
-                            has_permission = mount.iter().any(|x| x.path.eq("*") || x.path.eq(req_mount));
-                            user.as_str()
-                        },
-                        Account::Admin { user, .. } => {
-                            has_permission = true;
-                            user.as_str()
-                        },
-                        _ => {
-                            has_permission = false;
-                            ""
+                    v.0.eq({
+                        has_permission = false;
+                        match x {
+                            Account::Source { user, mount, .. } => {
+                                if allowed == AllowedAuthType::Source {
+                                    has_permission = mount.iter().any(|x| x.path.eq("*") || x.path.eq(req_mount));
+                                    user.as_str()
+                                } else {
+                                    ""
+                                }
+                            },
+                            Account::Admin { user, .. } => {
+                                has_permission = true;
+                                user.as_str()
+                            },
+                            Account::Slave { user, .. } => {
+                                if allowed == AllowedAuthType::Source {
+                                    user.as_str()
+                                } else {
+                                    ""
+                                }
+                            }
                         }
                     })
                 });

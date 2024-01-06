@@ -8,13 +8,18 @@ use uuid::Uuid;
 
 use crate::{
     server::ClientSession,
-    request::AdminRequest, response::{self, ChunkedResponse}, auth, utils, stream::broadcast_metadata, source::{MoveClientsCommand, MoveClientsType}, migrate
+    request::AdminRequest,
+    response::{self, ChunkedResponse},
+    auth::{self, AllowedAuthType}, utils,
+    stream::broadcast_metadata,
+    source::{MoveClientsCommand, MoveClientsType},
+    migrate
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
     match utils::get_queries_val_for_keys(&["mode", "mount", "song", "url"], &req.queries).as_slice() {
         &[Some(mode), Some(mount), song, url] => {
-            let user_id = auth::admin_or_source_auth(session, req.auth, mount).await?;
+            let user_id = auth::auth(session, AllowedAuthType::Source, req.auth, mount).await?;
             let sid     = &session.server.config.info.id;
 
             if !mode.eq("updinfo") {
@@ -41,7 +46,7 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
 async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
     match utils::get_queries_val_for_keys(&["mount", "fallback"], &req.queries).as_slice() {
         &[Some(mount), fallback] => {
-            let user_id = auth::admin_or_source_auth(session, req.auth, mount).await?;
+            let user_id = auth::auth(session, AllowedAuthType::Source, req.auth, mount).await?;
             let sid     = &session.server.config.info.id;
 
             match session.server.sources.write().await.get_mut(mount) {
