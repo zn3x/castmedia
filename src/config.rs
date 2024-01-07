@@ -31,8 +31,9 @@ const HTTP_MAX_LEN: usize                = 8192;
 const MASTER_HTTP_MAX_LEN: usize         = 16384;
 const MASTER_TIMEOUT: u64                = 20000;
 const MASTER_MOUNTS_LIMIT: usize         = usize::MAX;
-const MASTER_TRANS_UP_INTERVAL: u64      = 120;
+const MASTER_TRANS_UP_INTERVAL: u64      = 120000;
 const MASTER_AUTH_STREAM_ON_DEMAND: bool = false;
+const MASTER_AUTH_RECONNECT_TIMEOUT: u64 = 20000;
 
 const ADMINACC_ENABLED: bool             = true;
 const ADMINACC_BIND: &str                = "127.0.0.1:9100";
@@ -104,7 +105,9 @@ pub enum MasterServerRelayScheme {
         user: String,
         pass: String,
         #[serde(default = "default_val_master_auth_stream_on_demand")]
-        stream_on_demand: bool
+        stream_on_demand: bool,
+        #[serde(default = "default_val_master_auth_reconnect_timeout")]
+        reconnect_timeout: u64
     }
 }
 
@@ -269,6 +272,7 @@ fn default_val_master() -> Vec<MasterServer> { Vec::new() }
 fn default_val_master_mounts_limit() -> usize { MASTER_MOUNTS_LIMIT }
 fn default_val_master_transparent_update_interval() -> u64 { MASTER_TRANS_UP_INTERVAL }
 fn default_val_master_auth_stream_on_demand() -> bool { MASTER_AUTH_STREAM_ON_DEMAND }
+fn default_val_master_auth_stream_reconnect_timeout() -> u64 { MASTER_AUTH_RECONNECT_TIMEOUT }
 
 impl ServerSettings {
     pub fn load(config_path: &str) -> Self {
