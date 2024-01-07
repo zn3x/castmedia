@@ -105,6 +105,16 @@ impl ChunkedResponseReader {
         }
     }
 
+    pub async fn read_exact<T: AsyncRead + Unpin>(&mut self, stream: &mut T, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut r = 0;
+        loop {
+            r += self.read(stream, buf).await?;
+            if r == buf.len() {
+                return Ok(r);
+            }
+        }
+    }
+
     pub async fn read<T: AsyncRead + Unpin>(&mut self, stream: &mut T, buf: &mut [u8]) -> std::io::Result<usize> {
         // We first need to read chunk length that is encoded as hex followed by \r\n
         if self.bytes_left == 0 {
