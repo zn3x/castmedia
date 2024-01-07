@@ -79,9 +79,9 @@ pub struct SourceStats {
     pub active_listeners: AtomicUsize,
     /// Peak number of listeners for mountpoint
     pub peak_listeners: AtomicUsize,
-    /// Number of bytes read from source client
+    /// Number of media bytes read from source client
     pub bytes_read: AtomicU64,
-    /// Number of bytes sent to all listeners of mountpoint
+    /// Number of media bytes sent to all listeners of mountpoint
     pub bytes_sent: AtomicU64,
 }
 
