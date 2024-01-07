@@ -272,7 +272,7 @@ fn default_val_master() -> Vec<MasterServer> { Vec::new() }
 fn default_val_master_mounts_limit() -> usize { MASTER_MOUNTS_LIMIT }
 fn default_val_master_transparent_update_interval() -> u64 { MASTER_TRANS_UP_INTERVAL }
 fn default_val_master_auth_stream_on_demand() -> bool { MASTER_AUTH_STREAM_ON_DEMAND }
-fn default_val_master_auth_stream_reconnect_timeout() -> u64 { MASTER_AUTH_RECONNECT_TIMEOUT }
+fn default_val_master_auth_reconnect_timeout() -> u64 { MASTER_AUTH_RECONNECT_TIMEOUT }
 
 impl ServerSettings {
     pub fn load(config_path: &str) -> Self {
