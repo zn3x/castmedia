@@ -119,3 +119,11 @@ pub fn get_basic_auth( headers: &[httparse::Header] ) -> Result<Option<(String, 
     }
     Ok(None)
 }
+
+pub fn basic_auth(user: &str, pass: &str) -> String {
+    let mut s = String::from(user);
+    s.push(':');
+    s.push_str(&pass);
+    let bs64 = base64::engine::general_purpose::URL_SAFE;
+    bs64.encode(s)
+}
