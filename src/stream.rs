@@ -6,7 +6,7 @@ use std::{
         atomic::{Ordering, AtomicBool}
     }
 };
-use futures::executor::block_on;
+use futures::{executor::block_on, Future};
 use qanat::broadcast::Sender;
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};
@@ -17,8 +17,25 @@ use tokio::{time::timeout, io::AsyncReadExt, sync::{oneshot, RwLock}};
 use crate::{
     server::{Stream, Session, Server},
     source::{SourceBroadcast, Source, IcyMetadata, SourceStats, MoveClientsCommand, MoveClientsType},
-    migrate::{MigrateConnection, VersionedMigrateConnection, MigrateSource, MigrateSourceInfo, MigrateCommand}, client::RelayedInfo
+    migrate::{MigrateConnection, VersionedMigrateConnection, MigrateSource, MigrateSourceInfo, MigrateCommand}, client::RelayedInfo, http::ChunkedResponseReader
 };
+
+#[inline(always)]
+async fn read_with_stats(stats: &SourceStats, time: Duration, fut: impl Future<Output = std::io::Result<usize>>)
+    -> std::io::Result<usize> {
+    let r = match timeout(time, fut).await {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return Err(e),
+        Err(e) => return Err(e.into())
+    };
+
+    if r == 0 {
+        return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "Reached end of connection"));
+    }
+
+    stats.bytes_read.fetch_add(r as u64, Ordering::Relaxed);
+    Ok(r)
+}
 
 // TODO: Proper async interface...
 // TODO: Remove async_trait when async traits stabilized
@@ -47,18 +64,11 @@ impl StreamReader for SimpleReader {
     }
 
     async fn async_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let r = match timeout(self.timeout, self.stream.read(buf)).await {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => return Err(e),
-            Err(e) => return Err(e.into())
-        };
-
-        if r == 0 {
-            return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "Reached end of connection"));
-        }
-
-        self.stats.bytes_read.fetch_add(r as u64, Ordering::Relaxed);
-        Ok(r)
+        read_with_stats(
+            &self.stats,
+            self.timeout,
+            self.stream.read(buf)
+        ).await
     }
 }
 
@@ -70,16 +80,14 @@ impl Read for SimpleReader {
 
 pub struct ChunkedReader {
     inner: SimpleReader,
-    bytes_left: usize,
-    reader: [u8; 1]
+    chunked: ChunkedResponseReader
 }
 
 impl ChunkedReader {
-    fn new(inner: SimpleReader) -> Self {
+    pub fn new(inner: SimpleReader) -> Self {
         Self {
             inner,
-            bytes_left: 0,
-            reader: [0u8]
+            chunked: ChunkedResponseReader::new()
         }
     }
 }
@@ -91,53 +99,11 @@ impl StreamReader for ChunkedReader {
     }
 
     async fn async_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // We first need to read chunk length that is encoded as hex followed by \r\n
-        if self.bytes_left == 0 {
-            let mut hex_len = Vec::new();
-            loop {
-                match self.inner.async_read(&mut self.reader).await {
-                    Ok(_) => {
-                        hex_len.push(self.reader[0]);
-                        // Avoiding a ddos here
-                        if hex_len.len() > 12 {
-                            return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Peer trying to send a big size chunk"))
-                        } else if hex_len.ends_with(&[b'\r', b'\n']) {
-                            break;
-                        }
-                    },
-                    Err(e) => return Err(e)
-                }
-            }
-
-            self.bytes_left = match std::str::from_utf8(&hex_len) {
-                Ok(v) => match usize::from_str_radix(v, 16) {
-                    Ok(v) => v,
-                    Err(_) => return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Chunk length is not a valid number"))
-                },
-                Err(_) => return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Chunk length is not a valid string"))
-            };
-
-            // if we get 0, this means it's the end
-            if self.bytes_left == 0 {
-                return Ok(0)
-            }
-        }
-
-        // Now we read actual chunk
-        // We make sure we are not reading more than bytes_left
-        let read_len = if buf.len() > self.bytes_left {
-            self.bytes_left
-        } else {
-            buf.len()
-        };
-
-        match self.inner.async_read(&mut buf[..read_len]).await {
-            Ok(r) => {
-                self.bytes_left -= r;
-                Ok(r)
-            },
-            Err(e) => Err(e)
-        }
+        read_with_stats(
+            &self.inner.stats,
+            self.inner.timeout,
+            self.chunked.read(&mut self.inner.stream, buf)
+        ).await
     }
 }
 

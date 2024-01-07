@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncRead};
 
 use crate::{server::Stream, utils::get_header};
 
@@ -89,5 +89,69 @@ impl<'a> ResponseReader<'a> {
         self.stream.read_exact(&mut buf[..]).await?;
 
         Ok(buf)
+    }
+}
+
+pub struct ChunkedResponseReader {
+    bytes_left: usize,
+    reader: [u8; 1]
+}
+
+impl ChunkedResponseReader {
+    pub fn new() -> Self {
+        Self {
+            bytes_left: 0,
+            reader: [0u8]
+        }
+    }
+
+    pub async fn read<T: AsyncRead + Unpin>(&mut self, stream: &mut T, buf: &mut [u8]) -> std::io::Result<usize> {
+        // We first need to read chunk length that is encoded as hex followed by \r\n
+        if self.bytes_left == 0 {
+            let mut hex_len = Vec::new();
+            loop {
+                match stream.read(&mut self.reader).await {
+                    Ok(_) => {
+                        hex_len.push(self.reader[0]);
+                        // Avoiding a ddos here
+                        if hex_len.len() > 12 {
+                            return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Peer trying to send a big size chunk"))
+                        } else if hex_len.ends_with(&[b'\r', b'\n']) {
+                            break;
+                        }
+                    },
+                    Err(e) => return Err(e)
+                }
+            }
+
+            self.bytes_left = match std::str::from_utf8(&hex_len) {
+                Ok(v) => match usize::from_str_radix(v, 16) {
+                    Ok(v) => v,
+                    Err(_) => return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Chunk length is not a valid number"))
+                },
+                Err(_) => return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Chunk length is not a valid string"))
+            };
+
+            // if we get 0, this means it's the end
+            if self.bytes_left == 0 {
+                return Ok(0)
+            }
+        }
+
+        // Now we read actual chunk
+        // We make sure we are not reading more than bytes_left
+        let read_len = if buf.len() > self.bytes_left {
+            self.bytes_left
+        } else {
+            buf.len()
+        };
+
+        match stream.read(&mut buf[..read_len]).await {
+            Ok(r) => {
+                self.bytes_left -= r;
+                Ok(r)
+            },
+            Err(e) => Err(e)
+        }
     }
 }
