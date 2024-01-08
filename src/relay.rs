@@ -18,9 +18,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     server::{Server, Stream, Socket, Session, ClientSession},
-    utils::get_header, config::MasterServerRelayScheme,
-    http::ResponseReader,
-    client::{SourceInfo, RelayedInfo, RelayStream},
+    utils::{get_header, basic_auth}, config::MasterServerRelayScheme,
+    http::{ResponseReader, ChunkedResponseReader},
+    client::{SourceInfo, RelayedInfo, RelayStream, StreamOnDemand},
     source::IcyProperties, response::ChunkedResponse
 };
 
@@ -146,6 +146,7 @@ pub async fn master_mount_updates(session: &mut ClientSession, user_id: String) 
                             }
                         };
                         
+                        chunked_writer.send(&mut session.stream, &(ser.len() as u32).to_be_bytes()).await?;
                         chunked_writer.send(&mut session.stream, &ser).await?;
                         session.stream.flush().await?;
                     },
@@ -206,11 +207,19 @@ async fn fetch_available_sources(server: &Server, url: &Url) -> Result<MasterMou
     ).await?
 }
 
-async fn transparent_get_mountpoint(serv: &Arc<Server>, url: &Url, mount: &str)
+async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
+                    on_demand: bool, auth: Option<&str>)
     -> Result<(Box<dyn Socket>, SocketAddr, usize, usize, IcyProperties, bool)> {
     // Fetching media stream from master
+    let mut headers = String::new();
+    if !on_demand {
+        headers.push_str("Icy-Metadata: 1\r\n");
+    }
+    if let Some(auth) = auth {
+        headers.push_str(auth);
+    }
     let (mut stream,
-         addr)      = http_get_request(url, mount, "Icy-Metadata: 1\r\n").await?;
+         addr)      = http_get_request(url, mount, &headers).await?;
     let mut reader  = ResponseReader::new(&mut stream, serv.config.limits.master_http_max_len);
     let headers_buf = reader.read_headers().await?;
 
@@ -260,10 +269,91 @@ async fn transparent_get_mountpoint(serv: &Arc<Server>, url: &Url, mount: &str)
     Ok((stream, addr, metaint, headers_buf.len(), properties, chunked))
 }
 
-async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mount: String) {
+async fn authenticated_poll(serv: &Server, master_ind: usize) -> Result<()> {
+    let url               = &serv.config.master[master_ind].url;
+    let (auth, on_demand) = match &serv.config.master[master_ind].relay_scheme {
+        MasterServerRelayScheme::Authenticated { user, pass, stream_on_demand, .. } => (
+            format!("Authorization: Basic {}\r\n", basic_auth(user, pass)),
+            *stream_on_demand
+        ),
+        // Should not reach this as we did treat it already
+        _ => unreachable!()
+    };
+
+    let (mut stream, _) = http_get_request(url, "/admin/mountupdates", &auth).await?;
+    let mut reader      = ResponseReader::new(&mut stream, serv.config.limits.master_http_max_len);
+    let headers_buf     = reader.read_headers().await?;
+
+    serv.stats.source_relay_connections.fetch_add(1, Ordering::Relaxed);
+
+    // Parsing response headers
+    let mut headers = [httparse::EMPTY_HEADER; 32];
+    let mut resp    = httparse::Response::new(&mut headers);
+
+    match resp.parse(&headers_buf) {
+        Ok(httparse::Status::Complete(_)) => {},
+        Ok(httparse::Status::Partial) => return Err(anyhow::Error::msg("Incomplete response")),
+        Err(e) => return Err(e.into())
+    };
+
+    if !resp.code.is_some_and(|c| c == 200) {
+        return Err(anyhow::Error::msg("Unexpected response status code"));
+    }
+    
+    // TODO: check transfer-encoding??
+    // Shouldn't matter anyway
+    info!("Starting mount updates from master {}", url);
+
+    serv.stats.active_relay.fetch_add(1, Ordering::Relaxed);
+
+    if let Err(e) = authenticated_poll_reader(serv, &mut stream, on_demand).await {
+        error!("Mount updates from master {} stopped: {}", url, e);
+    }
+    
+    serv.stats.active_relay.fetch_sub(1, Ordering::Relaxed);
+
+    Ok(())
+}
+
+async fn authenticated_poll_reader(serv: &Server, stream: &mut Stream, on_demand: bool) -> Result<()> {
+    let mut len_enc = [0u8; 4];
+    let mut buf     = vec![0u8; 1024];
+    let mut chunked = ChunkedResponseReader::new();
+    let mut len;
+
+    loop {
+        // Reading message first from stream
+        chunked.read_exact(stream, &mut len_enc).await?;
+        len = u32::from_be_bytes(len_enc) as usize;
+        if len > buf.len() {
+            buf.resize(len, 0);
+        }
+        chunked.read_exact(stream, &mut buf[..len]).await?;
+
+        // Now we deserialize it
+        let event: MountUpdate = serde_json::from_slice(&buf[..len])?;
+
+        handle_mount_update(serv, on_demand, event).await?;
+    };
+}
+
+async fn handle_mount_update(serv: &Server, on_demand: bool, event: MountUpdate) -> Result<()> {
+    // Now handling events for every source
+    match event {
+        MountUpdate::New { mount, properties } => {
+        },
+        MountUpdate::Metadata { mount, metadata } => {},
+        MountUpdate::Unmounted { mount } => {}
+    }
+
+    Ok(())
+}
+
+async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
+                      on_demand: Option<StreamOnDemand>, auth: Option<&str>) {
     let url = &serv.config.master[master_ind].url;
 
-    match transparent_get_mountpoint(serv, url, &mount).await {
+    match get_stream(serv, url, &mount, on_demand.is_some(), auth).await {
         Ok((stream, addr, metaint, initial_bytes_read, properties, chunked)) => {
             let url = {
                 let mut url = url.to_string();
@@ -283,7 +373,7 @@ async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mou
                     addr
                 },
                 SourceInfo {
-                    mountpoint: mount,
+                    mountpoint: mount.clone(),
                     properties,
                     initial_bytes_read,
                     chunked,
@@ -299,22 +389,25 @@ async fn transparent_relay_mountpoint(serv: &Arc<Server>, master_ind: usize, mou
                             metadata_remaining: 0,
                             metadata_buffer: Vec::new()
                         },
-                        url
+                        url,
+                        on_demand
                     })
                 }
             ).await;
             if let Err(e) = ret {
                 error!(
-                    "Master server {} relayind ended with: {}",
+                    "Master server {} relayind for {} ended with: {}",
                     serv.config.master[master_ind].url,
+                    mount,
                     e
                 );
             }
         },
         Err(e) => {
             error!(
-                "Master server {} relaying failed: {}",
+                "Master server {} relaying for {} failed: {}",
                 serv.config.master[master_ind].url,
+                mount,
                 e
             );
         }
@@ -339,7 +432,10 @@ pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
                                 let serv_clone  = serv.clone();
                                 let mount_clone = mount.clone();
                                 tokio::spawn(async move {
-                                    transparent_relay_mountpoint(&serv_clone, master_ind, mount_clone).await
+                                    relay_stream(
+                                        &serv_clone, master_ind,
+                                        mount_clone, None, None
+                                    ).await
                                 });
                             }
                         }
@@ -350,6 +446,14 @@ pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
                 }
             }
         },
-        MasterServerRelayScheme::Authenticated { .. } => {}
+        MasterServerRelayScheme::Authenticated { reconnect_timeout, .. } => {
+            let timeout = Duration::from_millis(*reconnect_timeout);
+            loop {
+                if let Err(e) = authenticated_poll(&serv, master_ind).await {
+                    error!("Initial mountupdates connection to master {} failed: {}", master_server.url, e);
+                }
+                tokio::time::sleep(timeout).await;
+            }
+        }
     }
 }

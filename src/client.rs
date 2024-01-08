@@ -1,19 +1,23 @@
 use std::{
     sync::{Arc, atomic::{Ordering, AtomicU64, AtomicI64}},
-    time::Duration
+    time::Duration, collections::VecDeque
 };
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
 use hashbrown::HashMap;
 use qanat::broadcast::{Receiver, RecvError, Sender};
-use tokio::{io::{AsyncWriteExt, BufStream}, sync::{RwLock, oneshot}, net::TcpStream};
+use tokio::{
+    io::{AsyncWriteExt, BufStream},
+    sync::{RwLock, Mutex, oneshot},
+    net::TcpStream
+};
 use tracing::{info, error};
 use uuid::Uuid;
 
 use crate::{
     server::{ClientSession, Stream, Server, Session},
     request::{read_request, Request, RequestType, ListenRequest},
-    source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source},
+    source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast},
     response, utils, admin, api,
     migrate::{MigrateClientInfo, MigrateClient, MigrateConnection, VersionedMigrateConnection}
 };
@@ -408,7 +412,16 @@ pub struct SourceInfo {
 
 pub struct RelayStream {
     pub url: String,
+    pub on_demand: Option<StreamOnDemand>,
     pub info: RelayedInfo
+}
+
+pub struct StreamOnDemand {
+    pub stats: Arc<SourceStats>,
+    pub broadcast: SourceBroadcast,
+    pub kill_notifier: oneshot::Receiver<()>,
+    pub queue_size: usize,
+    pub chunk_size: VecDeque<usize>
 }
 
 #[obake::versioned]

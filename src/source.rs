@@ -7,11 +7,11 @@ use serde::{Serialize, Deserialize};
 use qanat::broadcast::{Receiver, Sender};
 
 use anyhow::Result;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::{server::{ClientSession, Session}, request::{SourceRequest, Request}, response, utils, stream::{self, BroadcastInfo}, auth, client::{Client, SourceInfo}, config::Account};
+use crate::{server::{ClientSession, Session}, request::{SourceRequest, Request}, response, utils, stream::{self, BroadcastInfo}, auth, client::{Client, SourceInfo, StreamOnDemand}, config::Account};
 
 #[obake::versioned]
 #[obake(version("0.1.0"))]
@@ -148,8 +148,7 @@ pub enum MoveClientsType {
 
 impl Source {
     pub fn new(properties: IcyProperties,
-               migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,
-               relayed_source: Option<String>) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
+               migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
         let size: NonZeroUsize  = 1.try_into().expect("1 should be posetif");
         let (tx, rx)            = match migrated {
             Some(v)            => v,
@@ -164,7 +163,7 @@ impl Source {
             clients: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(SourceStats::new()),
             fallback: None,
-            relayed_source,
+            relayed_source: None,
             broadcast: rx,
             meta_broadcast_sender: tx1.clone(),
             meta_broadcast: rx1,
@@ -293,60 +292,79 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
             metadata: None,
             relayed: None
         }
-    ).await
+    ).await?;
+
+    Ok(())
 }
 
-pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()> {
-    let (relayed, stream_source_url) = match info.relayed {
-        Some(v) => (Some(v.info), Some(v.url)),
-        None => (None, None)
+pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Option<StreamOnDemand>> {
+    let (relayed, on_demand, stream_source_url) = match info.relayed {
+        Some(v) => (Some(v.info), v.on_demand, Some(v.url)),
+        None => (None, None, None)
     };
 
-    let (mut source, mut broadcast, kill_notifier) = Source::new(info.properties, info.broadcast, stream_source_url);
+    let mut on_demand_params = None;
+    let source_stats;
+    let mut broadcast;
+    let kill_notifier;
+    let on_demand_flag;
 
-    source.fallback = info.fallback;
+    if let Some(on_demand) = on_demand {
+        on_demand_flag   = true;
+        source_stats     = on_demand.stats;
+        broadcast        = on_demand.broadcast;
+        kill_notifier    = on_demand.kill_notifier;
+        on_demand_params = Some((on_demand.queue_size, on_demand.chunk_size));
+    } else {
+        on_demand_flag = false;
+        let mut source;
+        (source, broadcast, kill_notifier) = Source::new(info.properties, info.broadcast);
 
-    // To prevent early readers from having no header
-    if let Some(metadata) = info.metadata {
-        broadcast.metadata.send(Arc::new(metadata));
-    }
+        source.fallback       = info.fallback;
+        source.relayed_source = stream_source_url;
 
-    // We must write initial read length to stats
-    source.stats.bytes_read.fetch_add(info.initial_bytes_read as u64, Ordering::Relaxed);
+        // To prevent early readers from having no header
+        if let Some(metadata) = info.metadata {
+            broadcast.metadata.send(Arc::new(metadata));
+        }
 
-    // If source never ever broadcasts metadata
-    // we do this to respect metadata interval for reader
-    crate::stream::broadcast_metadata(&source, &None, &None).await;
+        // We must write initial read length to stats
+        source.stats.bytes_read.fetch_add(info.initial_bytes_read as u64, Ordering::Relaxed);
 
-    let source_stats = source.stats.clone();
+        // If source never ever broadcasts metadata
+        // we do this to respect metadata interval for reader
+        crate::stream::broadcast_metadata(&source, &None, &None).await;
 
-    // Add this mountpoint to mountpoints hashmap
-    {
-        let mut lock = session.server.sources.write().await;
-        if lock.len() >= session.server.config.limits.sources {
-            if relayed.is_none() {
-                response::forbidden(
-                    &mut session.stream,
-                    &session.server.config.info.id,
-                    "Too many sources connected").await?;
-                return Ok(());
-            } else {
-                return Err(anyhow::Error::msg("Max sources limit reached"));
+        source_stats = source.stats.clone();
+
+        // Add this mountpoint to mountpoints hashmap
+        {
+            let mut lock = session.server.sources.write().await;
+            if lock.len() >= session.server.config.limits.sources {
+                if relayed.is_none() {
+                    response::forbidden(
+                        &mut session.stream,
+                        &session.server.config.info.id,
+                        "Too many sources connected").await?;
+                    return Ok(None);
+                } else {
+                    return Err(anyhow::Error::msg("Max sources limit reached"));
+                }
+            }
+
+            if lock.try_insert(info.mountpoint.clone(), source).is_err() {
+                return Err(anyhow::Error::msg(format!("Mountpoint {} already exists", info.mountpoint)));
             }
         }
 
-        if lock.try_insert(info.mountpoint.clone(), source).is_err() {
-            return Err(anyhow::Error::msg(format!("Mountpoint {} already exists", info.mountpoint)));
+        // In case we are defined as a master server
+        // we must notify slaves here that a new mount is present
+        if session.server.relay_params.slave_auth_present {
+            session.server.relay_params
+                .new_source_event_tx
+                .clone()
+                .send(());
         }
-    }
-
-    // In case we are defined as a master server
-    // we must notify slaves here that a new mount is present
-    if session.server.relay_params.slave_auth_present {
-        session.server.relay_params
-            .new_source_event_tx
-            .clone()
-            .send(());
     }
 
     let binfo = BroadcastInfo {
@@ -356,7 +374,8 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()>
         queue_size: info.queue_size,
         chunked: info.chunked,
         broadcast,
-        kill_notifier
+        kill_notifier,
+        on_demand: on_demand_flag
     };
 
     match relayed {
@@ -370,13 +389,13 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<()>
             // Then handle media stream coming for this mountpoint
             stream::broadcast(binfo).await;
         },
-        Some(relay) => {
+        Some(relay_info) => {
             binfo.session.server.stats.active_relay.fetch_add(1, Ordering::Relaxed);
             binfo.session.server.stats.active_relay_streams.fetch_add(1, Ordering::Acquire);
 
-            stream::relay_broadcast(binfo, relay).await;
+            return Ok(stream::relay_broadcast(binfo, relay_info, on_demand_params).await);
         }
     }
 
-    Ok(())
+    Ok(None)
 }

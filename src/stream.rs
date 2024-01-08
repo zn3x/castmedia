@@ -6,7 +6,7 @@ use std::{
         atomic::{Ordering, AtomicBool}
     }
 };
-use futures::{executor::block_on, Future};
+use futures::{executor::block_on, Future, FutureExt};
 use qanat::broadcast::Sender;
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};
@@ -17,7 +17,12 @@ use tokio::{time::timeout, io::AsyncReadExt, sync::{oneshot, RwLock}};
 use crate::{
     server::{Stream, Session, Server},
     source::{SourceBroadcast, Source, IcyMetadata, SourceStats, MoveClientsCommand, MoveClientsType},
-    migrate::{MigrateConnection, VersionedMigrateConnection, MigrateSource, MigrateSourceInfo, MigrateCommand}, client::RelayedInfo, http::ChunkedResponseReader
+    migrate::{
+        MigrateConnection, VersionedMigrateConnection,
+        MigrateSource, MigrateSourceInfo, MigrateCommand
+    },
+    client::{RelayedInfo, StreamOnDemand},
+    http::ChunkedResponseReader
 };
 
 #[inline(always)]
@@ -207,16 +212,23 @@ pub struct BroadcastInfo<'a> {
     pub queue_size: usize,
     pub chunked: bool,
     pub broadcast: SourceBroadcast,
-    pub kill_notifier: oneshot::Receiver<()>
+    pub kill_notifier: oneshot::Receiver<()>,
+    pub on_demand: bool
 }
 
-pub async fn relay_broadcast(mut s: BroadcastInfo<'_>, mut relay: RelayedInfo) {
-    info!("Mounted source on {} from master", s.mountpoint);
+pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
+                             mut relay: RelayedInfo,
+                             on_demand_params: Option<(usize, VecDeque<usize>)>) -> Option<StreamOnDemand> {
+    if !s.on_demand {
+        info!("Mounted source on {} from master", s.mountpoint);
+    } else {
+        info!("Source on {} from master is now active", s.mountpoint);
+    }
 
     let reader = SimpleReader::new(
         s.session.stream,
         s.session.server.config.limits.source_timeout,
-        s.stats
+        s.stats.clone()
     );
 
     let mut reader: Box<dyn StreamReader> = match s.chunked {
@@ -226,18 +238,33 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>, mut relay: RelayedInfo) {
 
     let mut migrate_comm = s.session.server.migrate.clone();
     let mut data         = Vec::new();
-    let mut chunk_size   = VecDeque::new();
+    let mut chunk_size;
+    if let Some(params) = on_demand_params {
+        s.queue_size = params.0;
+        chunk_size   = params.1;
+    } else {
+        chunk_size = VecDeque::new();
+    }
 
-    let fut = handle_relay_stream(
-        reader.as_mut(), &s.session.server,
-        s.mountpoint, &mut s.broadcast,
-        &mut s.queue_size, &mut relay,
-        &mut chunk_size, &mut data
-    );
+    let fut = if s.on_demand {
+        handle_relay_stream_no_metadata(
+            reader.as_mut(), &s.session.server,
+            s.mountpoint, &mut s.broadcast,
+            &mut s.queue_size, &s.stats,
+            &mut chunk_size, &mut data
+        ).boxed()
+    } else {
+        handle_relay_stream(
+            reader.as_mut(), &s.session.server,
+            s.mountpoint, &mut s.broadcast,
+            &mut s.queue_size, &mut relay,
+            &mut chunk_size, &mut data
+        ).boxed()
+    };
 
     tokio::select! {
         _ = fut => (),
-        _ = s.kill_notifier => (),
+        _ = &mut s.kill_notifier => (),
         migrate = migrate_comm.recv() => {
             // We should broadcast all media data currently held before migrating
             if !data.is_empty() {
@@ -263,9 +290,26 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>, mut relay: RelayedInfo) {
         }
     }
 
-    info!("Unmounted source on {}", s.mountpoint);
+    // Cleanup
     s.session.server.stats.active_relay.fetch_sub(1, Ordering::Release);
     s.session.server.stats.active_relay_streams.fetch_sub(1, Ordering::Release);
+
+    if !s.on_demand {
+        unmount_source(&s.session.server, &s.mountpoint).await;
+        info!("Unmounted source on {} from master", s.mountpoint);
+
+        None
+    } else {
+        info!("Source on {} from master is now inactive", s.mountpoint);
+
+        Some(StreamOnDemand {
+            stats: s.stats,
+            broadcast: s.broadcast,
+            kill_notifier: s.kill_notifier,
+            queue_size: s.queue_size,
+            chunk_size
+        })
+    }
 }
 
 pub async fn broadcast(s: BroadcastInfo<'_>) { 
@@ -338,7 +382,14 @@ pub async fn broadcast(s: BroadcastInfo<'_>) {
     }
 
     // Cleanup
-    let mount = server.sources.write().await.remove(s.mountpoint);
+    server.stats.active_sources.fetch_sub(1, Ordering::Release);
+    unmount_source(&server, &s.mountpoint).await;
+
+    info!("Unmounted source on {}", s.mountpoint);
+}
+
+async fn unmount_source(server: &Server, mountpoint: &str) {
+    let mount = server.sources.write().await.remove(mountpoint);
 
     // Before closing, we need to give clients a fallback if one is configured
     if let Some(mut mount) = mount {
@@ -354,9 +405,6 @@ pub async fn broadcast(s: BroadcastInfo<'_>) {
             }
         }
     }
-
-    info!("Unmounted source on {}", s.mountpoint);
-    server.stats.active_sources.fetch_sub(1, Ordering::Release);
 }
 
 struct MigrateStreamProps<'a> {
@@ -483,6 +531,33 @@ fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReader,
     Ok(size)
 }
 
+
+async fn handle_relay_stream_no_metadata(stream: &mut dyn StreamReader,
+                             server: &Server, mountpoint: &str,
+                             broadcast: &mut SourceBroadcast,
+                             queue_size: &mut usize,
+                             stats: &SourceStats,
+                             chunk_size: &mut VecDeque<usize>,
+                             data: &mut Vec<u8>) -> Result<()> {
+    let mut buf  = [0u8; 2048];
+
+    loop {
+        let ret = stream.async_read(&mut buf).await?;
+        data.extend_from_slice(&buf[..ret]);
+
+        if data.len() > 1024 {
+            let v = std::mem::take(data);
+            push_to_queue(broadcast, mountpoint, queue_size, chunk_size, server, v)?;
+
+            if stats.active_listeners.load(Ordering::Acquire) == 0 {
+                break;
+            } 
+        }
+    };
+
+    Ok(())
+}
+
 async fn handle_relay_stream(stream: &mut dyn StreamReader,
                              server: &Server, mountpoint: &str,
                              broadcast: &mut SourceBroadcast,
@@ -578,10 +653,6 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
         }
 
         ret = stream.async_read(&mut buf).await?;
-
-        if ret == 0 {
-            return Err(anyhow::Error::msg("Reached end of stream"));
-        }
     };
 }
 

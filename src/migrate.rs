@@ -252,7 +252,8 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     relayed: match info.is_relay {
                         true  => Some(RelayStream {
                             url: info.relayed_stream,
-                            info: info.relay_info
+                            info: info.relay_info,
+                            on_demand: None
                         }),
                         false => None
                     }
