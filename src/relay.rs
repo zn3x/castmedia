@@ -9,7 +9,7 @@ use qanat::broadcast::RecvError;
 use serde_json::json;
 use tokio::{
     net::TcpStream,
-    io::{BufStream, AsyncWriteExt}
+    io::{BufStream, AsyncWriteExt}, task::JoinHandle
 };
 use tokio_native_tls::native_tls::TlsConnector;
 use tracing::{info, error};
@@ -18,10 +18,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     server::{Server, Stream, Socket, Session, ClientSession},
-    utils::{get_header, basic_auth}, config::MasterServerRelayScheme,
+    utils::{get_header, basic_auth, concat_path}, config::MasterServerRelayScheme,
     http::{ResponseReader, ChunkedResponseReader},
     client::{SourceInfo, RelayedInfo, RelayStream, StreamOnDemand},
-    source::IcyProperties, response::ChunkedResponse
+    source::{IcyProperties, Source}, response::ChunkedResponse, stream::relay_broadcast_metadata
 };
 
 #[derive(Debug, Deserialize)]
@@ -100,9 +100,10 @@ pub async fn master_mount_updates(session: &mut ClientSession, user_id: String) 
                     "type": "new"
                 }))?;
 
+                chunked_writer.send(&mut session.stream, &(ser.len() as u32).to_be_bytes()).await?;
                 chunked_writer.send(&mut session.stream, &ser).await?;
+                session.stream.flush().await?;
             }
-            session.stream.flush().await?;
 
             loop {
                 reads = Vec::new();
@@ -209,7 +210,7 @@ async fn fetch_available_sources(server: &Server, url: &Url) -> Result<MasterMou
 
 async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
                     on_demand: bool, auth: Option<&str>)
-    -> Result<(Box<dyn Socket>, SocketAddr, usize, usize, IcyProperties, bool)> {
+    -> Result<(Box<dyn Socket>, SocketAddr, Option<usize>, usize, IcyProperties, bool)> {
     // Fetching media stream from master
     let mut headers = String::new();
     if !on_demand {
@@ -240,7 +241,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     }
 
     // We should check if this is an icecast server
-    if get_header("icy-name", resp.headers).is_none() {
+    if !on_demand && get_header("icy-name", resp.headers).is_none() {
         return Err(anyhow::Error::msg("not an icecast server"));
     }
 
@@ -252,11 +253,15 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     };
 
     // Getting metaint
-    let metaint = match get_header("Icy-Metaint", resp.headers) {
-        Some(metaint) => std::str::from_utf8(metaint)?.parse::<usize>()?,
-        None => {
-            return Err(anyhow::Error::msg("missing icy-metaint header"));
-        }
+    let metaint = if on_demand {
+        None
+    } else {
+        Some(match get_header("Icy-Metaint", resp.headers) {
+            Some(metaint) => std::str::from_utf8(metaint)?.parse::<usize>()?,
+            None => {
+                return Err(anyhow::Error::msg("missing icy-metaint header"));
+            }
+        })
     };
 
     let properties = IcyProperties::new(match get_header("Content-Type", resp.headers) {
@@ -269,7 +274,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     Ok((stream, addr, metaint, headers_buf.len(), properties, chunked))
 }
 
-async fn authenticated_poll(serv: &Server, master_ind: usize) -> Result<()> {
+async fn authenticated_poll(serv: &Arc<Server>, master_ind: usize) -> Result<()> {
     let url               = &serv.config.master[master_ind].url;
     let (auth, on_demand) = match &serv.config.master[master_ind].relay_scheme {
         MasterServerRelayScheme::Authenticated { user, pass, stream_on_demand, .. } => (
@@ -306,8 +311,19 @@ async fn authenticated_poll(serv: &Server, master_ind: usize) -> Result<()> {
 
     serv.stats.active_relay.fetch_add(1, Ordering::Relaxed);
 
-    if let Err(e) = authenticated_poll_reader(serv, &mut stream, on_demand).await {
-        error!("Mount updates from master {} stopped: {}", url, e);
+    let mut sources = HashMap::new();
+
+    let mut len_enc = [0u8; 4];
+    let mut buf     = vec![0u8; 1024];
+    let mut chunked = ChunkedResponseReader::new();
+    loop {
+        match authenticated_poll_reader(&mut stream, &mut len_enc, &mut buf, &mut chunked).await {
+            Err(e)    => {
+                error!("Mount updates from master {} stopped: {}", url, e);
+                break;
+            },
+            Ok(event) => handle_mount_update(&mut sources, serv, master_ind, on_demand, event, &auth).await
+        }
     }
     
     serv.stats.active_relay.fetch_sub(1, Ordering::Relaxed);
@@ -315,57 +331,194 @@ async fn authenticated_poll(serv: &Server, master_ind: usize) -> Result<()> {
     Ok(())
 }
 
-async fn authenticated_poll_reader(serv: &Server, stream: &mut Stream, on_demand: bool) -> Result<()> {
-    let mut len_enc = [0u8; 4];
-    let mut buf     = vec![0u8; 1024];
-    let mut chunked = ChunkedResponseReader::new();
-    let mut len;
+async fn authenticated_poll_reader(stream: &mut Stream, len_enc: &mut [u8; 4],
+                                   buf: &mut Vec<u8>, chunked: &mut ChunkedResponseReader) -> Result<MountUpdate> {
+    // Reading message first from stream
+    chunked.read_exact(stream, len_enc).await?;
+    let len = u32::from_be_bytes(*len_enc) as usize;
+    if len > buf.len() {
+        buf.resize(len, 0);
+    }
+    chunked.read_exact(stream, &mut buf[..len]).await?;
 
-    loop {
-        // Reading message first from stream
-        chunked.read_exact(stream, &mut len_enc).await?;
-        len = u32::from_be_bytes(len_enc) as usize;
-        if len > buf.len() {
-            buf.resize(len, 0);
-        }
-        chunked.read_exact(stream, &mut buf[..len]).await?;
+    // Now we deserialize it
+    let event: MountUpdate = serde_json::from_slice(&buf[..len])?;
 
-        // Now we deserialize it
-        let event: MountUpdate = serde_json::from_slice(&buf[..len])?;
 
-        handle_mount_update(serv, on_demand, event).await?;
-    };
+    Ok(event)
 }
 
-async fn handle_mount_update(serv: &Server, on_demand: bool, event: MountUpdate) -> Result<()> {
+async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
+                             serv: &Arc<Server>, master_ind: usize,
+                             on_demand: bool, event: MountUpdate, auth: &str) {
+    let master = &serv.config.master[master_ind].url;
+
     // Now handling events for every source
     match event {
         MountUpdate::New { mount, properties } => {
-        },
-        MountUpdate::Metadata { mount, metadata } => {},
-        MountUpdate::Unmounted { mount } => {}
-    }
+            // If we don't have on_demand enabled
+            // we don't need to do all the following hassle
+            // handle it like normal relay
+            if !on_demand {
+                let serv_cl  = serv.clone();
+                let auth_cl  = auth.to_owned();
+                let mount_cl = mount.clone();
+                tokio::task::spawn(async move {
+                    _ = relay_stream(
+                        &serv_cl, master_ind, mount_cl,
+                        None,
+                        Some(&auth_cl)
+                    ).await;
+                });
+                return;
+            }
 
-    Ok(())
+            if let Some(task_handle) = sources.remove(&mount) {
+                // When we have a new source by same name, that means source in master
+                // disconnected and reconnected again.
+            
+                // Cases to handle:
+                // 1. Relay task for this source cleaned mount,
+                // we normally will remount source.
+                // 2. In the period task cleaned mount, some source mounted
+                // a stream with same mount as ours, we literally can't do nothing
+                // at this point.
+                // 3. source relay task still didn't exit
+                // we should here ask source relay task to exit politely
+                // so we don't found source still existant after
+                let mut lock = serv.sources.write().await;
+                if let Some(source) = lock.get_mut(&mount) {
+                    if let Some(v) = &source.relayed_source {
+                        if v.starts_with(serv.config.master[master_ind].url.as_str()) {
+                            // This is the same source
+                            let kill = source.kill.take();
+                            drop(lock);
+                            if let Some(kill) = kill {
+                                _ = kill.send(());
+                                _ = task_handle.await;
+                            }
+                        } else {
+                            // 💀 what can we do...
+                            // Some asshat have same mount
+                            return;
+                        }
+                    }
+                }
+            }
+
+            let mut lock = serv.sources.write().await;
+            if lock.len() >= serv.config.limits.sources {
+                // We can't have another source
+                return;
+            }
+
+            if lock.contains_key(&mount) {
+                // Source with same mount present?
+                return;
+            }
+
+            let wake_sink                  = diatomic_waker::WakeSink::new();
+            let wake_src                   = wake_sink.source();
+            let url                        = concat_path(master.as_str(), &mount);
+            let (mut source, broadcast,
+                 kill_notifier)            = Source::new(properties, None, Some(url), None);
+            source.on_demand_notify_reader = Some(wake_src);
+
+            let stats = source.stats.clone();
+
+            crate::stream::broadcast_metadata(&source, &None, &None).await;
+
+            if lock.try_insert(mount.clone(), source).is_err() {
+                panic!("Should be able to add relay source as we have lock");
+            }
+
+            let serv_cl  = serv.clone();
+            let auth_cl  = auth.to_owned();
+            let mount_cl = mount.clone();
+            let task     = tokio::task::spawn(async move {
+                relay_stream_on_demand(
+                    &serv_cl, master_ind, mount_cl,
+                    StreamOnDemand {
+                        stats,
+                        broadcast,
+                        kill_notifier,
+                        on_demand_notify: wake_sink
+                    },
+                    auth_cl
+                ).await;
+            });
+
+            drop(lock);
+
+            sources.insert(mount, task);
+        },
+        MountUpdate::Metadata { mount, metadata } => {
+            if !on_demand || !sources.contains_key(&mount) {
+                return;
+            }
+
+            if let Some(source) = serv.sources.read().await.get(&mount) {
+                let mut lock = source.meta_broadcast_sender.lock().await;
+                relay_broadcast_metadata(
+                    &source.metadata,
+                    &mut lock,
+                    metadata
+                ).await;
+            }
+        },
+        MountUpdate::Unmounted { mount } => {
+            // If source disconnects from master then we should do the same
+            // Send a kill notification to task
+            if sources.remove(&mount).is_some() {
+                let mut lock = serv.sources.write().await;
+                if let Some(source) = lock.get_mut(&mount) {
+                    if let Some(kill) = source.kill.take() {
+                        drop(lock);
+                        _ = kill.send(());
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn relay_stream_on_demand(serv: &Arc<Server>, master_ind: usize, mount: String,
+                                mut on_demand: StreamOnDemand, auth: String) {
+    // We here need to wait until we get notification that we have
+    // more than 0 listener
+    // ofc we should also handle also the event of killing ourselves
+    // Migration is not handled because there is stream to migrate :)
+    loop {
+        on_demand
+            .on_demand_notify
+            .wait_until(|| {
+                if on_demand.stats.active_listeners.load(Ordering::Relaxed) != 0 {
+                    Some(())
+                } else {
+                    None
+                }
+            })
+            .await;
+
+        match relay_stream(serv, master_ind, mount.clone(), Some(on_demand), Some(&auth)).await {
+            // We don't have any listener to continue pulling stream
+            Ok(Some(v)) => on_demand = v,
+            // Either:
+            // 1. killed by admin command or because stream
+            // 2. stream prematurely closed due to something like network problem
+            Ok(None) | Err(_) => break,
+        }
+    }
 }
 
 async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
-                      on_demand: Option<StreamOnDemand>, auth: Option<&str>) {
+                      on_demand: Option<StreamOnDemand>, auth: Option<&str>)
+    -> Result<Option<StreamOnDemand>> {
     let url = &serv.config.master[master_ind].url;
 
     match get_stream(serv, url, &mount, on_demand.is_some(), auth).await {
         Ok((stream, addr, metaint, initial_bytes_read, properties, chunked)) => {
-            let url = {
-                let mut url = url.to_string();
-                if url.as_str().ends_with('/') {
-                    url.push_str(&mount[1..]);
-                } else {
-                    url.push_str(&mount[..]);
-                }
-
-                url
-            };
-
+            let url = concat_path(url.as_str(), &mount);
             let ret = crate::source::handle_source(
                 Session {
                     server: serv.clone(),
@@ -383,7 +536,7 @@ async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
                     metadata: None,
                     relayed: Some(RelayStream {
                         info: RelayedInfo {
-                            metaint,
+                            metaint: metaint.unwrap_or(0),
                             metaint_position: 0,
                             metadata_reading: false,
                             metadata_remaining: 0,
@@ -394,7 +547,7 @@ async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
                     })
                 }
             ).await;
-            if let Err(e) = ret {
+            if let Err(e) = ret.as_ref() {
                 error!(
                     "Master server {} relayind for {} ended with: {}",
                     serv.config.master[master_ind].url,
@@ -402,6 +555,7 @@ async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
                     e
                 );
             }
+            ret
         },
         Err(e) => {
             error!(
@@ -410,6 +564,7 @@ async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
                 mount,
                 e
             );
+            Err(e)
         }
     }
 }

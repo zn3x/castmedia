@@ -134,7 +134,7 @@ impl ChunkedResponseReader {
                 }
             }
 
-            self.bytes_left = match std::str::from_utf8(&hex_len) {
+            self.bytes_left = match std::str::from_utf8(&hex_len[..hex_len.len()-2]) {
                 Ok(v) => match usize::from_str_radix(v, 16) {
                     Ok(v) => v,
                     Err(_) => return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Chunk length is not a valid number"))
@@ -156,9 +156,13 @@ impl ChunkedResponseReader {
             buf.len()
         };
 
-        match stream.read(&mut buf[..read_len]).await {
+        match stream.read_exact(&mut buf[..read_len]).await {
             Ok(r) => {
                 self.bytes_left -= r;
+                if self.bytes_left == 0 {
+                    // reading crlf at end
+                    stream.read_u16().await?;
+                }
                 Ok(r)
             },
             Err(e) => Err(e)

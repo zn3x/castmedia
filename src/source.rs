@@ -108,6 +108,9 @@ pub struct Source {
     pub fallback: Option<String>,
     /// URL stream source if this is a relayed stream
     pub relayed_source: Option<String>,
+    /// Notify relay task to start reading stream
+    /// Used when we get first listener for a source
+    pub on_demand_notify_reader: Option<diatomic_waker::WakeSource>,
     /// The stream broadcast receiver
     pub broadcast: Receiver<Arc<Vec<u8>>>,
     /// Receiver stream for metadata broadcast
@@ -115,7 +118,7 @@ pub struct Source {
     /// Sender stream for metadata broadcast
     /// Needed so we don't create a new sender every time
     /// we get metadata update
-    pub meta_broadcast_sender: Sender<Arc<Vec<u8>>>,
+    pub meta_broadcast_sender: Mutex<Sender<Arc<Vec<u8>>>>,
     /// Broadcast to move all clients in mountpoint to another one
     pub move_listeners_receiver: Receiver<Arc<MoveClientsCommand>>,
     pub move_listeners_sender: Sender<Arc<MoveClientsCommand>>,
@@ -148,6 +151,8 @@ pub enum MoveClientsType {
 
 impl Source {
     pub fn new(properties: IcyProperties,
+               fallback: Option<String>,
+               relayed_source: Option<String>,
                migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
         let size: NonZeroUsize  = 1.try_into().expect("1 should be posetif");
         let (tx, rx)            = match migrated {
@@ -162,10 +167,11 @@ impl Source {
             metadata: Arc::new(RwLock::new(None)),
             clients: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(SourceStats::new()),
-            fallback: None,
-            relayed_source: None,
+            fallback,
+            relayed_source,
+            on_demand_notify_reader: None,
             broadcast: rx,
-            meta_broadcast_sender: tx1.clone(),
+            meta_broadcast_sender: Mutex::new(tx1.clone()),
             meta_broadcast: rx1,
             move_listeners_receiver: rx2,
             move_listeners_sender: tx2,
@@ -303,7 +309,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
         None => (None, None, None)
     };
 
-    let mut on_demand_params = None;
+    let mut on_demand_notify = None;
     let source_stats;
     let mut broadcast;
     let kill_notifier;
@@ -314,22 +320,24 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
         source_stats     = on_demand.stats;
         broadcast        = on_demand.broadcast;
         kill_notifier    = on_demand.kill_notifier;
-        on_demand_params = Some((on_demand.queue_size, on_demand.chunk_size));
+        on_demand_notify = Some(on_demand.on_demand_notify);
     } else {
         on_demand_flag = false;
-        let mut source;
-        (source, broadcast, kill_notifier) = Source::new(info.properties, info.broadcast);
-
-        source.fallback       = info.fallback;
-        source.relayed_source = stream_source_url;
+        let source;
+        (source, broadcast, kill_notifier) = Source::new(info.properties, info.fallback,
+                                                         stream_source_url, info.broadcast);
 
         // To prevent early readers from having no header
         if let Some(metadata) = info.metadata {
             broadcast.metadata.send(Arc::new(metadata));
         }
 
+        // We only ever need to keep track of media
+        // keeping this here just for the looks
+        /*
         // We must write initial read length to stats
-        source.stats.bytes_read.fetch_add(info.initial_bytes_read as u64, Ordering::Relaxed);
+        //source.stats.bytes_read.fetch_add(info.initial_bytes_read as u64, Ordering::Relaxed);
+        */
 
         // If source never ever broadcasts metadata
         // we do this to respect metadata interval for reader
@@ -393,7 +401,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
             binfo.session.server.stats.active_relay.fetch_add(1, Ordering::Relaxed);
             binfo.session.server.stats.active_relay_streams.fetch_add(1, Ordering::Acquire);
 
-            return Ok(stream::relay_broadcast(binfo, relay_info, on_demand_params).await);
+            return Ok(stream::relay_broadcast(binfo, relay_info, on_demand_notify).await);
         }
     }
 

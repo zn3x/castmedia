@@ -1,6 +1,6 @@
 use std::{
     sync::{Arc, atomic::{Ordering, AtomicU64, AtomicI64}},
-    time::Duration, collections::VecDeque
+    time::Duration
 };
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
@@ -8,7 +8,7 @@ use hashbrown::HashMap;
 use qanat::broadcast::{Receiver, RecvError, Sender};
 use tokio::{
     io::{AsyncWriteExt, BufStream},
-    sync::{RwLock, Mutex, oneshot},
+    sync::{RwLock, oneshot},
     net::TcpStream
 };
 use tracing::{info, error};
@@ -71,7 +71,8 @@ pub async fn handle_client(session: ClientSession, request: Request<'_>, req: Li
 
 async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Result<()> {
     let (props, mut stream, meta_stream,
-         mover, stats, mut clients) = match session.server.sources.read().await.get(&info.mountpoint) {
+         mover, stats, mut clients, on_demand_notify)
+        = match session.server.sources.read().await.get(&info.mountpoint) {
         Some(v) => {
             (
                 v.properties.clone(),
@@ -79,7 +80,8 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
                 v.meta_broadcast.clone(),
                 v.move_listeners_receiver.clone(),
                 v.stats.clone(),
-                v.clients.clone()
+                v.clients.clone(),
+                v.on_demand_notify_reader.clone()
             )
         },
         None => {
@@ -110,6 +112,13 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
         // Mount stats
         let new_count = stats.active_listeners.fetch_add(1, Ordering::Acquire) + 1;
         stats.peak_listeners.fetch_max(new_count, Ordering::Relaxed);
+
+        // Notify source reader if stream pull is on on_demand
+        if new_count == 1 {
+            if let Some(on_demand_notify) = on_demand_notify.as_ref() {
+                on_demand_notify.notify();
+            }
+        }
     }
     
     let (kill, kill_rx) = oneshot::channel();
@@ -185,7 +194,14 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
         Ok(true) | Err(_) => {
             // End of stream
             server.stats.active_listeners.fetch_sub(1, Ordering::Release);
-            stats.active_listeners.fetch_sub(1, Ordering::Release);
+            let new_count = stats.active_listeners.fetch_sub(1, Ordering::Release);
+
+            // Notify source reader if stream pull is on on_demand
+            if new_count <= 1 {
+                if let Some(on_demand_notify) = on_demand_notify.as_ref() {
+                    on_demand_notify.notify();
+                }
+            }
 
             // If it's a client error we must remove client from list of active clients
             // Otherwise that means source disconnected and we reached end
@@ -420,8 +436,7 @@ pub struct StreamOnDemand {
     pub stats: Arc<SourceStats>,
     pub broadcast: SourceBroadcast,
     pub kill_notifier: oneshot::Receiver<()>,
-    pub queue_size: usize,
-    pub chunk_size: VecDeque<usize>
+    pub on_demand_notify: diatomic_waker::WakeSink
 }
 
 #[obake::versioned]

@@ -147,7 +147,7 @@ fn metadata_decode(metadata: &str) -> Result<(Option<String>, Option<String>)> {
     let mut title = None;
     let mut url   = None;
 
-    for kv in metadata.split(';') {
+    for kv in metadata.split(';').take(2) {
         let spl    = kv.split('=').collect::<Vec<_>>();
         let (k, v) = if spl.len() == 2 {
             (spl[0], spl[1])
@@ -180,13 +180,13 @@ pub async fn broadcast_metadata<'a>(source: &Source, title: &Option<&str>, url: 
 
 
     source.meta_broadcast_sender
-        .clone()
+        .lock()
+        .await
         .send(Arc::new(metadata_encode(title, url)));
-
 }
 
 pub async fn relay_broadcast_metadata<'a>(src_metadata: &RwLock<Option<IcyMetadata>>,
-                                          broadcast: &mut SourceBroadcast, metadatabuf: Vec<u8>) {
+                                          broadcast: &mut Sender<Arc<Vec<u8>>>, metadatabuf: Vec<u8>) {
     let metadata = match std::str::from_utf8(&metadatabuf) {
         Ok(v) => v,
         Err(_) => return
@@ -200,7 +200,6 @@ pub async fn relay_broadcast_metadata<'a>(src_metadata: &RwLock<Option<IcyMetada
 
 
         broadcast
-            .metadata
             .send(Arc::new(metadatabuf));
     }
 }
@@ -218,7 +217,7 @@ pub struct BroadcastInfo<'a> {
 
 pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
                              mut relay: RelayedInfo,
-                             on_demand_params: Option<(usize, VecDeque<usize>)>) -> Option<StreamOnDemand> {
+                             on_demand_notify: Option<diatomic_waker::WakeSink>) -> Option<StreamOnDemand> {
     if !s.on_demand {
         info!("Mounted source on {} from master", s.mountpoint);
     } else {
@@ -238,13 +237,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
 
     let mut migrate_comm = s.session.server.migrate.clone();
     let mut data         = Vec::new();
-    let mut chunk_size;
-    if let Some(params) = on_demand_params {
-        s.queue_size = params.0;
-        chunk_size   = params.1;
-    } else {
-        chunk_size = VecDeque::new();
-    }
+    let mut chunk_size   = VecDeque::new();
 
     let fut = if s.on_demand {
         handle_relay_stream_no_metadata(
@@ -262,9 +255,18 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
         ).boxed()
     };
 
+    let mut err    = Ok(());
+    let mut killed = false;
+
     tokio::select! {
-        _ = fut => (),
-        _ = &mut s.kill_notifier => (),
+        r = fut => if s.on_demand {
+            // If this is with on_demand option
+            // we need to notify to close stream here
+            if let Err(e) = r {
+                err = Err(e);
+            }
+        },
+        _ = &mut s.kill_notifier => killed = true,
         migrate = migrate_comm.recv() => {
             // We should broadcast all media data currently held before migrating
             if !data.is_empty() {
@@ -294,20 +296,33 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
     s.session.server.stats.active_relay.fetch_sub(1, Ordering::Release);
     s.session.server.stats.active_relay_streams.fetch_sub(1, Ordering::Release);
 
-    if !s.on_demand {
-        unmount_source(&s.session.server, &s.mountpoint).await;
+    if let Err(e) = err {
+        unmount_source(&s.session.server, s.mountpoint).await;
+        info!("Unmounted source on {} from master: {}", s.mountpoint, e);
+
+        None
+    } else if !s.on_demand || killed {
+        unmount_source(&s.session.server, s.mountpoint).await;
         info!("Unmounted source on {} from master", s.mountpoint);
 
         None
     } else {
         info!("Source on {} from master is now inactive", s.mountpoint);
 
+        // We need to remove old channels
+        let (tx, rx)         = qanat::broadcast::channel(1.try_into().expect("1 should be non zero usize"));
+        if let Some(source)  = s.session.server.sources.write().await.get_mut(s.mountpoint) {
+            source.broadcast = rx;
+        }
+
         Some(StreamOnDemand {
             stats: s.stats,
-            broadcast: s.broadcast,
+            broadcast: SourceBroadcast {
+                audio: tx,
+                metadata: s.broadcast.metadata
+            },
             kill_notifier: s.kill_notifier,
-            queue_size: s.queue_size,
-            chunk_size
+            on_demand_notify: on_demand_notify.unwrap()
         })
     }
 }
@@ -383,7 +398,7 @@ pub async fn broadcast(s: BroadcastInfo<'_>) {
 
     // Cleanup
     server.stats.active_sources.fetch_sub(1, Ordering::Release);
-    unmount_source(&server, &s.mountpoint).await;
+    unmount_source(&server, s.mountpoint).await;
 
     info!("Unmounted source on {}", s.mountpoint);
 }
@@ -607,7 +622,7 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
                     relay.metadata_buffer.extend_from_slice(&buf[pos+1..last_pos]);
                     if relay.metadata_remaining == 0 {
                         let metadatabuf = std::mem::take(&mut relay.metadata_buffer);
-                        relay_broadcast_metadata(&src_metadata, broadcast, metadatabuf).await;
+                        relay_broadcast_metadata(&src_metadata, &mut broadcast.metadata, metadatabuf).await;
                         relay.metadata_reading = false;
                     }
                 }
@@ -638,7 +653,7 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
                 relay.metadata_buffer.extend_from_slice(&buf[start..last_pos]);
                 if relay.metadata_remaining == 0 {
                     let metadatabuf = std::mem::take(&mut relay.metadata_buffer);
-                    relay_broadcast_metadata(&src_metadata, broadcast, metadatabuf).await;
+                    relay_broadcast_metadata(&src_metadata, &mut broadcast.metadata, metadatabuf).await;
                     relay.metadata_reading = false;
                 }
             }

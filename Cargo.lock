@@ -221,6 +221,7 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
+ "diatomic-waker",
  "futures",
  "hashbrown",
  "httparse",
