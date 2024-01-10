@@ -125,6 +125,7 @@ impl ChunkedResponseReader {
                         hex_len.push(self.reader[0]);
                         // Avoiding a ddos here
                         if hex_len.len() > 12 {
+                            println!("fewwefwefwffwe {:?}", std::str::from_utf8(&hex_len));
                             return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Peer trying to send a big size chunk"))
                         } else if hex_len.ends_with(&[b'\r', b'\n']) {
                             break;

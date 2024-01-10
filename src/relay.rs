@@ -5,7 +5,7 @@ use std::{
 use anyhow::Result;
 use ::futures::{future::select_all, FutureExt};
 use hashbrown::{HashMap, hash_map::OccupiedError};
-use qanat::broadcast::RecvError;
+use qanat::broadcast::{RecvError, Receiver};
 use serde_json::json;
 use tokio::{
     net::TcpStream,
@@ -21,7 +21,7 @@ use crate::{
     utils::{get_header, basic_auth, concat_path}, config::MasterServerRelayScheme,
     http::{ResponseReader, ChunkedResponseReader},
     client::{SourceInfo, RelayedInfo, RelayStream, StreamOnDemand},
-    source::{IcyProperties, Source}, response::ChunkedResponse, stream::relay_broadcast_metadata
+    source::{IcyProperties, Source}, response::ChunkedResponse, stream::relay_broadcast_metadata, migrate::{MigrateCommand, MigrateConnection, MigrateMasterMountUpdates, MigrateMasterMountUpdatesInfo, VersionedMigrateConnection}
 };
 
 #[derive(Debug, Deserialize)]
@@ -46,7 +46,9 @@ pub enum MountUpdate {
     }
 }
 
-pub async fn master_mount_updates(session: &mut ClientSession, user_id: String) -> Result<()> {
+pub async fn master_mount_updates(mut session: ClientSession, user_id: String,
+                                  // map holding all mounts as tuple (mount, metadata_channel)
+                                  mut mounts: HashMap<String, Receiver<Arc<Vec<u8>>>>) -> Result<()> {
     info!("Mount updates stream initialized for {} ({})", user_id, session.addr);
 
     let chunked_writer = ChunkedResponse::new_ready();
@@ -56,15 +58,29 @@ pub async fn master_mount_updates(session: &mut ClientSession, user_id: String) 
         .new_source_event_rx
         .clone();
 
-    // map holding all mounts as tuple (mount, metadata_channel)
-    let mut mounts = HashMap::new();
+    let mut migrate_comm = session.server.migrate.clone();
     // vec holding futures of reads we must perform on each source channel
     let mut reads;
     let mut ret;
-    let mut remove = None;
+    let mut remove     = None;
+    let mut migrate_ch = None;
 
     'NO_SOURCE: loop {
-        ret = new_source_notify.recv().await;
+        if let Some(m) = migrate_ch {
+            migrate_master_mount_updates(
+                m, user_id,
+                session.stream,
+                mounts
+            ).await;
+        }
+
+        tokio::select! {
+            r = new_source_notify.recv() => ret = r,
+            m = migrate_comm.recv() => {
+                migrate_ch = Some(m);
+                continue;
+            }
+        };
         'SOURCE: loop {
             if ret.is_err() {
                 // This should never happen
@@ -154,11 +170,41 @@ pub async fn master_mount_updates(session: &mut ClientSession, user_id: String) 
                     r = new_source_notify.recv() => {
                         ret = r;
                         continue 'SOURCE;
+                    },
+                    m = migrate_comm.recv() => {
+                        migrate_ch = Some(m);
+                        continue 'NO_SOURCE;
                     }
                 }
             };
         };
     };
+}
+
+async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>,
+                                      user_id: String, stream: Stream, 
+                                      mounts: HashMap<String, Receiver<Arc<Vec<u8>>>>) -> ! {
+    let migrate = migrate
+        .expect("Got migrate notice with closed mpsc");
+
+    let info = MigrateConnection::MasterMountUpdates {
+        info: MigrateMasterMountUpdates {
+            mounts: mounts.into_keys().collect::<Vec<String>>(),
+            user_id
+        }
+    };
+
+    let info: VersionedMigrateConnection = info.into();
+    if let Ok(info) = postcard::to_stdvec(&info) {
+        _ = migrate.master_mountupdates.send(MigrateMasterMountUpdatesInfo {
+            info,
+            sock: stream
+        });
+    }
+
+    loop {
+        tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
+    }
 }
 
 async fn http_get_request(url: &Url, path: &str, headers: &str) -> Result<(Stream, SocketAddr)> {

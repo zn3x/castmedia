@@ -1,9 +1,9 @@
 use std::{
     sync::Arc,
-    os::{unix::net::{UnixListener, UnixStream}, fd::FromRawFd}, io::{Write, Read}, time::Duration
+    os::{unix::net::{UnixListener, UnixStream}, fd::FromRawFd}, io::{Write, Read}, time::Duration, num::NonZeroUsize
 };
 use anyhow::Result;
-use qanat::broadcast::{Sender, restore_channel_from_snapshot};
+use qanat::broadcast::{Sender, restore_channel_from_snapshot, self};
 use tokio::{sync::mpsc, runtime::Handle, net::TcpStream};
 use serde::{Serialize, Deserialize};
 use passfd::FdPassingExt;
@@ -14,9 +14,9 @@ use crate::{
     client::{
         ClientProperties_v0_1_0, handle_migrated,
         ListenerRestoreInfo, SourceInfo,
-        ListenerInfo, RelayedInfo_v0_1_0, RelayStream
+        ListenerInfo, RelayedInfo_v0_1_0, RelayStream, MasterMountUpdatesInfo
     },
-    server::{Socket, Server}, stream::StreamReader
+    server::{Socket, Server, Stream}, stream::StreamReader
 };
 
 #[obake::versioned]
@@ -56,10 +56,20 @@ pub struct MigrateClient {
 #[obake(version("0.1.0"))]
 #[obake(derive(Serialize, Deserialize))]
 #[derive(Serialize, Deserialize)]
+pub struct MigrateMasterMountUpdates {
+    pub mounts: Vec<String>,
+    pub user_id: String
+}
+
+#[obake::versioned]
+#[obake(version("0.1.0"))]
+#[obake(derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 pub enum MigrateConnection {
     // Can't have unnamed fields here for obake to work correctly
     Source { info: MigrateSource },
-    Client { info: MigrateClient }
+    Client { info: MigrateClient },
+    MasterMountUpdates { info: MigrateMasterMountUpdates }
 }
 
 pub struct MigrateClientInfo {
@@ -76,10 +86,17 @@ pub struct MigrateSourceInfo {
     pub sock: Box<dyn StreamReader>
 }
 
+pub struct MigrateMasterMountUpdatesInfo {
+    /// Serialized MigrateConnection
+    pub info: Vec<u8>,
+    pub sock: Stream
+}
+
 pub struct MigrateCommand {
     /// mpsc channel where we will send connection info related to sources and listeners
     pub source: mpsc::UnboundedSender<MigrateSourceInfo>,
-    pub listener: mpsc::UnboundedSender<MigrateClientInfo>
+    pub listener: mpsc::UnboundedSender<MigrateClientInfo>,
+    pub master_mountupdates: mpsc::UnboundedSender<MigrateMasterMountUpdatesInfo>
 }
 
 pub async fn handle(server: Arc<Server>, migrate: Sender<Arc<MigrateCommand>>) {
@@ -107,9 +124,11 @@ pub async fn handle_successor(server: Arc<Server>, migrate: String) {
 fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand>>) -> Result<()> {
     let (tx, mut rx)   = mpsc::unbounded_channel();
     let (tx1, mut rx1) = mpsc::unbounded_channel();
+    let (tx2, mut rx2) = mpsc::unbounded_channel();
     migrate.send(Arc::new(MigrateCommand {
         source: tx,
-        listener: tx1
+        listener: tx1,
+        master_mountupdates: tx2
     }));
 
     info!("Preparing launch of new instance");
@@ -187,6 +206,17 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
             break;
         }
     }
+
+    // Doing best effort here as there is no way to knew if
+    // there are other mountupdates streams we didn't pull
+    while let Ok(v) = rx2.try_recv() {
+
+        // We first write mountupdates info
+        successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
+        successor.write_all(&v.info)?;
+        // Then pass on fd
+        successor.send_fd(v.sock.fd())?;
+    }
     successor.write_all(&0u64.to_be_bytes())?;
 
     // Next to you son :'') ...
@@ -200,8 +230,11 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
 
     let mut buf = vec![0u8; 4092];
 
+    // A broadcast to signal when migration is finished
+    let (mut tx, rx) = broadcast::channel(NonZeroUsize::MIN);
+
     // Reading all sources first
-    // Then followed by listeners
+    // Then followed by listeners, master mountupdates
     let mut sources = true;
     loop {
         let mut len_buf = [0u8; 8];
@@ -268,6 +301,12 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     }),
                     properties: info.properties
                 })
+            },
+            MigrateConnection_v0_1_0::MasterMountUpdates { info } => {
+                crate::client::ClientInfo::MasterMountUpdates(MasterMountUpdatesInfo {
+                    mounts: info.mounts,
+                    user_id: info.user_id
+                })
             }
         };
 
@@ -282,15 +321,18 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
             Err(_) => continue
         };
         let server_cl = server.clone();
+        let rx_cl     = rx.clone();
         runtime_handle.spawn(async move {
             // Acquiring semaphore to respect max connection limit set in config
             let sem = server_cl.max_clients.clone();
             let aq  = sem.try_acquire();
             if let Ok(_guard) = aq {
-                handle_migrated(sock, server_cl, cl_info).await;
+                handle_migrated(sock, server_cl, cl_info, rx_cl).await;
             }
         });
     };
+
+    tx.send(());
     info!("Migration from old instance completed.");
 
     Ok(())

@@ -339,12 +339,12 @@ async fn server_restart(session: &mut ClientSession, req: AdminRequest) -> Resul
     Ok(())
 }
 
-async fn mount_updates(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let user_id = auth::auth(session, AllowedAuthType::Slave, req.auth, "").await?;
+async fn mount_updates(mut session: ClientSession, req: AdminRequest) -> Result<()> {
+    let user_id = auth::auth(&mut session, AllowedAuthType::Slave, req.auth, "").await?;
 
     ChunkedResponse::new(&mut session.stream, &session.server.config.info.id).await?;
 
-    crate::relay::master_mount_updates(session, user_id).await
+    crate::relay::master_mount_updates(session, user_id, HashMap::new()).await
 }
 
 pub async fn handle_request<'a>(mut session: ClientSession, req: AdminRequest) -> Result<()> {
@@ -379,7 +379,7 @@ pub async fn handle_request<'a>(mut session: ClientSession, req: AdminRequest) -
         // New api for castmedia
         //
         // Send mount updates to slave server
-        "/admin/mountupdates" => mount_updates(&mut session, req).await,
+        "/admin/mountupdates" => mount_updates(session, req).await,
 
         _ => response::not_found(&mut session.stream, &session.server.config.info.id).await
     }

@@ -411,7 +411,13 @@ pub struct ListenerRestoreInfo {
 
 pub enum ClientInfo {
     Source(SourceInfo),
-    Listener(ListenerInfo)
+    Listener(ListenerInfo),
+    MasterMountUpdates(MasterMountUpdatesInfo)
+}
+
+pub struct MasterMountUpdatesInfo {
+    pub mounts: Vec<String>,
+    pub user_id: String
 }
 
 pub struct SourceInfo {
@@ -457,7 +463,8 @@ pub struct ListenerInfo {
     pub properties: ClientProperties
 }
 
-pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: ClientInfo) {
+pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: ClientInfo,
+                             mut migrate_finished: Receiver<()>) {
     let addr = match sock.peer_addr() {
         Ok(v) => v,
         Err(e) => {
@@ -484,6 +491,31 @@ pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: Clien
                 addr
             };
             _ = prepare_listener(session, info).await;
+        },
+        ClientInfo::MasterMountUpdates(mut info) => {
+            let mut mounts = HashMap::new();
+
+            _ = migrate_finished.recv().await;
+
+            {
+                let lock = server.sources.read().await;
+                for mount in info.mounts.drain(..) {
+                    if let Some(source) = lock.get(&mount) {
+                        mounts.insert(mount, source.meta_broadcast.clone());
+                    }
+                }
+            }
+
+            _ = crate::relay::master_mount_updates(
+                ClientSession {
+                    admin_addr: true,
+                    server,
+                    stream,
+                    addr
+                },
+                info.user_id,
+                mounts
+            ).await;
         }
     }
 }
