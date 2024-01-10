@@ -309,6 +309,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
         None => (None, None, None)
     };
 
+    let stream_src_url       = stream_source_url.clone();
     let mut on_demand_notify = None;
     let source_stats;
     let mut broadcast;
@@ -401,7 +402,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
             binfo.session.server.stats.active_relay.fetch_add(1, Ordering::Relaxed);
             binfo.session.server.stats.active_relay_streams.fetch_add(1, Ordering::Acquire);
 
-            return Ok(stream::relay_broadcast(binfo, relay_info, on_demand_notify).await);
+            return Ok(stream::relay_broadcast(binfo, relay_info, stream_src_url.unwrap(), on_demand_notify).await);
         }
     }
 

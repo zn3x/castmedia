@@ -216,12 +216,12 @@ pub struct BroadcastInfo<'a> {
 }
 
 pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
-                             mut relay: RelayedInfo,
+                             mut relay: RelayedInfo, master: String,
                              on_demand_notify: Option<diatomic_waker::WakeSink>) -> Option<StreamOnDemand> {
     if !s.on_demand {
-        info!("Mounted source on {} from master", s.mountpoint);
+        info!("Mounted source on {} from master ({})", s.mountpoint, master);
     } else {
-        info!("Source on {} from master is now active", s.mountpoint);
+        info!("Source on {} from master ({}) is now active", s.mountpoint, master);
     }
 
     let reader = SimpleReader::new(
@@ -298,16 +298,16 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
 
     if let Err(e) = err {
         unmount_source(&s.session.server, s.mountpoint).await;
-        info!("Unmounted source on {} from master: {}", s.mountpoint, e);
+        info!("Unmounted source on {} from master ({}): {}", s.mountpoint, master, e);
 
         None
     } else if !s.on_demand || killed {
         unmount_source(&s.session.server, s.mountpoint).await;
-        info!("Unmounted source on {} from master", s.mountpoint);
+        info!("Unmounted source on {} from master ({})", s.mountpoint, master);
 
         None
     } else {
-        info!("Source on {} from master is now inactive", s.mountpoint);
+        info!("Source on {} from master ({}) is now inactive", s.mountpoint, master);
 
         // We need to remove old channels
         let (tx, rx)         = qanat::broadcast::channel(1.try_into().expect("1 should be non zero usize"));
