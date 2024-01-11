@@ -24,7 +24,7 @@ use crate::{
     source::{IcyProperties, Source},
     response::ChunkedResponse,
     broadcast::relay_broadcast_metadata,
-    migrate::{MigrateCommand, MigrateConnection, MigrateMasterMountUpdates, MigrateMasterMountUpdatesInfo, VersionedMigrateConnection}
+    migrate::{MigrateCommand, MigrateConnection, MigrateMasterMountUpdates, MigrateMasterMountUpdatesInfo, VersionedMigrateConnection}, stream::RelayBroadcastStatus
 };
 
 #[derive(Debug, Deserialize)]
@@ -552,18 +552,33 @@ async fn relay_stream_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
 
         match relay_stream(serv, master_ind, mount.clone(), Some(on_demand), Some(&auth)).await {
             // We don't have any listener to continue pulling stream
-            Ok(Some(v)) => on_demand = v,
-            // Either:
-            // 1. killed by admin command or because stream
-            // 2. stream prematurely closed due to something like network problem
-            Ok(None) | Err(_) => break,
+            Ok(RelayBroadcastStatus::Idle(v)) => on_demand = v,
+            Ok(RelayBroadcastStatus::Killed) => break,
+            // Cases:
+            // 1. Stream finished but we were faster to detect
+            // error in stream that to get kill notification.
+            // 2. Network error that caused stream end
+            // We should exit here
+            Err(_) | Ok(RelayBroadcastStatus::StreamEnd) => break,
+            // We can't seem to reach master server (reasons may be: network, master refusing
+            // connection, ...)
+            // we will keep trying until we do so or get a kill notification
+            Ok(RelayBroadcastStatus::Unreachable(v)) => {
+                on_demand = v;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                match on_demand.kill_notifier.try_recv() {
+                    // If we get kill notification or channel closed we stop
+                    Ok(_) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => break,
+                    _ => ()
+                }
+            }
         }
     }
 }
 
 async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
                       on_demand: Option<StreamOnDemand>, auth: Option<&str>)
-    -> Result<Option<StreamOnDemand>> {
+    -> Result<RelayBroadcastStatus> {
     let url = &serv.config.master[master_ind].url;
 
     match get_stream(serv, url, &mount, on_demand.is_some(), auth).await {
@@ -605,7 +620,10 @@ async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
                     e
                 );
             }
-            ret
+            Ok(ret
+                .expect("Error shouldn't be returned on relay stream")
+                .expect("RelayBroadcastStatus should be returned on relay stream")
+            )
         },
         Err(e) => {
             error!(
@@ -614,6 +632,9 @@ async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
                 mount,
                 e
             );
+            if let Some(on_demand) = on_demand {
+                return Ok(RelayBroadcastStatus::Unreachable(on_demand));
+            }
             Err(e)
         }
     }

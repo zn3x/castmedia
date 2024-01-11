@@ -11,7 +11,7 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::info;
 use uuid::Uuid;
 
-use crate::{server::{ClientSession, Session}, request::{SourceRequest, Request}, response, utils, stream::{self, BroadcastInfo}, auth, client::{Client, SourceInfo, StreamOnDemand}, config::Account};
+use crate::{server::{ClientSession, Session}, request::{SourceRequest, Request}, response, utils, stream::{self, BroadcastInfo, RelayBroadcastStatus}, auth, client::{Client, SourceInfo, StreamOnDemand}, config::Account};
 
 #[obake::versioned]
 #[obake(version("0.1.0"))]
@@ -303,7 +303,7 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
     Ok(())
 }
 
-pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Option<StreamOnDemand>> {
+pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Option<RelayBroadcastStatus>> {
     let (relayed, on_demand, stream_source_url) = match info.relayed {
         Some(v) => (Some(v.info), v.on_demand, Some(v.url)),
         None => (None, None, None)
@@ -402,7 +402,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
             binfo.session.server.stats.active_relay.fetch_add(1, Ordering::Relaxed);
             binfo.session.server.stats.active_relay_streams.fetch_add(1, Ordering::Acquire);
 
-            return Ok(stream::relay_broadcast(binfo, relay_info, stream_src_url.unwrap(), on_demand_notify).await);
+            return Ok(Some(stream::relay_broadcast(binfo, relay_info, stream_src_url.unwrap(), on_demand_notify).await));
         }
     }
 

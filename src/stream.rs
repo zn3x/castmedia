@@ -130,9 +130,16 @@ pub struct BroadcastInfo<'a> {
     pub on_demand: bool
 }
 
+pub enum RelayBroadcastStatus {
+    Idle(StreamOnDemand),
+    Killed,
+    StreamEnd,
+    Unreachable(StreamOnDemand)
+}
+
 pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
                              mut relay: RelayedInfo, master: String,
-                             on_demand_notify: Option<diatomic_waker::WakeSink>) -> Option<StreamOnDemand> {
+                             on_demand_notify: Option<diatomic_waker::WakeSink>) -> RelayBroadcastStatus {
     if !s.on_demand {
         info!("Mounted source on {} from master ({})", s.mountpoint, master);
     } else {
@@ -215,12 +222,16 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
         unmount_source(&s.session.server, s.mountpoint).await;
         info!("Unmounted source on {} from master ({}): {}", s.mountpoint, master, e);
 
-        None
+        RelayBroadcastStatus::StreamEnd
     } else if !s.on_demand || killed {
         unmount_source(&s.session.server, s.mountpoint).await;
         info!("Unmounted source on {} from master ({})", s.mountpoint, master);
 
-        None
+        if killed {
+            RelayBroadcastStatus::Killed
+        } else {
+            RelayBroadcastStatus::StreamEnd
+        }
     } else {
         info!("Source on {} from master ({}) is now inactive", s.mountpoint, master);
 
@@ -230,7 +241,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
             source.broadcast = rx;
         }
 
-        Some(StreamOnDemand {
+        RelayBroadcastStatus::Idle(StreamOnDemand {
             stats: s.stats,
             broadcast: SourceBroadcast {
                 audio: tx,
