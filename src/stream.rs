@@ -361,7 +361,7 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>) -
         properties = source.properties.as_ref().clone();
         fallback   = source.fallback.clone();
         metadata   = match source.meta_broadcast.clone().try_recv().ok() {
-            Some(v) => v.as_ref().clone(),
+            Some(v) => v.as_ref().clone().1,
             None    => metadata_encode(&None, &None)
         };
         relayed_stream = match &source.relayed_source {
@@ -537,7 +537,10 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
                     relay.metadata_buffer.extend_from_slice(&buf[pos+1..last_pos]);
                     if relay.metadata_remaining == 0 {
                         let metadatabuf = std::mem::take(&mut relay.metadata_buffer);
-                        relay_broadcast_metadata(&src_metadata, &mut broadcast.metadata, metadatabuf).await;
+                        relay_broadcast_metadata(
+                            &src_metadata, &mut broadcast.metadata,
+                            broadcast.audio.last_index(), metadatabuf
+                        ).await;
                         relay.metadata_reading = false;
                     }
                 }
@@ -568,7 +571,10 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
                 relay.metadata_buffer.extend_from_slice(&buf[start..last_pos]);
                 if relay.metadata_remaining == 0 {
                     let metadatabuf = std::mem::take(&mut relay.metadata_buffer);
-                    relay_broadcast_metadata(&src_metadata, &mut broadcast.metadata, metadatabuf).await;
+                    relay_broadcast_metadata(
+                        &src_metadata, &mut broadcast.metadata,
+                        broadcast.audio.last_index(), metadatabuf
+                    ).await;
                     relay.metadata_reading = false;
                 }
             }

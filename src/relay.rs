@@ -51,7 +51,7 @@ pub enum MountUpdate {
 
 pub async fn master_mount_updates(mut session: ClientSession, user_id: String,
                                   // map holding all mounts as tuple (mount, metadata_channel)
-                                  mut mounts: HashMap<String, Receiver<Arc<Vec<u8>>>>) -> Result<()> {
+                                  mut mounts: HashMap<String, Receiver<Arc<(u64, Vec<u8>)>>>) -> Result<()> {
     info!("Mount updates stream initialized for {} ({})", user_id, session.addr);
 
     let chunked_writer = ChunkedResponse::new_ready();
@@ -148,7 +148,7 @@ pub async fn master_mount_updates(mut session: ClientSession, user_id: String,
                                 // We need to re-add recv future for this channel
                                 serde_json::to_vec(&json!({
                                     "mount": mount,
-                                    "metadata": v.as_ref(),
+                                    "metadata": &v.1,
                                     "type": "metadata"
                                 }))?
                             },
@@ -186,7 +186,7 @@ pub async fn master_mount_updates(mut session: ClientSession, user_id: String,
 
 async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>,
                                       user_id: String, stream: Stream, 
-                                      mounts: HashMap<String, Receiver<Arc<Vec<u8>>>>) -> ! {
+                                      mounts: HashMap<String, Receiver<Arc<(u64, Vec<u8>)>>>) -> ! {
     let migrate = migrate
         .expect("Got migrate notice with closed mpsc");
 
@@ -511,6 +511,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                 relay_broadcast_metadata(
                     &source.metadata,
                     &mut lock,
+                    source.broadcast.last_index(),
                     metadata
                 ).await;
             }

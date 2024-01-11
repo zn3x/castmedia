@@ -19,7 +19,7 @@ use crate::{
     request::{read_request, Request, RequestType, ListenRequest},
     source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast},
     response, utils, admin, api,
-    migrate::{MigrateClientInfo, MigrateClient, MigrateConnection, VersionedMigrateConnection}
+    migrate::{MigrateClientInfo, MigrateClient, MigrateConnection, VersionedMigrateConnection}, broadcast::read_media_broadcast
 };
 
 pub struct Client {
@@ -218,29 +218,29 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
 #[inline(always)]
 pub async fn listener_broadcast<'a>(mut session: ClientSession,
                                   stream: &mut Receiver<Arc<Vec<u8>>>,
-                                  mut meta_stream: Receiver<Arc<Vec<u8>>>,
+                                  mut meta_stream: Receiver<Arc<(u64, Vec<u8>)>>,
                                   mut mover: Receiver<Arc<MoveClientsCommand>>,
                                   stats: &SourceStats, with_metadata: bool,
                                   metaint: &mut usize, id: &mut Uuid,
                                   clients: &mut Arc<RwLock<HashMap<Uuid, Client>>>,
                                   client_stats: &ClientStats, mountpoint: String) -> Result<bool> {
     let mut fallback   = None;
-
-    let mut metadata   = Arc::new(Vec::new());
-    let mut bytes_sent = 0;
-    let mut stat_int   = tokio::time::interval(Duration::from_secs(30));
+    // We must have an initial metadata to work with
+    let mut metadata   = if let Ok(v) = meta_stream.recv().await {
+        v
+    } else {
+        return Ok(true);
+    };
+    let mut temp_metadata = None;
+    let mut bytes_sent    = 0;
+    let mut stat_int      = tokio::time::interval(Duration::from_secs(30));
 
     let mut migrate_comm = session.server.migrate.clone();
 
     loop {
         loop {
             tokio::select! {
-                r = meta_stream.recv() => match r {
-                    Ok(v) => metadata = v,
-                    Err(RecvError::Lagged(_)) => (),
-                    Err(RecvError::Closed) => break
-                },
-                r = stream.recv() => match r {
+                r = read_media_broadcast(stream, &mut meta_stream, &mut metadata, &mut temp_metadata) => match r {
                     Ok(buf) => {
                         // We are checking here if we need to broadcast metadata
                         // Metadata needs to be sent inbetween ever metaint interval
@@ -253,13 +253,13 @@ pub async fn listener_broadcast<'a>(mut session: ClientSession,
                                     session.stream.write_all(&buf[..first_buf_len]).await?;
                                 }
                                 // Now we write metadata
-                                session.stream.write_all(&metadata).await?;
+                                session.stream.write_all(&metadata.1).await?;
                                 // Followed by what left in buffer if there is any
                                 if diff > 0 {
                                     session.stream.write_all(&buf[first_buf_len..]).await?;
                                 }
                                 *metaint    = diff;
-                                bytes_sent += metadata.len() + buf.len();
+                                bytes_sent += metadata.1.len() + buf.len();
                             } else {
                                 session.stream.write_all(&buf).await?;
                                 *metaint   += buf.len();
@@ -340,7 +340,7 @@ pub async fn listener_broadcast<'a>(mut session: ClientSession,
     Ok(true)
 }
 
-async fn change_mount(stream: &mut Receiver<Arc<Vec<u8>>>, meta_stream: &mut Receiver<Arc<Vec<u8>>>,
+async fn change_mount(stream: &mut Receiver<Arc<Vec<u8>>>, meta_stream: &mut Receiver<Arc<(u64, Vec<u8>)>>,
                       mover: &mut Receiver<Arc<MoveClientsCommand>>,
                       client_stats: &ClientStats,
                       new: &MoveClientsCommand, id: &mut Uuid,

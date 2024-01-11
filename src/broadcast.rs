@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use qanat::broadcast::Sender;
+use qanat::broadcast::{Sender, Receiver, RecvError};
 use tokio::sync::RwLock;
 use anyhow::Result;
 
@@ -66,14 +66,20 @@ pub async fn broadcast_metadata<'a>(source: &Source, title: &Option<&str>, url: 
     });
 
 
+    
     source.meta_broadcast_sender
         .lock()
         .await
-        .send(Arc::new(metadata_encode(title, url)));
+        .send(Arc::new((
+            source.broadcast.last_index(),
+            metadata_encode(title, url))
+        ));
 }
 
 pub async fn relay_broadcast_metadata<'a>(src_metadata: &RwLock<Option<IcyMetadata>>,
-                                          broadcast: &mut Sender<Arc<Vec<u8>>>, metadatabuf: Vec<u8>) {
+                                          broadcast: &mut Sender<Arc<(u64, Vec<u8>)>>,
+                                          media_last_index: u64,
+                                          metadatabuf: Vec<u8>) {
     let metadata = match std::str::from_utf8(&metadatabuf) {
         Ok(v) => v,
         Err(_) => return
@@ -87,6 +93,39 @@ pub async fn relay_broadcast_metadata<'a>(src_metadata: &RwLock<Option<IcyMetada
 
 
         broadcast
-            .send(Arc::new(metadatabuf));
+            .send(Arc::new((media_last_index, metadatabuf)));
+    }
+}
+
+pub async fn read_media_broadcast(stream: &mut Receiver<Arc<Vec<u8>>>,
+                                  meta_stream: &mut Receiver<Arc<(u64, Vec<u8>)>>,
+                                  metadata: &mut Arc<(u64, Vec<u8>)>,
+                                  temp_metadata: &mut Option<Arc<(u64, Vec<u8>)>>)
+    -> Result<Arc<Vec<u8>>, RecvError> {
+    tokio::select! {
+        r = meta_stream.recv() => match r {
+            Ok(v) => {
+                let r = stream.recv().await;
+
+                if stream.read_position() >= v.0 {
+                    *metadata = v;
+                } else {
+                    *temp_metadata = Some(v);
+                }
+
+                r
+            },
+            Err(e) => Err(e)
+        },
+        r = stream.recv() => {
+            if let Some(m) = temp_metadata.take() {
+                if stream.read_position() >= m.0 {
+                    *metadata = m;
+                } else {
+                    *temp_metadata = Some(m);
+                }
+            }
+            r
+        }
     }
 }

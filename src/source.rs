@@ -114,11 +114,11 @@ pub struct Source {
     /// The stream broadcast receiver
     pub broadcast: Receiver<Arc<Vec<u8>>>,
     /// Receiver stream for metadata broadcast
-    pub meta_broadcast: Receiver<Arc<Vec<u8>>>,
+    pub meta_broadcast: Receiver<Arc<(u64, Vec<u8>)>>,
     /// Sender stream for metadata broadcast
     /// Needed so we don't create a new sender every time
     /// we get metadata update
-    pub meta_broadcast_sender: Mutex<Sender<Arc<Vec<u8>>>>,
+    pub meta_broadcast_sender: Mutex<Sender<Arc<(u64, Vec<u8>)>>>,
     /// Broadcast to move all clients in mountpoint to another one
     pub move_listeners_receiver: Receiver<Arc<MoveClientsCommand>>,
     pub move_listeners_sender: Sender<Arc<MoveClientsCommand>>,
@@ -128,13 +128,13 @@ pub struct Source {
 
 pub struct SourceBroadcast {
     pub audio: Sender<Arc<Vec<u8>>>,
-    pub metadata: Sender<Arc<Vec<u8>>>
+    pub metadata: Sender<Arc<(u64, Vec<u8>)>>
 }
 
 /// We can remotely command clients to change mountpoint using a variant of move commands
 pub struct MoveClientsCommand {
     pub broadcast: Receiver<Arc<Vec<u8>>>,
-    pub meta_broadcast: Receiver<Arc<Vec<u8>>>,
+    pub meta_broadcast: Receiver<Arc<(u64, Vec<u8>)>>,
     pub move_listeners_receiver: Receiver<Arc<MoveClientsCommand>>,
     pub clients: Arc<RwLock<HashMap<Uuid, Client>>>,
     pub move_type: MoveClientsType
@@ -330,7 +330,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
 
         // To prevent early readers from having no header
         if let Some(metadata) = info.metadata {
-            broadcast.metadata.send(Arc::new(metadata));
+            broadcast.metadata.send(Arc::new((0, metadata)));
         }
 
         // We only ever need to keep track of media
