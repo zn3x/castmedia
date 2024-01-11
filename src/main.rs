@@ -12,6 +12,7 @@ mod utils;
 mod migrate;
 mod relay;
 mod http;
+mod broadcast;
 
 use tracing::error;
 

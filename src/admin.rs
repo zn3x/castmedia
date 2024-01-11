@@ -11,7 +11,7 @@ use crate::{
     request::AdminRequest,
     response::{self, ChunkedResponse},
     auth::{self, AllowedAuthType}, utils,
-    stream::broadcast_metadata,
+    broadcast::broadcast_metadata,
     source::{MoveClientsCommand, MoveClientsType},
     migrate
 };

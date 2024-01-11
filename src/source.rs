@@ -342,7 +342,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
 
         // If source never ever broadcasts metadata
         // we do this to respect metadata interval for reader
-        crate::stream::broadcast_metadata(&source, &None, &None).await;
+        crate::broadcast::broadcast_metadata(&source, &None, &None).await;
 
         source_stats = source.stats.clone();
 

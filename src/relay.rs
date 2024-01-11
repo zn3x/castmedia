@@ -21,7 +21,10 @@ use crate::{
     utils::{get_header, basic_auth, concat_path}, config::MasterServerRelayScheme,
     http::{ResponseReader, ChunkedResponseReader},
     client::{SourceInfo, RelayedInfo, RelayStream, StreamOnDemand},
-    source::{IcyProperties, Source}, response::ChunkedResponse, stream::relay_broadcast_metadata, migrate::{MigrateCommand, MigrateConnection, MigrateMasterMountUpdates, MigrateMasterMountUpdatesInfo, VersionedMigrateConnection}
+    source::{IcyProperties, Source},
+    response::ChunkedResponse,
+    broadcast::relay_broadcast_metadata,
+    migrate::{MigrateCommand, MigrateConnection, MigrateMasterMountUpdates, MigrateMasterMountUpdatesInfo, VersionedMigrateConnection}
 };
 
 #[derive(Debug, Deserialize)]
@@ -472,7 +475,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
 
             let stats = source.stats.clone();
 
-            crate::stream::broadcast_metadata(&source, &None, &None).await;
+            crate::broadcast::broadcast_metadata(&source, &None, &None).await;
 
             if lock.try_insert(mount.clone(), source).is_err() {
                 panic!("Should be able to add relay source as we have lock");
