@@ -8,6 +8,7 @@ use hashbrown::{HashMap, hash_map::OccupiedError};
 use qanat::broadcast::{RecvError, Receiver};
 use serde_json::json;
 use tokio::{
+    sync::mpsc,
     net::TcpStream,
     io::{BufStream, AsyncWriteExt}, task::JoinHandle
 };
@@ -323,13 +324,11 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     Ok((stream, addr, metaint, headers_buf.len(), properties, chunked))
 }
 
-async fn authenticated_poll(serv: &Arc<Server>, master_ind: usize) -> Result<()> {
-    let url               = &serv.config.master[master_ind].url;
-    let (auth, on_demand) = match &serv.config.master[master_ind].relay_scheme {
-        MasterServerRelayScheme::Authenticated { user, pass, stream_on_demand, .. } => (
+async fn authenticated_mode(serv: &Arc<Server>, master_ind: usize) -> Result<()> {
+    let url  = &serv.config.master[master_ind].url;
+    let auth = match &serv.config.master[master_ind].relay_scheme {
+        MasterServerRelayScheme::Authenticated { user, pass, .. } =>
             format!("Authorization: Basic {}\r\n", basic_auth(user, pass)),
-            *stream_on_demand
-        ),
         // Should not reach this as we did treat it already
         _ => unreachable!()
     };
@@ -356,17 +355,60 @@ async fn authenticated_poll(serv: &Arc<Server>, master_ind: usize) -> Result<()>
     
     // TODO: check transfer-encoding??
     // Shouldn't matter anyway
+
+
+    authenticated_mode_event_listener(serv, stream, master_ind, None).await;
+
+    Ok(())
+}
+
+pub enum RelaySourceMigrate {
+    Idle {
+        mount: String,
+        properties: IcyProperties
+    },
+    Active
+}
+
+pub async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Stream,
+                                           master_ind: usize,
+                                           migrate_successor: Option<mpsc::UnboundedReceiver<RelaySourceMigrate>>) {
+    let url               = &serv.config.master[master_ind].url;
+    let (auth, on_demand) = match &serv.config.master[master_ind].relay_scheme {
+        MasterServerRelayScheme::Authenticated { user, pass, stream_on_demand, .. } => (
+            format!("Authorization: Basic {}\r\n", basic_auth(user, pass)),
+            *stream_on_demand
+        ),
+        // Should not reach this as we did treat it already
+        _ => unreachable!()
+    };
+
+    let mut sources = HashMap::new();
+    if let Some(mut m) = migrate_successor {
+        while let Some(v) = m.recv().await {
+            match v {
+                RelaySourceMigrate::Idle { mount, properties } => {
+                    handle_mount_update(
+                        &mut sources, serv,
+                        master_ind, on_demand,
+                        MountUpdate::New { mount, properties },
+                        &auth
+                    ).await;
+                },
+                RelaySourceMigrate::Active => {}
+            }
+        }
+    }
+
     info!("Starting mount updates from master {}", url);
 
     serv.stats.active_relay.fetch_add(1, Ordering::Relaxed);
-
-    let mut sources = HashMap::new();
 
     let mut len_enc = [0u8; 4];
     let mut buf     = vec![0u8; 1024];
     let mut chunked = ChunkedResponseReader::new();
     loop {
-        match authenticated_poll_reader(&mut stream, &mut len_enc, &mut buf, &mut chunked).await {
+        match authenticated_mode_reader(&mut stream, &mut len_enc, &mut buf, &mut chunked).await {
             Err(e)    => {
                 error!("Mount updates from master {} stopped: {}", url, e);
                 break;
@@ -376,11 +418,9 @@ async fn authenticated_poll(serv: &Arc<Server>, master_ind: usize) -> Result<()>
     }
     
     serv.stats.active_relay.fetch_sub(1, Ordering::Relaxed);
-
-    Ok(())
 }
 
-async fn authenticated_poll_reader(stream: &mut Stream, len_enc: &mut [u8; 4],
+async fn authenticated_mode_reader(stream: &mut Stream, len_enc: &mut [u8; 4],
                                    buf: &mut Vec<u8>, chunked: &mut ChunkedResponseReader) -> Result<MountUpdate> {
     // Reading message first from stream
     chunked.read_exact(stream, len_enc).await?;
@@ -675,7 +715,7 @@ pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
         MasterServerRelayScheme::Authenticated { reconnect_timeout, .. } => {
             let timeout = Duration::from_millis(*reconnect_timeout);
             loop {
-                if let Err(e) = authenticated_poll(&serv, master_ind).await {
+                if let Err(e) = authenticated_mode(&serv, master_ind).await {
                     error!("Initial mountupdates connection to master {} failed: {}", master_server.url, e);
                 }
                 tokio::time::sleep(timeout).await;

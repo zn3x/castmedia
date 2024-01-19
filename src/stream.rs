@@ -19,7 +19,7 @@ use crate::{
     source::{SourceBroadcast, SourceStats, MoveClientsCommand, MoveClientsType},
     migrate::{
         MigrateConnection, VersionedMigrateConnection,
-        MigrateSource, MigrateSourceInfo, MigrateCommand
+        MigrateSource, MigrateSourceInfo, MigrateCommand, MigrateIsRelay
     },
     client::{RelayedInfo, StreamOnDemand},
     http::ChunkedResponseReader,
@@ -209,7 +209,8 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
                     queue_size: s.queue_size,
                     stream: reader
                 },
-                Some(relay)
+                Some(relay),
+                s.on_demand
             ).await;
         }
     }
@@ -317,7 +318,8 @@ pub async fn broadcast(s: BroadcastInfo<'_>) {
                     queue_size,
                     stream: rguard
                 },
-                None
+                None,
+                false
             ).await;
         }
     }
@@ -358,7 +360,8 @@ struct MigrateStreamProps<'a> {
     stream: Box<dyn StreamReader>
 }
 
-async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>) -> ! {
+async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>,
+                        on_demand: bool) -> ! {
     // Safety: migrate sender half is NEVER dropped until process exits
     let migrate = s.migrate
         .expect("Got migrate notice with closed mpsc");
@@ -384,11 +387,6 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>) -
     let mountpoint = s.mountpoint.to_owned();
     // We need to first take a snapshot of media channel
     // This is mainly the thing that will let us resume in new process
-    let (is_relay, relay) = match relay {
-        Some(v) => (true, v),
-        None => (false, RelayedInfo::default())
-    };
-
     let snapshot = s.media_broadcast.snapshot();
     let info     = MigrateConnection::Source {
         info: MigrateSource {
@@ -399,9 +397,14 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>) -
             metadata,
             queue_size: s.queue_size as u64,
             chunked: s.chunked,
-            is_relay,
-            relayed_stream,
-            relay_info: relay
+            is_relay: match relay {
+                None    => MigrateIsRelay::False,
+                Some(v) => MigrateIsRelay::True {
+                    relayed_stream,
+                    relay_info: v,
+                    on_demand
+                }
+            },
         }
     };
     let info: VersionedMigrateConnection = info.into();

@@ -1,13 +1,14 @@
 use std::{
     sync::Arc,
-    os::{unix::net::{UnixListener, UnixStream}, fd::FromRawFd}, io::{Write, Read}, time::Duration, num::NonZeroUsize
+    os::unix::net::{UnixListener, UnixStream}, io::{Write, Read}, time::Duration, num::NonZeroUsize
 };
 use anyhow::Result;
 use qanat::broadcast::{Sender, restore_channel_from_snapshot, self};
-use tokio::{sync::mpsc, runtime::Handle, net::TcpStream};
+use tokio::{sync::mpsc, runtime::Handle};
 use serde::{Serialize, Deserialize};
 use passfd::FdPassingExt;
 use tracing::{error, info};
+use url::Url;
 
 use crate::{
     source::IcyProperties_v0_1_0,
@@ -16,7 +17,9 @@ use crate::{
         ListenerRestoreInfo, SourceInfo,
         ListenerInfo, RelayedInfo_v0_1_0, RelayStream, MasterMountUpdatesInfo
     },
-    server::{Socket, Server, Stream}, stream::StreamReader
+    server::{Socket, Server, Stream}, stream::StreamReader,
+    config::MasterServerRelayScheme,
+    utils::{read_socket_from_unix_socket, read_stream_from_unix_socket}, relay::RelaySourceMigrate
 };
 
 #[obake::versioned]
@@ -33,11 +36,32 @@ pub struct MigrateSource {
     pub metadata: Vec<u8>,
     pub chunked: bool,
     pub queue_size: u64,
-    // TODO: Can we place this in an Option???
-    pub is_relay: bool,
-    pub relayed_stream: String,
+    pub is_relay: MigrateIsRelay,
+}
+
+#[obake::versioned]
+#[obake(version("0.1.0"))]
+#[obake(derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
+pub enum MigrateIsRelay {
+    False,
+    True {
+        relayed_stream: String,
+        #[obake(inherit)]
+        relay_info: RelayedInfo,
+        on_demand: bool
+    },
+}
+
+#[obake::versioned]
+#[obake(version("0.1.0"))]
+#[obake(derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
+pub struct MigrateInactiveOnDemandSource {
+    pub mountpoint: String,
     #[obake(inherit)]
-    pub relay_info: RelayedInfo
+    pub properties: IcyProperties,
+    pub master_url: String
 }
 
 #[obake::versioned]
@@ -65,11 +89,22 @@ pub struct MigrateMasterMountUpdates {
 #[obake(version("0.1.0"))]
 #[obake(derive(Serialize, Deserialize))]
 #[derive(Serialize, Deserialize)]
+pub struct MigrateSlaveMountUpdates {
+    pub master_url: String,
+    pub mounts: Vec<String>
+}
+
+#[obake::versioned]
+#[obake(version("0.1.0"))]
+#[obake(derive(Serialize, Deserialize))]
+#[derive(Serialize, Deserialize)]
 pub enum MigrateConnection {
     // Can't have unnamed fields here for obake to work correctly
     Source { info: MigrateSource },
     Client { info: MigrateClient },
-    MasterMountUpdates { info: MigrateMasterMountUpdates }
+    MasterMountUpdates { info: MigrateMasterMountUpdates },
+    SlaveMountUpdates { info: MigrateSlaveMountUpdates },
+    SlaveInactiveOnDemandSource { info: MigrateInactiveOnDemandSource }
 }
 
 pub struct MigrateClientInfo {
@@ -228,6 +263,12 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
     info!("Starting migration from old instance.");
     let mut predeseccor = UnixStream::connect(migrate)?;
 
+    let mut slave_id = match server.config.master.is_empty() {
+        true => Vec::new(),
+        false => (0..server.config.master.len()).collect::<Vec<_>>()
+    };
+    let mut slave_tx = Vec::new();
+
     let mut buf = vec![0u8; 4092];
 
     // A broadcast to signal when migration is finished
@@ -236,7 +277,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
     // Reading all sources first
     // Then followed by listeners, master mountupdates
     let mut sources = true;
-    loop {
+    'OUTER: loop {
         let mut len_buf = [0u8; 8];
         predeseccor.read_exact(&mut len_buf)?;
         let len = u64::from_be_bytes(len_buf) as usize;
@@ -283,12 +324,12 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     queue_size: info.queue_size as usize,
                     broadcast: Some(snapshot),
                     relayed: match info.is_relay {
-                        true  => Some(RelayStream {
-                            url: info.relayed_stream,
-                            info: info.relay_info,
+                        MigrateIsRelay_v0_1_0::True { relayed_stream, relay_info, on_demand }  => Some(RelayStream {
+                            url: relayed_stream,
+                            info: relay_info,
                             on_demand: None
                         }),
-                        false => None
+                        MigrateIsRelay_v0_1_0::False => None
                     }
                 })
             },
@@ -307,19 +348,72 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     mounts: info.mounts,
                     user_id: info.user_id
                 })
+            },
+            MigrateConnection_v0_1_0::SlaveMountUpdates { info } => {
+                // Migrating slave mount update connections
+                // This must always be called sent to us before
+                // any SlaveInactiveOnDemandSource is sent
+                for i in 0..server.config.master.len() {
+                    let master = &server.config.master[i];
+                    if let Ok(url) = info.master_url.parse::<Url>() {
+                        if master.url.host_str().eq(&url.host_str())
+                            && master.url.port().eq(&url.port()) {
+                            let (stream, _) = match read_stream_from_unix_socket(&mut predeseccor) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    error!("Failed to fetch migrated connection: {}", e);
+                                    continue 'OUTER;
+                                }
+                            };
+                            match master.relay_scheme {
+                                MasterServerRelayScheme::Transparent { .. } => {
+                                    // Oh no!! we just switched to only use Transparent mode
+                                    // in this case we drop mountupdates connection
+                                    continue 'OUTER;
+                                },
+                                MasterServerRelayScheme::Authenticated { .. } => {
+                                    slave_id.retain(|x| x.ne(&i));
+                                    let (tx, rx) = mpsc::unbounded_channel();
+                                    slave_tx.push((&master.url, tx));
+                                    let serv = server.clone();
+                                    runtime_handle.spawn(async move {
+                                        crate::relay::authenticated_mode_event_listener(
+                                            &serv, stream,
+                                            i, Some(rx)
+                                        ).await;
+                                        crate::relay::slave_instance(serv, i).await;
+                                    });
+                                    continue 'OUTER;
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
+            },
+            MigrateConnection_v0_1_0::SlaveInactiveOnDemandSource { info } => {
+                // Here we only ever add this inactive ondemand source when
+                // New loaded configuration states that we have same master
+                // but with ondemand flag true
+                if let Ok(url) = info.master_url.parse::<Url>() {
+                    for master in &mut slave_tx {
+                        if master.0.host_str().eq(&url.host_str())
+                            && master.0.port().eq(&url.port()) {
+                            _ = master.1.send(RelaySourceMigrate::Idle { mount: info.mountpoint, properties: info.properties });
+                            continue 'OUTER;
+                        }
+                    }
+                }
+                continue
             }
         };
 
-        let fd   = predeseccor.recv_fd()?;
-        // Safety: We just got the fd from older instance, we are sure it's a tcp socket
-        let std_sock = unsafe { std::net::TcpStream::from_raw_fd(fd) };
-        if std_sock.set_nonblocking(true).is_err() {
+        let sock = if let Ok(v) = read_socket_from_unix_socket(&mut predeseccor) {
+            v
+        } else {
             continue;
-        }
-        let sock = match TcpStream::from_std(std_sock) {
-            Ok(v) => v,
-            Err(_) => continue
         };
+
         let server_cl = server.clone();
         let rx_cl     = rx.clone();
         runtime_handle.spawn(async move {
@@ -331,6 +425,14 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
             }
         });
     };
+
+    // Loading tasks for all new master relays
+    for id in slave_id {
+        let serv = server.clone();
+        tokio::spawn(async move {
+            crate::relay::slave_instance(serv, id).await;
+        });
+    }
 
     tx.send(());
     info!("Migration from old instance completed.");

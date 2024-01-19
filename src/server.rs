@@ -363,15 +363,6 @@ pub async fn listener(config: ServerSettings, args: ArgParse, migrate_op: Option
         }
     }
     
-    if !serv.config.master.is_empty() {
-        for i in 0..serv.config.master.len() {
-            let serv_clone = serv.clone();
-            tokio::spawn(async move {
-                relay::slave_instance(serv_clone, i).await;
-            });
-        }
-    }
-
     if serv.config.address.is_empty() {
         error!("At least one listening address must be specified in config file!");
         return;
@@ -394,7 +385,16 @@ pub async fn listener(config: ServerSettings, args: ArgParse, migrate_op: Option
     }
     
     if let Some(migrate_op) = migrate_op {
+        // In case we are doing migration we need to spawn
+        // slave server tasks while migrating
         crate::migrate::handle_successor(serv, migrate_op).await;
+    } else if !serv.config.master.is_empty() {
+        for i in 0..serv.config.master.len() {
+            let serv_clone = serv.clone();
+            tokio::spawn(async move {
+                relay::slave_instance(serv_clone, i).await;
+            });
+        }
     }
 
     tokio::select! {
