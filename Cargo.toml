@@ -30,6 +30,7 @@ postcard = { version = "1.0.8", features = [ "use-std" ] }
 serde_json = "1.0.105"
 serde_yaml = "0.9.22"
 serde = { version = "1.0.164", features = [ "derive" ] }
+serde_with = { version = "3.6.0", features = [ "hashbrown_0_14" ] }
 
 anyhow = "1.0.70"
 

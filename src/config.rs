@@ -60,6 +60,7 @@ pub struct ServerSettings {
     pub admin_access: AdminAccess,
     /// Accounts credentials
     #[serde(default = "default_val_accounts")]
+    #[serde(with = "::serde_with::rust::maps_duplicate_key_is_error")]
     pub account: HashMap<String, Account>,
     /// Master server relaying for slave instance
     #[serde(default = "default_val_master")]
@@ -378,6 +379,29 @@ impl ServerSettings {
                 Account::Source { pass, mount } => (pass, Some(mount)),
                 Account::Slave { pass } => (pass, None)
             };
+
+            // Checking if we don't have duplicates
+            for (ruser, raccount) in &config.account {
+                let rmounts = match raccount {
+                    Account::Admin { .. } => None,
+                    Account::Source { mount, .. } => Some(mount),
+                    Account::Slave { .. } => None
+                };
+                // Skip if we are identic
+                if std::ptr::eq(user, ruser) {
+                    continue;
+                }
+
+                if let (Some(mounts), Some(rmounts)) = (mounts, rmounts) {
+                    for mount in mounts {
+                        for rmount in rmounts {
+                            if mount.path.eq(&rmount.path) && mount.path.ne("*") {
+                                warn!("Sources {} and {} have access to same mountpoint {}", user, ruser, mount.path);
+                            }
+                        }
+                    }
+                }
+            }
 
             if !unsafe_pass {
                 // Checking if we have strong password if it's plaintext
