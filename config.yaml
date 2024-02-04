@@ -36,7 +36,7 @@ limits:
 account:
   # WARNING! Avoid using default credentials like these
   # Account can either be a source or admin
-  - user: admin
+  admin:
     # A password can either be either plaintext or hashed by specifying a prefix:
     # - 0$: Plaintext
     # - 1$: A hashed scrypt password digest
@@ -44,7 +44,7 @@ account:
     # if an attacker can get read access to this configuration file
     pass: 0$pass
     role: admin
-  - user: source
+  source:
     pass: 0$pass
     role: source
     # Mount must be specified, if mounting to any path is needed, wildcard (*) can be used.
@@ -55,6 +55,9 @@ account:
       - path: '/stream'
         fallback: '/stream1'
       - path: '/stream1'
+  slave:
+    pass: 0$pass
+    role: slave
 # This is a specific bind address for admin access only
 admin_access:
   enabled: true
