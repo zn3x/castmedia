@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 
+use hashbrown::HashMap;
 use serde::{Serialize, Deserialize};
 use tracing::{error, info, warn};
 
@@ -59,7 +60,7 @@ pub struct ServerSettings {
     pub admin_access: AdminAccess,
     /// Accounts credentials
     #[serde(default = "default_val_accounts")]
-    pub account: Vec<Account>,
+    pub account: HashMap<String, Account>,
     /// Master server relaying for slave instance
     #[serde(default = "default_val_master")]
     pub master: Vec<MasterServer>
@@ -70,16 +71,13 @@ pub struct ServerSettings {
 #[serde(rename_all = "lowercase")]
 pub enum Account {
     Admin {
-        user: String,
         pass: String,
     },
     Source {
-        user: String,
         pass: String,
         mount: Vec<Mount>
     },
     Slave {
-        user: String,
         pass: String
     }
 }
@@ -265,7 +263,7 @@ fn default_val_limit_master_timeout() -> u64 { MASTER_TIMEOUT }
 fn default_val_adminacc_enabled() -> bool { ADMINACC_ENABLED }
 fn default_val_adminacc_address() -> ServerAddress { ServerAddress { bind: ADMINACC_BIND.parse().expect("Should be a valid socket address"), tls: None } }
 
-fn default_val_accounts() -> Vec<Account> { Vec::new() }
+fn default_val_accounts() -> HashMap<String, Account> { HashMap::new() }
 
 fn default_val_master() -> Vec<MasterServer> { Vec::new() }
 
@@ -298,7 +296,7 @@ impl ServerSettings {
 
     pub fn hash_passwords(config: &mut ServerSettings) {
         // Converting plaintext passwords to hash
-        for account in &mut config.account {
+        for (_, account) in &mut config.account {
             let pass = match account {
                 Account::Source { pass, .. } => pass,
                 Account::Admin { pass, .. }  => pass,
@@ -374,40 +372,12 @@ impl ServerSettings {
         }
 
         // Verifying accounts credentials
-        for account in &config.account {
-            let (user, pass, mounts) = match account {
-                Account::Admin { user, pass } => (user, pass, None),
-                Account::Source { user, pass, mount } => (user, pass, Some(mount)),
-                Account::Slave { user, pass } => (user, pass, None)
+        for (user, account) in &config.account {
+            let (pass, mounts) = match account {
+                Account::Admin { pass } => (pass, None),
+                Account::Source { pass, mount } => (pass, Some(mount)),
+                Account::Slave { pass } => (pass, None)
             };
-
-            // Checking if we don't have duplicates
-            for raccount in &config.account {
-                let (ruser, rmounts) = match raccount {
-                    Account::Admin { user, .. } => (user, None),
-                    Account::Source { user, mount, .. } => (user, Some(mount)),
-                    Account::Slave { user, .. } => (user, None)
-                };
-                // Skip if we are identic
-                if std::ptr::eq(user, ruser) {
-                    continue;
-                }
-
-                if user.eq(ruser) {
-                    error!("Two accounts with identical username: {}", user);
-                    errors += 1;
-                }
-
-                if let (Some(mounts), Some(rmounts)) = (mounts, rmounts) {
-                    for mount in mounts {
-                        for rmount in rmounts {
-                            if mount.path.eq(&rmount.path) && mount.path.ne("*") {
-                                warn!("Sources {} and {} have access to same mountpoint {}", user, ruser, mount.path);
-                            }
-                        }
-                    }
-                }
-            }
 
             if !unsafe_pass {
                 // Checking if we have strong password if it's plaintext

@@ -261,20 +261,15 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
     properties.populate_from_http_headers(&request.headers);
 
     let mut fallback = None;
-    for account in &session.server.config.account {
+    if let Some(account) = &session.server.config.account.get(&user_id) {
         match account {
-            Account::Admin { user, .. } => if user.eq(&user_id) {
-                break;
-            },
-            Account::Source { user, mount, .. } => {
-                if user.eq(&user_id) {
-                    for mount in mount {
-                        if mount.path.eq(&req.mountpoint) {
-                            fallback = mount.fallback.clone();
-                            break;
-                        }
+            Account::Admin { .. } => (),
+            Account::Source { mount, .. } => {
+                for mount in mount {
+                    if mount.path.eq(&req.mountpoint) {
+                        fallback = mount.fallback.clone();
+                        break;
                     }
-                    break;
                 }
             },
             _ => ()

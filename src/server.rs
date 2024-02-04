@@ -330,7 +330,7 @@ pub async fn listener(config: ServerSettings, args: ArgParse, migrate_op: Option
         relay_params: RelayParams {
             slave_auth_present: config.account
                 .iter()
-                .any(|x| matches!(x, Account::Slave { .. })),
+                .any(|x| matches!(x.1, Account::Slave { .. })),
             new_source_event_tx: tx2,
             new_source_event_rx: rx2
         },
