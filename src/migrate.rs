@@ -4,7 +4,7 @@ use std::{
 };
 use anyhow::Result;
 use qanat::broadcast::{Sender, restore_channel_from_snapshot, self};
-use tokio::{sync::mpsc, runtime::Handle};
+use tokio::{sync::mpsc::{self, UnboundedSender}, runtime::Handle};
 use serde::{Serialize, Deserialize};
 use passfd::FdPassingExt;
 use tracing::{error, info};
@@ -267,7 +267,9 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
         true => Vec::new(),
         false => (0..server.config.master.len()).collect::<Vec<_>>()
     };
-    let mut slave_tx = Vec::new();
+    // TODO FIX ME: Master mounts are dropped when slave mountupdates
+    // is not received in migration
+    let mut slave_tx: Vec<(&Url, UnboundedSender<_>)> = Vec::new();
 
     let mut buf = vec![0u8; 4092];
 
@@ -313,8 +315,8 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                 }
 
                 let snapshot = restore_channel_from_snapshot((snapshot_msgs, info.broadcast_snapshot.1, info.broadcast_snapshot.2));
-
-                crate::client::ClientInfo::Source(SourceInfo {
+                let mut is_on_demand = None;
+                let ret = SourceInfo {
                     mountpoint: info.mountpoint,
                     properties: info.properties,
                     initial_bytes_read: 0,
@@ -324,14 +326,42 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     queue_size: info.queue_size as usize,
                     broadcast: Some(snapshot),
                     relayed: match info.is_relay {
-                        MigrateIsRelay_v0_1_0::True { relayed_stream, relay_info, on_demand }  => Some(RelayStream {
-                            url: relayed_stream,
-                            info: relay_info,
-                            on_demand: None
-                        }),
+                        MigrateIsRelay_v0_1_0::True { relayed_stream, relay_info, on_demand } => {
+                            if on_demand {
+                                is_on_demand = Some(relayed_stream.clone());
+                            };
+                            Some(RelayStream {
+                                url: relayed_stream,
+                                info: relay_info,
+                                on_demand: None
+                            })
+                        },
                         MigrateIsRelay_v0_1_0::False => None
                     }
-                })
+                };
+                
+                if let Some(r) = is_on_demand {
+                    let (stream, addr) = match read_stream_from_unix_socket(&mut predeseccor) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            error!("Failed to fetch migrated connection: {}", e);
+                            continue 'OUTER;
+                        }
+                    };
+                    let url = match r.parse::<Url>() {
+                        Ok(v) => v,
+                        Err(_) => continue
+                    };
+                    for master in &slave_tx {
+                        if master.0.host_str().eq(&url.host_str())
+                            && master.0.port().eq(&url.port()) {
+                            _ = master.1.send(RelaySourceMigrate::Active { stream, addr, info: ret });
+                            continue 'OUTER;
+                        }
+                    }
+                }
+
+                crate::client::ClientInfo::Source(ret)
             },
             MigrateConnection_v0_1_0::Client { info } => {
                 crate::client::ClientInfo::Listener(ListenerInfo {

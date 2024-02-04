@@ -1,8 +1,9 @@
 use std::{
     sync::{Arc, atomic::Ordering},
-    time::Duration, net::SocketAddr
+    time::Duration, net::SocketAddr, pin::Pin
 };
 use anyhow::Result;
+use futures::Future;
 use ::futures::{future::select_all, FutureExt};
 use hashbrown::{HashMap, hash_map::OccupiedError};
 use qanat::broadcast::{RecvError, Receiver};
@@ -367,7 +368,11 @@ pub enum RelaySourceMigrate {
         mount: String,
         properties: IcyProperties
     },
-    Active
+    Active {
+        stream: Stream,
+        addr: SocketAddr,
+        info: SourceInfo
+    }
 }
 
 pub async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Stream,
@@ -395,7 +400,60 @@ pub async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: S
                         &auth
                     ).await;
                 },
-                RelaySourceMigrate::Active => {}
+                RelaySourceMigrate::Active { stream, addr, mut info } => {
+                    let wake_sink                  = diatomic_waker::WakeSink::new();
+                    let wake_src                   = wake_sink.source();
+                    let (mut source, broadcast,
+                         kill_notifier)            = Source::new(
+                             info.properties.clone(), info.fallback.clone(),
+                             Some(info.relayed.as_ref().unwrap().url.clone()),
+                             info.broadcast.take());
+                    source.on_demand_notify_reader = Some(wake_src);
+
+                    let stats = source.stats.clone();
+
+                    if let Some(v) = &mut info.relayed {
+                        v.on_demand = Some(StreamOnDemand {
+                            stats,
+                            broadcast,
+                            kill_notifier,
+                            on_demand_notify: wake_sink
+                        })
+                    }
+
+                    crate::broadcast::broadcast_metadata(&source, &None, &None).await;
+
+                    if serv.sources.write().await.try_insert(info.mountpoint.clone(), source).is_err() {
+                        continue;
+                    }
+
+                    let mount    = info.mountpoint.clone();
+                    let serv_cl  = serv.clone();
+                    let auth_cl  = auth.to_owned();
+                    let task     = tokio::task::spawn(async move {
+                        let cmount = info.mountpoint.clone();
+                        let ret    = crate::source::handle_source(
+                            Session {
+                                server: serv_cl.clone(),
+                                stream,
+                                addr
+                            },
+                            info
+                        ).await;
+
+                        let ret = match ret {
+                            Ok(Some(v)) => Ok(v),
+                            Ok(_) => unreachable!(),
+                            Err(e) => Err(e)
+                        };
+
+                        if let Some(v) = relay_stream_on_demand_exepction(ret).await {
+                            relay_stream_on_demand(&serv_cl, master_ind, cmount, v, auth_cl).await;
+                        }
+                    });
+
+                    sources.insert(mount, task);
+                }
             }
         }
     }
@@ -526,7 +584,8 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
             let mount_cl = mount.clone();
             let task     = tokio::task::spawn(async move {
                 relay_stream_on_demand(
-                    &serv_cl, master_ind, mount_cl,
+                    &serv_cl, master_ind,
+                    mount_cl,
                     StreamOnDemand {
                         stats,
                         broadcast,
@@ -590,30 +649,41 @@ async fn relay_stream_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
             })
             .await;
 
-        match relay_stream(serv, master_ind, mount.clone(), Some(on_demand), Some(&auth)).await {
-            // We don't have any listener to continue pulling stream
-            Ok(RelayBroadcastStatus::Idle(v)) => on_demand = v,
-            Ok(RelayBroadcastStatus::Killed) => break,
-            // Cases:
-            // 1. Stream finished but we were faster to detect
-            // error in stream that to get kill notification.
-            // 2. Network error that caused stream end
-            // We should exit here
-            Err(_) | Ok(RelayBroadcastStatus::StreamEnd) => break,
-            // We can't seem to reach master server (reasons may be: network, master refusing
-            // connection, ...)
-            // we will keep trying until we do so or get a kill notification
-            Ok(RelayBroadcastStatus::Unreachable(v)) => {
-                on_demand = v;
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                match on_demand.kill_notifier.try_recv() {
-                    // If we get kill notification or channel closed we stop
-                    Ok(_) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => break,
-                    _ => ()
-                }
+        let ret = relay_stream(serv, master_ind, mount.clone(), Some(on_demand), Some(&auth)).await;
+        match relay_stream_on_demand_exepction(ret).await {
+            Some(v) => on_demand = v,
+            None => break
+        }
+    }
+}
+
+async fn relay_stream_on_demand_exepction(ret: Result<RelayBroadcastStatus>) -> Option<StreamOnDemand> {
+    let mut on_demand;
+    match ret {
+        // We don't have any listener to continue pulling stream
+        Ok(RelayBroadcastStatus::Idle(v)) => on_demand = v,
+        Ok(RelayBroadcastStatus::Killed) => return None,
+        // Cases:
+        // 1. Stream finished but we were faster to detect
+        // error in stream that to get kill notification.
+        // 2. Network error that caused stream end
+        // We should exit here
+        Err(_) | Ok(RelayBroadcastStatus::StreamEnd) => return None,
+        // We can't seem to reach master server (reasons may be: network, master refusing
+        // connection, ...)
+        // we will keep trying until we do so or get a kill notification
+        Ok(RelayBroadcastStatus::Unreachable(v)) => {
+            on_demand = v;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            match on_demand.kill_notifier.try_recv() {
+                // If we get kill notification or channel closed we stop
+                Ok(_) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => return None,
+                _ => ()
             }
         }
     }
+    
+    Some(on_demand)
 }
 
 async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
