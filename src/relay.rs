@@ -692,7 +692,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                 // This is necesarry as source task may be slow when removing
                 // source and we end up reading a new MountUpdate::New
                 // Where source with same mount still hasn't been cleaned up
-                crate::stream::unmount_source(&serv, &mount).await;
+                crate::stream::unmount_source(serv, &mount).await;
             }
         }
     }

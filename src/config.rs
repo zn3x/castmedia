@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use anyhow::Result;
 
 use hashbrown::HashMap;
 use serde::{Serialize, Deserialize};
@@ -76,6 +77,7 @@ pub enum Account {
     },
     Source {
         pass: String,
+        #[serde(default = "default_source_mount")]
         mount: Vec<Mount>
     },
     Slave {
@@ -268,6 +270,8 @@ fn default_val_accounts() -> HashMap<String, Account> { HashMap::new() }
 
 fn default_val_master() -> Vec<MasterServer> { Vec::new() }
 
+fn default_source_mount() -> Vec<Mount> { Vec::new() }
+
 fn default_val_master_mounts_limit() -> usize { MASTER_MOUNTS_LIMIT }
 fn default_val_master_transparent_update_interval() -> u64 { MASTER_TRANS_UP_INTERVAL }
 fn default_val_master_auth_stream_on_demand() -> bool { MASTER_AUTH_STREAM_ON_DEMAND }
@@ -277,7 +281,7 @@ impl ServerSettings {
     pub fn load(config_path: &str) -> Self {
         match std::fs::read_to_string(config_path) {
             Ok(v) => {
-                match serde_yaml::from_str::<ServerSettings>(&v) {
+                match Self::from_str(&v) {
                     Ok(v) => {
                         info!("Loaded configuration from {}", config_path);
                         v
@@ -293,6 +297,10 @@ impl ServerSettings {
                 std::process::exit(1);
             }
         }
+    }
+
+    pub fn from_str(config: &str) -> Result<Self> {
+        Ok(serde_yaml::from_str::<ServerSettings>(&config)?)
     }
 
     pub fn hash_passwords(config: &mut ServerSettings) {
@@ -376,7 +384,12 @@ impl ServerSettings {
         for (user, account) in &config.account {
             let (pass, mounts) = match account {
                 Account::Admin { pass } => (pass, None),
-                Account::Source { pass, mount } => (pass, Some(mount)),
+                Account::Source { pass, mount } => {
+                    if mount.is_empty() {
+                        warn!("Source {} has no defined mount, this means it can't mount any stream", user);
+                    }
+                    (pass, Some(mount))
+                },
                 Account::Slave { pass } => (pass, None)
             };
 
@@ -462,13 +475,10 @@ impl ServerSettings {
                 }
             }
 
-            match &master.relay_scheme {
-                MasterServerRelayScheme::Transparent { update_interval } => {
-                    if *update_interval > 1000 {
-                        warn!("Update interval {} for {} may be too big", master.url, update_interval);
-                    }
-                },
-                _ => ()
+            if let MasterServerRelayScheme::Transparent { update_interval } = &master.relay_scheme {
+                if *update_interval > 200000 {
+                    warn!("Update interval {} for {} may be too big", master.url, update_interval);
+                }
             }
         }
 

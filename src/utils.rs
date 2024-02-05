@@ -129,7 +129,7 @@ pub fn get_basic_auth( headers: &[httparse::Header] ) -> Result<Option<(String, 
 pub fn basic_auth(user: &str, pass: &str) -> String {
     let mut s = String::from(user);
     s.push(':');
-    s.push_str(&pass);
+    s.push_str(pass);
     let bs64 = base64::engine::general_purpose::URL_SAFE;
     bs64.encode(s)
 }
@@ -139,7 +139,7 @@ pub fn concat_path(url: &str, path: &str) -> String {
     if url.as_str().ends_with('/') {
         url.push_str(&path[1..]);
     } else {
-        url.push_str(&path[..]);
+        url.push_str(path);
     }
 
     url

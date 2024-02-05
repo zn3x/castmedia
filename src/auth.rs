@@ -99,18 +99,13 @@ pub async fn admin_auth(session: &mut ClientSession, auth: Option<(String, Strin
     // Making sure we are receiving this through admin interface
     if session.admin_addr {
         if let Some(v) = auth {
-            if let Some(account) = session.server.config.account.get(&v.0) {
-                match account {
-                    Account::Admin { .. } => {
-                        let (tx, rx) = oneshot::channel();
-                        if session.server.hash_calculator.send(HashCalculation { user: v.0.clone(), pass: v.1, resp: tx }).is_ok() {
-                            if let Ok(true) = rx.await {
-                                session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
-                                return Ok(v.0);
-                            }
-                        }
-                    },
-                    _ => ()
+            if let Some(Account::Admin { .. }) = session.server.config.account.get(&v.0) {
+                let (tx, rx) = oneshot::channel();
+                if session.server.hash_calculator.send(HashCalculation { user: v.0.clone(), pass: v.1, resp: tx }).is_ok() {
+                    if let Ok(true) = rx.await {
+                        session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
+                        return Ok(v.0);
+                    }
                 }
             }
         }
