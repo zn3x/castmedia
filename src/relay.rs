@@ -25,7 +25,7 @@ use crate::{
     source::{IcyProperties, Source},
     response::ChunkedResponse,
     broadcast::relay_broadcast_metadata,
-    migrate::{MigrateCommand, MigrateConnection, MigrateMasterMountUpdates, MigrateMasterMountUpdatesInfo, VersionedMigrateConnection}, stream::RelayBroadcastStatus
+    migrate::{MigrateCommand, MigrateConnection, MigrateMasterMountUpdates, MigrateMasterMountUpdatesInfo, VersionedMigrateConnection, MigrateSlaveMountUpdates, MigrateInactiveOnDemandSource}, stream::RelayBroadcastStatus
 };
 
 #[derive(Debug, Deserialize)]
@@ -324,7 +324,46 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     Ok((stream, addr, metaint, headers_buf.len(), properties, chunked))
 }
 
-async fn authenticated_mode(serv: &Arc<Server>, master_ind: usize) -> Result<()> {
+pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
+                                mut migrate_successor: Option<(Stream, mpsc::UnboundedReceiver<RelaySourceMigrate>)>) {
+    let master_server     = &serv.config.master[master_ind];
+    let reconnect_timeout = match &master_server.relay_scheme {
+        MasterServerRelayScheme::Authenticated { reconnect_timeout, .. } => *reconnect_timeout,
+        _ => unreachable!()
+    };
+    let timeout = Duration::from_millis(reconnect_timeout);
+    loop {
+        match migrate_successor.take() {
+            Some((stream, m)) => authenticated_mode_event_listener(&serv, stream, master_ind, Some(m)).await,
+            None => {
+                let fut = async {
+                    loop {
+                        match authenticated_mode_fetch_updates_stream(&serv, master_ind).await {
+                            Ok(v) => return v,
+                            Err(e) => error!("Initial mountupdates connection to master {} failed: {}", master_server.url, e)
+                        }
+                        tokio::time::sleep(timeout).await;
+                    }
+                };
+                let mut migrate_comm = serv.migrate.clone();
+                let stream = tokio::select! {
+                    r = fut => r,
+                    migrate = migrate_comm.recv() => {
+                        let migrate = migrate
+                            .expect("Got migrate notice with closed mpsc");
+                        _ = migrate.slave_mountupdates.send(None);
+                        loop {
+                            tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
+                        }
+                    }
+                };
+                authenticated_mode_event_listener(&serv, stream, master_ind, None).await;
+            }
+        }
+    }
+}
+
+async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, master_ind: usize) -> Result<Stream> {
     let url  = &serv.config.master[master_ind].url;
     let auth = match &serv.config.master[master_ind].relay_scheme {
         MasterServerRelayScheme::Authenticated { user, pass, .. } =>
@@ -356,10 +395,7 @@ async fn authenticated_mode(serv: &Arc<Server>, master_ind: usize) -> Result<()>
     // TODO: check transfer-encoding??
     // Shouldn't matter anyway
 
-
-    authenticated_mode_event_listener(serv, stream, master_ind, None).await;
-
-    Ok(())
+    Ok(stream)
 }
 
 pub enum RelaySourceMigrate {
@@ -372,9 +408,10 @@ pub enum RelaySourceMigrate {
         addr: SocketAddr,
         info: SourceInfo
     }
+    // TODO: We are missing here streams with on_demand disabled
 }
 
-pub async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Stream,
+async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Stream,
                                            master_ind: usize,
                                            migrate_successor: Option<mpsc::UnboundedReceiver<RelaySourceMigrate>>) {
     let url               = &serv.config.master[master_ind].url;
@@ -464,13 +501,39 @@ pub async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: S
     let mut len_enc = [0u8; 4];
     let mut buf     = vec![0u8; 1024];
     let mut chunked = ChunkedResponseReader::new();
-    loop {
-        match authenticated_mode_reader(&mut stream, &mut len_enc, &mut buf, &mut chunked).await {
-            Err(e)    => {
-                error!("Mount updates from master {} stopped: {}", url, e);
-                break;
-            },
-            Ok(event) => handle_mount_update(&mut sources, serv, master_ind, on_demand, event, &auth).await
+
+    let mut migrate_comm = serv.migrate.clone();
+    let fut              = async {
+        loop {
+            match authenticated_mode_reader(&mut stream, &mut len_enc, &mut buf, &mut chunked).await {
+                Err(e)    => {
+                    error!("Mount updates from master {} stopped: {}", url, e);
+                    return;
+                },
+                Ok(event) => handle_mount_update(&mut sources, serv, master_ind, on_demand, event, &auth).await
+            }
+        }
+    };
+
+    tokio::select! {
+        _ = fut => (),
+        migrate = migrate_comm.recv() => {
+            let migrate = migrate
+                .expect("Got migrate notice with closed mpsc");
+
+            let info: VersionedMigrateConnection = MigrateConnection::SlaveMountUpdates {
+                info: MigrateSlaveMountUpdates {
+                    master_url: url.to_string()
+                }
+            }.into();
+            if let Ok(info) = postcard::to_stdvec(&info) {
+                _ = migrate.slave_mountupdates.send(Some(
+                        crate::migrate::MigrateSlaveMountUpdatesInfo { info, sock: stream }
+                ));
+            }
+            loop {
+                tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
+            }
         }
     }
     
@@ -625,6 +688,11 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                         _ = kill.send(());
                     }
                 }
+                // We should also try to unmount source
+                // This is necesarry as source task may be slow when removing
+                // source and we end up reading a new MountUpdate::New
+                // Where source with same mount still hasn't been cleaned up
+                crate::stream::unmount_source(&serv, &mount).await;
             }
         }
     }
@@ -635,18 +703,48 @@ async fn relay_stream_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
     // We here need to wait until we get notification that we have
     // more than 0 listener
     // ofc we should also handle also the event of killing ourselves
-    // Migration is not handled because there is stream to migrate :)
+    // Here we migrate only the state of the stream not itself
+    let mut migrate_comm = serv.migrate.clone();
     loop {
-        on_demand
-            .on_demand_notify
-            .wait_until(|| {
-                if on_demand.stats.active_listeners.load(Ordering::Relaxed) != 0 {
-                    Some(())
-                } else {
-                    None
+        tokio::select! {
+            _ = on_demand
+                .on_demand_notify
+                .wait_until(|| {
+                    if on_demand.stats.active_listeners.load(Ordering::Relaxed) != 0 {
+                        Some(())
+                    } else {
+                        None
+                    }
+                }) => (),
+            _ = &mut on_demand.kill_notifier => break,
+            migrate = migrate_comm.recv() => {
+                let migrate = migrate
+                    .expect("Got migrate notice with closed mpsc");
+
+                let master = &serv.config.master[master_ind];
+                if let Some(properties) = serv.sources.read().await.get(&mount).map(|x| (*x.properties).to_owned()) {
+                    let info: VersionedMigrateConnection = MigrateConnection::SlaveInactiveOnDemandSource {
+                        info: MigrateInactiveOnDemandSource {
+                            master_url: master.url.to_string(),
+                            mountpoint: mount,
+                            properties
+                        }
+                    }.into();
+                    if let Ok(info) = postcard::to_stdvec(&info) {
+                        _ = migrate
+                            .source
+                            .send(crate::migrate::MigrateSourceInfo {
+                                info,
+                                active: None
+                            });
+                    }
                 }
-            })
-            .await;
+
+                loop {
+                    tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
+                }
+            }
+        }
 
         let ret = relay_stream(serv, master_ind, mount.clone(), Some(on_demand), Some(&auth)).await;
         match relay_stream_on_demand_exepction(ret).await {
@@ -781,14 +879,8 @@ pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
                 }
             }
         },
-        MasterServerRelayScheme::Authenticated { reconnect_timeout, .. } => {
-            let timeout = Duration::from_millis(*reconnect_timeout);
-            loop {
-                if let Err(e) = authenticated_mode(&serv, master_ind).await {
-                    error!("Initial mountupdates connection to master {} failed: {}", master_server.url, e);
-                }
-                tokio::time::sleep(timeout).await;
-            }
+        MasterServerRelayScheme::Authenticated { .. } => {
+            authenticated_mode(serv, master_ind, None).await;
         }
     }
 }

@@ -4,7 +4,7 @@ use std::{
 };
 use anyhow::Result;
 use qanat::broadcast::{Sender, restore_channel_from_snapshot, self};
-use tokio::{sync::mpsc::{self, UnboundedSender}, runtime::Handle};
+use tokio::{sync::mpsc::{self, UnboundedSender, UnboundedReceiver}, runtime::Handle};
 use serde::{Serialize, Deserialize};
 use passfd::FdPassingExt;
 use tracing::{error, info};
@@ -90,8 +90,7 @@ pub struct MigrateMasterMountUpdates {
 #[obake(derive(Serialize, Deserialize))]
 #[derive(Serialize, Deserialize)]
 pub struct MigrateSlaveMountUpdates {
-    pub master_url: String,
-    pub mounts: Vec<String>
+    pub master_url: String
 }
 
 #[obake::versioned]
@@ -108,21 +107,31 @@ pub enum MigrateConnection {
 }
 
 pub struct MigrateClientInfo {
-    /// Serialized MigrateConnection
+    /// Serialized MigrateConnection::Client
     pub info: Vec<u8>,
     pub mountpoint: String,
     pub sock: Box<dyn Socket>
 }
 
 pub struct MigrateSourceInfo {
-    /// Serialized MigrateConnection
+    /// Serialized MigrateConnection::Source
     pub info: Vec<u8>,
+    pub active: Option<ActiveSourceInfo>
+}
+
+pub struct ActiveSourceInfo {
     pub media: Vec<(u64, Arc<Vec<u8>>)>,
     pub sock: Box<dyn StreamReader>
 }
 
 pub struct MigrateMasterMountUpdatesInfo {
-    /// Serialized MigrateConnection
+    /// Serialized MigrateConnection::MasterMountUpdates
+    pub info: Vec<u8>,
+    pub sock: Stream
+}
+
+pub struct MigrateSlaveMountUpdatesInfo {
+    /// Serialized MigrateConnection::SlaveMountUpdates
     pub info: Vec<u8>,
     pub sock: Stream
 }
@@ -131,7 +140,10 @@ pub struct MigrateCommand {
     /// mpsc channel where we will send connection info related to sources and listeners
     pub source: mpsc::UnboundedSender<MigrateSourceInfo>,
     pub listener: mpsc::UnboundedSender<MigrateClientInfo>,
-    pub master_mountupdates: mpsc::UnboundedSender<MigrateMasterMountUpdatesInfo>
+    /// /admin/mountpoint on master side
+    pub master_mountupdates: mpsc::UnboundedSender<MigrateMasterMountUpdatesInfo>,
+    /// /admin/mountpoint on slave side
+    pub slave_mountupdates: mpsc::UnboundedSender<Option<MigrateSlaveMountUpdatesInfo>>,
 }
 
 pub async fn handle(server: Arc<Server>, migrate: Sender<Arc<MigrateCommand>>) {
@@ -160,10 +172,12 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
     let (tx, mut rx)   = mpsc::unbounded_channel();
     let (tx1, mut rx1) = mpsc::unbounded_channel();
     let (tx2, mut rx2) = mpsc::unbounded_channel();
+    let (tx3, mut rx3) = mpsc::unbounded_channel();
     migrate.send(Arc::new(MigrateCommand {
         source: tx,
         listener: tx1,
-        master_mountupdates: tx2
+        master_mountupdates: tx2,
+        slave_mountupdates: tx3
     }));
 
     info!("Preparing launch of new instance");
@@ -195,24 +209,37 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
     // The migration is done in the following way because we don't have any efficied way to
     // broadcast migration to all tasks, so we end not knewing when all senders are dropped
     // because a Sender is kept in broadcast channel.
+
+    // Migrating slave mountupdates
+    {
+        // First we count total auth mode master
+        let mut count = 0;
+        let total     = server.config.master
+            .iter()
+            .filter(|x| matches!(x.relay_scheme, MasterServerRelayScheme::Authenticated { .. }))
+            .count();
+        loop {
+            while let Ok(v) = rx3.try_recv() {
+                if let Some(v) = v {
+                    // We first write mountupdates info
+                    successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
+                    successor.write_all(&v.info)?;
+                    // Then pass on fd
+                    successor.send_fd(v.sock.fd())?;
+                }
+            }
+            count += 1;
+            if count >= total {
+                break;
+            }
+        }
+    }
+
+    // Migrating sources
     let mut source_count = 0;
     // We first read all sources
     loop {
-        while let Ok(v) = rx.try_recv() {
-            source_count += 1;
-
-            // We first write source info
-            successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
-            successor.write_all(&v.info)?;
-            // Then media stream
-            for frame in v.media {
-                successor.write_all(&frame.0.to_be_bytes())?;
-                successor.write_all(&frame.1.len().to_be_bytes())?;
-                successor.write_all(&frame.1[..])?;
-            }
-            // Then pass on fd
-            successor.send_fd(v.sock.fd())?;
-        }
+        write_sources(&mut successor, &mut rx, &mut source_count)?;
 
         if server.sources.blocking_read().len() == source_count {
             // We got all sources and now exiting
@@ -252,11 +279,36 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
         // Then pass on fd
         successor.send_fd(v.sock.fd())?;
     }
+
     successor.write_all(&0u64.to_be_bytes())?;
 
     // Next to you son :'') ...
     info!("Control now passed to new instance with pid {}, exiting.", successor_fh.id());
     std::process::exit(0);
+}
+
+fn write_sources(successor: &mut UnixStream,
+                rx: &mut UnboundedReceiver<MigrateSourceInfo>,
+                source_count: &mut usize) -> Result<()> {
+    while let Ok(v) = rx.try_recv() {
+        *source_count += 1;
+
+        // We first write source info
+        successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
+        successor.write_all(&v.info)?;
+        if let Some(v) = v.active {
+            // Then media stream
+            for frame in v.media {
+                successor.write_all(&frame.0.to_be_bytes())?;
+                successor.write_all(&frame.1.len().to_be_bytes())?;
+                successor.write_all(&frame.1[..])?;
+            }
+            // Then pass on fd
+            successor.send_fd(v.sock.fd())?;
+        }
+    }
+
+    Ok(())
 }
 
 fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_handle: Handle) -> Result<()> {
@@ -315,7 +367,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                 }
 
                 let snapshot = restore_channel_from_snapshot((snapshot_msgs, info.broadcast_snapshot.1, info.broadcast_snapshot.2));
-                let mut is_on_demand = None;
+                let mut is_relay = None;
                 let ret = SourceInfo {
                     mountpoint: info.mountpoint,
                     properties: info.properties,
@@ -327,9 +379,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     broadcast: Some(snapshot),
                     relayed: match info.is_relay {
                         MigrateIsRelay_v0_1_0::True { relayed_stream, relay_info, on_demand } => {
-                            if on_demand {
-                                is_on_demand = Some(relayed_stream.clone());
-                            };
+                            is_relay = Some((relayed_stream.clone(), on_demand));
                             Some(RelayStream {
                                 url: relayed_stream,
                                 info: relay_info,
@@ -340,7 +390,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     }
                 };
                 
-                if let Some(r) = is_on_demand {
+                if let Some((r, on_demand)) = is_relay {
                     let (stream, addr) = match read_stream_from_unix_socket(&mut predeseccor) {
                         Ok(v) => v,
                         Err(e) => {
@@ -355,10 +405,18 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     for master in &slave_tx {
                         if master.0.host_str().eq(&url.host_str())
                             && master.0.port().eq(&url.port()) {
-                            _ = master.1.send(RelaySourceMigrate::Active { stream, addr, info: ret });
+                            // TODO: What todo when config is switched from auth mode and
+                            // vice-versa???
+                            _ = match on_demand {
+                                true => master.1.send(RelaySourceMigrate::Active { stream, addr, info: ret }),
+                                // TODO
+                                false => master.1.send(RelaySourceMigrate::Active { stream, addr, info: ret })
+                            };
                             continue 'OUTER;
                         }
                     }
+                    // TODO: If we don't find a source from instance belonging to any master
+                    // What should we do with it
                 }
 
                 crate::client::ClientInfo::Source(ret)
@@ -407,11 +465,10 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                                     slave_tx.push((&master.url, tx));
                                     let serv = server.clone();
                                     runtime_handle.spawn(async move {
-                                        crate::relay::authenticated_mode_event_listener(
-                                            &serv, stream,
-                                            i, Some(rx)
+                                        crate::relay::authenticated_mode(
+                                            serv.clone(), i,
+                                            Some((stream, rx))
                                         ).await;
-                                        crate::relay::slave_instance(serv, i).await;
                                     });
                                     continue 'OUTER;
                                 }

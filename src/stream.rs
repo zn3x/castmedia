@@ -19,7 +19,7 @@ use crate::{
     source::{SourceBroadcast, SourceStats, MoveClientsCommand, MoveClientsType},
     migrate::{
         MigrateConnection, VersionedMigrateConnection,
-        MigrateSource, MigrateSourceInfo, MigrateCommand, MigrateIsRelay
+        MigrateSource, MigrateSourceInfo, MigrateCommand, MigrateIsRelay, ActiveSourceInfo
     },
     client::{RelayedInfo, StreamOnDemand},
     http::ChunkedResponseReader,
@@ -331,7 +331,7 @@ pub async fn broadcast(s: BroadcastInfo<'_>) {
     info!("Unmounted source on {}", s.mountpoint);
 }
 
-async fn unmount_source(server: &Server, mountpoint: &str) {
+pub async fn unmount_source(server: &Server, mountpoint: &str) {
     let mount = server.sources.write().await.remove(mountpoint);
 
     // Before closing, we need to give clients a fallback if one is configured
@@ -411,8 +411,10 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>,
     if let Ok(info) = postcard::to_stdvec(&info) {
         _ = migrate.source.send(MigrateSourceInfo {
             info,
-            media: snapshot.0,
-            sock: s.stream
+            active: Some(ActiveSourceInfo {
+                media: snapshot.0,
+                sock: s.stream
+            })
         });
     }
 
