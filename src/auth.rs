@@ -63,6 +63,7 @@ pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType, auth: O
                 // Check if we have necessary permissions before proceeding
                 match x {
                     Account::Source { mount, .. } => {
+                        // TODO: We are not checking if source with this mount is owned by user
                         if allowed == AllowedAuthType::Source {
                             has_permission = mount.iter().any(|x| x.path.eq("*") || x.path.eq(req_mount));
                         }
