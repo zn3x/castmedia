@@ -5,17 +5,12 @@ use castmedia::{
 
 use arg::{Args, ParseError, ParseKind};
 
-use tracing::error;
+use tracing::{error, warn};
 
-#[tokio::main]
-async fn main() {
+async fn parse_args() -> ArgParse {
     let args                = Vec::from_iter(std::env::args());
     let mut args: Vec<&str> = args.iter().map(AsRef::as_ref).collect::<Vec<_>>();
-    // Remove executable
-    if !args.remove(0).starts_with('/') {
-        eprintln!("Must be run with absolute path");
-        std::process::exit(1);
-    }
+    args.remove(0);
     let args = match ArgParse::from_args(args) {
         Ok(v) => v,
         Err(e) => {
@@ -28,7 +23,21 @@ async fn main() {
         }
     };
 
+    args
+}
+
+#[tokio::main]
+async fn main() {
+    let args = parse_args().await;
+
     tracing_subscriber::fmt().with_thread_names(true).with_max_level(tracing::Level::DEBUG).init();
+
+    if std::env::args()
+        .next()
+        .and_then(|path| if path.starts_with('/') { None } else { Some(()) })
+        .is_some() {
+        warn!("Executed with a relative path, restarting may fail if we can't resolve path");
+    }
 
     if args.gen {
         config::ServerSettings::create_default(&args.config_file);
