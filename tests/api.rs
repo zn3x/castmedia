@@ -179,7 +179,7 @@ async fn spawn_listener(addr: &str, mount: &str) -> tokio::process::Child {
         .args([
               "-o", "/dev/null",
               "-L",
-              "-H \"Icy-Metadata: 1\"",
+              "-s",
               &format!("http://{}{}", addr, mount)
         ])
         .spawn()
@@ -319,6 +319,8 @@ async fn public_api() {
         stats.as_array().unwrap().is_empty()
     );
 
+
+    let start      = chrono::offset::Utc::now().timestamp();
     let mut source = spawn_source(AUTH_SOURCE, ADMIN1, MOUNT_SOURCE).await;
     
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -329,9 +331,64 @@ async fn public_api() {
         stats.as_array().unwrap().first().unwrap().as_str().eq(&Some(MOUNT_SOURCE))
     );
 
-    let listener  = spawn_listener(BASE1, MOUNT_SOURCE).await;
-    let listener1 = spawn_listener(BASE1, MOUNT_SOURCE).await;
+    let mut listener  = spawn_listener(BASE1, MOUNT_SOURCE).await;
+    let mut listener1 = spawn_listener(BASE1, MOUNT_SOURCE).await;
 
+    let r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here1&song=title_here1", AUTH_ADMIN, ADMIN1, MOUNT_SOURCE)).await;
+    assert_eq!(r, 200);
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let stats = get_stat(&format!("/api/mountinfo?mount={}", MOUNT_SOURCE), "stats").await;
+    assert_eq!(2, stats.get("active_listeners").unwrap().as_u64().unwrap());
+    assert_eq!(2, stats.get("peak_listeners").unwrap().as_u64().unwrap());
+    assert!(stats.get("start_time").unwrap().as_i64().unwrap() >= start);
+    assert!(stats.get("start_time").unwrap().as_i64().unwrap() <= chrono::offset::Utc::now().timestamp());
+
+    let stats = get_stat("/api/serverinfo", "stats").await;
+    assert_eq!(2, stats.get("active_listeners").unwrap().as_u64().unwrap());
+    assert_eq!(2, stats.get("peak_listeners").unwrap().as_u64().unwrap());
+
+    let stats = get_stat(&format!("/api/mountinfo?mount={}", MOUNT_SOURCE), "metadata").await;
+    assert_eq!("url_here1", stats.get("url").unwrap().as_str().unwrap());
+    assert_eq!("title_here1", stats.get("title").unwrap().as_str().unwrap());
+
+    listener1.kill().await.ok();
+    let r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here2&song=title_here2", AUTH_ADMIN, ADMIN1, MOUNT_SOURCE)).await;
+    assert_eq!(r, 200);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let stats = get_stat(&format!("/api/mountinfo?mount={}", MOUNT_SOURCE), "stats").await;
+    assert_eq!(1, stats.get("active_listeners").unwrap().as_u64().unwrap());
+    assert_eq!(2, stats.get("peak_listeners").unwrap().as_u64().unwrap());
+
+    let stats = get_stat("/api/serverinfo", "stats").await;
+    assert_eq!(1, stats.get("active_listeners").unwrap().as_u64().unwrap());
+    assert_eq!(2, stats.get("peak_listeners").unwrap().as_u64().unwrap());
+
+    let stats = get_stat(&format!("/api/mountinfo?mount={}", MOUNT_SOURCE), "metadata").await;
+    assert_eq!("url_here2", stats.get("url").unwrap().as_str().unwrap());
+    assert_eq!("title_here2", stats.get("title").unwrap().as_str().unwrap());
+
+    let mut listener1 = spawn_listener(BASE1, MOUNT_SOURCE).await;
+    let mut listener2 = spawn_listener(BASE1, MOUNT_SOURCE).await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    listener2.kill().await.ok();
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let stats = get_stat(&format!("/api/mountinfo?mount={}", MOUNT_SOURCE), "stats").await;
+    assert_eq!(2, stats.get("active_listeners").unwrap().as_u64().unwrap());
+    assert_eq!(3, stats.get("peak_listeners").unwrap().as_u64().unwrap());
+
+    let stats = get_stat("/api/serverinfo", "stats").await;
+    assert_eq!(2, stats.get("active_listeners").unwrap().as_u64().unwrap());
+    assert_eq!(3, stats.get("peak_listeners").unwrap().as_u64().unwrap());
+
+    listener.kill().await.ok();
+    listener1.kill().await.ok();
     source.kill().await.ok();
     drop(server);
 }
