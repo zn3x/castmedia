@@ -188,7 +188,7 @@ async fn spawn_listener(addr: &str, mount: &str) -> tokio::process::Child {
 
 #[tokio::test]
 async fn admin_api() {
-    let server = spawn_server(CONFIG_ADMIN_API, "admin_api.yaml").await;
+    let mut server = spawn_server(CONFIG_ADMIN_API, "admin_api.yaml").await;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -234,6 +234,18 @@ async fn admin_api() {
     assert_eq!(r, 401);
     r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_INVALID, ADMIN)).await;
     assert_eq!(r, 401);
+    r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_SOURCE, ADMIN)).await;
+    assert_eq!(r, 401);
+    r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_SLAVE, ADMIN)).await;
+    assert_eq!(r, 401);
+    r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_INVALID, ADMIN)).await;
+    assert_eq!(r, 401);
+
+    // Creating a listener and a new source
+    let mut listener = spawn_listener(BASE, MOUNT_SOURCE).await;
+    let mut source1  = spawn_source(AUTH_SOURCE1, ADMIN, MOUNT_SOURCE1).await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Checking admin api that source can access given that it's on own mount
     //
@@ -269,7 +281,78 @@ async fn admin_api() {
     assert_eq!(r, 200);
     assert_fallback(MOUNT_SOURCE, Some(MOUNT_SOURCE1)).await;
 
+    // Listmounts for admin
+    let mounts = get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let mounts = mounts.as_object()
+        .unwrap();
+    assert!(mounts.contains_key(MOUNT_SOURCE));
+    let stat = mounts
+        .get(MOUNT_SOURCE)
+        .unwrap()
+        .get("properties").unwrap();
+    assert_eq!("audio/mpeg", stat.get("content_type").unwrap().as_str().unwrap());
+
+    let clients = get_response(&format!("http://{}@{}/admin/listclients?mount={}", AUTH_ADMIN, ADMIN, MOUNT_SOURCE)).await
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let clients = clients.as_object()
+        .unwrap();
+    assert_eq!(1, clients.len());
+    let cl_id = clients.iter().next().unwrap().0;
+
+    // Testing killing clients
+    r = get_status_code(&format!("http://{}@{}/admin/killclient?mount={}&id={}", AUTH_ADMIN, ADMIN, MOUNT_SOURCE, cl_id)).await;
+    assert_eq!(r, 200);
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    
+    let status = listener.try_wait();
+    assert!(matches!(status, Ok(Some(_))));
+
+    // Testing killing source
+    r = get_status_code(&format!("http://{}@{}/admin/killsource?mount={}", AUTH_ADMIN, ADMIN, MOUNT_SOURCE1)).await;
+    assert_eq!(r, 200);
+    
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let mounts = get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let mounts = mounts.as_object()
+        .unwrap();
+    assert!(!mounts.contains_key(MOUNT_SOURCE1));
+    
+    let status = source1.try_wait();
+    assert!(matches!(status, Ok(Some(_))));
+
+    // Testing restarting server
+    r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_ADMIN, ADMIN)).await;
+    assert_eq!(r, 200);
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let status = server.child.try_wait();
+    assert!(matches!(status, Ok(Some(_))));
+
+    let mounts = get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+    let mounts = mounts.as_object()
+        .unwrap();
+    assert!(mounts.contains_key(MOUNT_SOURCE));
+
+    // Stopping server
+    r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_ADMIN, ADMIN)).await;
+    assert_eq!(r, 200);
+
+    listener.kill().await.ok();
     source.kill().await.ok();
+    source1.kill().await.ok();
     drop(server);
 }
 
