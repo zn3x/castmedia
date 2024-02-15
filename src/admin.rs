@@ -339,6 +339,17 @@ async fn server_restart(session: &mut ClientSession, req: AdminRequest) -> Resul
     Ok(())
 }
 
+async fn server_shutdown(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
+    let user_id = auth::admin_auth(session, req.auth).await?;
+    let sid     = &session.server.config.info.id;
+
+    _ = response::ok_200(&mut session.stream, sid).await;
+
+    info!("Stopping server as requested by admin {}", user_id);
+
+    std::process::exit(0);
+}
+
 async fn mount_updates(mut session: ClientSession, req: AdminRequest) -> Result<()> {
     let user_id = auth::auth(&mut session, AllowedAuthType::Slave, req.auth, "").await?;
 
@@ -375,6 +386,8 @@ pub async fn handle_request<'a>(mut session: ClientSession, req: AdminRequest) -
         "/admin/killclient" => kill_client(&mut session, req).await,
         // Do a zero downtime server restart
         "/admin/restart" => server_restart(&mut session, req).await,
+        // Shutdown server
+        "/admin/shutdown" => server_shutdown(&mut session, req).await,
         
         // New api for castmedia
         //
