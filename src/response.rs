@@ -131,7 +131,7 @@ Content-Type: application/json; charset=utf-8\r\n").await?;
     }
 
     pub async fn flush(&self, stream: &mut Stream) -> Result<()> {
-        stream.write_all(b"0\r\n").await?;
+        stream.write_all(b"0\r\n\r\n").await?;
         stream.flush().await?;
         Ok(())
     }
