@@ -9,7 +9,8 @@ use crate::{server::{ClientSession, Server}, response, config::Account};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AllowedAuthType {
-    Source,
+    SourceApi,
+    SourceMount,
     Slave
 }
 
@@ -63,9 +64,20 @@ pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType, auth: O
                 // Check if we have necessary permissions before proceeding
                 match x {
                     Account::Source { mount, .. } => {
-                        // TODO: We are not checking if source with this mount is owned by user
-                        if allowed == AllowedAuthType::Source {
+                        // First we check if user has access to specific mount
+                        if allowed == AllowedAuthType::SourceApi ||
+                           allowed == AllowedAuthType::SourceMount {
                             has_permission = mount.iter().any(|x| x.path.eq("*") || x.path.eq(req_mount));
+                        }
+                        // Then we verifiy if it's owned by user
+                        if allowed == AllowedAuthType::SourceApi {
+                            has_permission = has_permission && match session.server.sources.read().await.get(req_mount) {
+                                Some(v) => match &v.access {
+                                    crate::source::SourceAccessType::SourceMount { username } => username.eq(&user),
+                                    _ => false
+                                },
+                                None => false
+                            }
                         }
                     },
                     Account::Admin { .. } => {
