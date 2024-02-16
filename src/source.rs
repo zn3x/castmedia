@@ -103,6 +103,18 @@ impl SourceStats {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum SourceAccessType {
+    SourceMount {
+        /// Account username used to mount source
+        username: String
+    },
+    RelayedMount {
+        /// URL stream source if this is a relayed stream
+        relayed_source: String,
+    }
+}
+
 pub struct Source {
     pub properties: Arc<IcyProperties>,
     pub metadata: Arc<RwLock<Option<IcyMetadata>>>,
@@ -111,8 +123,7 @@ pub struct Source {
     pub stats: Arc<SourceStats>,
     /// Fallback mountpoint in case this one is down
     pub fallback: Option<String>,
-    /// URL stream source if this is a relayed stream
-    pub relayed_source: Option<String>,
+    pub access: SourceAccessType,
     /// Notify relay task to start reading stream
     /// Used when we get first listener for a source
     pub on_demand_notify_reader: Option<diatomic_waker::WakeSource>,
@@ -157,7 +168,7 @@ pub enum MoveClientsType {
 impl Source {
     pub fn new(properties: IcyProperties,
                fallback: Option<String>,
-               relayed_source: Option<String>,
+               access: SourceAccessType,
                migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
         let size: NonZeroUsize  = 1.try_into().expect("1 should be posetif");
         let (tx, rx)            = match migrated {
@@ -173,7 +184,7 @@ impl Source {
             clients: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(SourceStats::new()),
             fallback,
-            relayed_source,
+            access,
             on_demand_notify_reader: None,
             broadcast: rx,
             meta_broadcast_sender: Mutex::new(tx1.clone()),
@@ -296,7 +307,8 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
             queue_size: 0,
             broadcast: None,
             metadata: None,
-            relayed: None
+            relayed: None,
+            access: SourceAccessType::SourceMount { username: user_id }
         }
     ).await?;
 
@@ -304,12 +316,11 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
 }
 
 pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Option<RelayBroadcastStatus>> {
-    let (relayed, on_demand, stream_source_url) = match info.relayed {
+    let (relayed, on_demand, stream_src_url) = match info.relayed {
         Some(v) => (Some(v.info), v.on_demand, Some(v.url)),
         None => (None, None, None)
     };
 
-    let stream_src_url       = stream_source_url.clone();
     let mut on_demand_notify = None;
     let source_stats;
     let mut broadcast;
@@ -326,7 +337,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
         on_demand_flag = false;
         let source;
         (source, broadcast, kill_notifier) = Source::new(info.properties, info.fallback,
-                                                         stream_source_url, info.broadcast);
+                                                         info.access, info.broadcast);
 
         // To prevent early readers from having no header
         if let Some(metadata) = info.metadata {

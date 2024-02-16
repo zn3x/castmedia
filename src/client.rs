@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::{
     server::{ClientSession, Stream, Server, Session},
     request::{read_request, Request, RequestType, ListenRequest},
-    source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast},
+    source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast, SourceAccessType},
     response, utils, admin, api,
     migrate::{MigrateClientInfo, MigrateClient, MigrateConnection, VersionedMigrateConnection}, broadcast::read_media_broadcast
 };
@@ -429,7 +429,8 @@ pub struct SourceInfo {
     pub queue_size: usize,
     pub broadcast: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,
     pub metadata: Option<Vec<u8>>,
-    pub relayed: Option<RelayStream>
+    pub relayed: Option<RelayStream>,
+    pub access: SourceAccessType
 }
 
 pub struct RelayStream {

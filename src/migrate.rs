@@ -11,7 +11,7 @@ use tracing::{error, info};
 use url::Url;
 
 use crate::{
-    source::IcyProperties_v0_1_0,
+    source::{IcyProperties_v0_1_0, SourceAccessType},
     client::{
         ClientProperties_v0_1_0, handle_migrated,
         ListenerRestoreInfo, SourceInfo,
@@ -44,7 +44,9 @@ pub struct MigrateSource {
 #[obake(derive(Serialize, Deserialize))]
 #[derive(Serialize, Deserialize)]
 pub enum MigrateIsRelay {
-    False,
+    False {
+        username: String
+    },
     True {
         relayed_stream: String,
         #[obake(inherit)]
@@ -377,6 +379,12 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     fallback: info.fallback,
                     queue_size: info.queue_size as usize,
                     broadcast: Some(snapshot),
+                    access: match &info.is_relay {
+                        MigrateIsRelay::True { relayed_stream, .. } => {
+                            SourceAccessType::RelayedMount { relayed_source: relayed_stream.clone() }
+                        },
+                        MigrateIsRelay::False { username } => SourceAccessType::SourceMount { username: username.clone() }
+                    },
                     relayed: match info.is_relay {
                         MigrateIsRelay_v0_1_0::True { relayed_stream, relay_info, on_demand } => {
                             is_relay = Some((relayed_stream.clone(), on_demand));
@@ -386,7 +394,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                                 on_demand: None
                             })
                         },
-                        MigrateIsRelay_v0_1_0::False => None
+                        MigrateIsRelay_v0_1_0::False { .. } => None
                     }
                 };
                 

@@ -22,7 +22,7 @@ use crate::{
     utils::{get_header, basic_auth, concat_path}, config::MasterServerRelayScheme,
     http::{ResponseReader, ChunkedResponseReader},
     client::{SourceInfo, RelayedInfo, RelayStream, StreamOnDemand},
-    source::{IcyProperties, Source},
+    source::{IcyProperties, Source, SourceAccessType},
     response::ChunkedResponse,
     broadcast::relay_broadcast_metadata,
     migrate::{MigrateCommand, MigrateConnection, MigrateMasterMountUpdates, MigrateMasterMountUpdatesInfo, VersionedMigrateConnection, MigrateSlaveMountUpdates, MigrateInactiveOnDemandSource}, stream::RelayBroadcastStatus
@@ -442,7 +442,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                     let (mut source, broadcast,
                          kill_notifier)            = Source::new(
                              info.properties.clone(), info.fallback.clone(),
-                             Some(info.relayed.as_ref().unwrap().url.clone()),
+                             info.access.clone(),
                              info.broadcast.take());
                     source.on_demand_notify_reader = Some(wake_src);
 
@@ -597,8 +597,8 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                 // so we don't found source still existant after
                 let mut lock = serv.sources.write().await;
                 if let Some(source) = lock.get_mut(&mount) {
-                    if let Some(v) = &source.relayed_source {
-                        if v.starts_with(serv.config.master[master_ind].url.as_str()) {
+                    if let SourceAccessType::RelayedMount { relayed_source } = &source.access {
+                        if relayed_source.starts_with(serv.config.master[master_ind].url.as_str()) {
                             // This is the same source
                             let kill = source.kill.take();
                             drop(lock);
@@ -630,7 +630,10 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
             let wake_src                   = wake_sink.source();
             let url                        = concat_path(master.as_str(), &mount);
             let (mut source, broadcast,
-                 kill_notifier)            = Source::new(properties, None, Some(url), None);
+                 kill_notifier)            = Source::new(
+                     properties, None,
+                     SourceAccessType::RelayedMount { relayed_source: url },
+                     None);
             source.on_demand_notify_reader = Some(wake_src);
 
             let stats = source.stats.clone();
@@ -806,6 +809,7 @@ async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
                     queue_size: 0,
                     broadcast: None,
                     metadata: None,
+                    access: SourceAccessType::RelayedMount { relayed_source: url.clone() },
                     relayed: Some(RelayStream {
                         info: RelayedInfo {
                             metaint: metaint.unwrap_or(0),

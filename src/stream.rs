@@ -16,7 +16,7 @@ use tokio::{time::timeout, io::AsyncReadExt, sync::oneshot};
 
 use crate::{
     server::{Stream, Session, Server},
-    source::{SourceBroadcast, SourceStats, MoveClientsCommand, MoveClientsType},
+    source::{SourceBroadcast, SourceStats, MoveClientsCommand, MoveClientsType, SourceAccessType},
     migrate::{
         MigrateConnection, VersionedMigrateConnection,
         MigrateSource, MigrateSourceInfo, MigrateCommand, MigrateIsRelay, ActiveSourceInfo
@@ -366,7 +366,7 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>,
     let migrate = s.migrate
         .expect("Got migrate notice with closed mpsc");
     // Now we fetch all info needed
-    let (properties, fallback, metadata, relayed_stream);
+    let (properties, fallback, metadata, access);
     {
         let lock   = s.server.sources.read().await;
         let source = lock.get(s.mountpoint)
@@ -378,10 +378,7 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>,
             Some(v) => v.as_ref().clone().1,
             None    => metadata_encode(&None, &None)
         };
-        relayed_stream = match &source.relayed_source {
-            Some(v) => v.clone(),
-            None    => String::new()
-        }
+        access = source.access.clone();
     }
 
     let mountpoint = s.mountpoint.to_owned();
@@ -397,11 +394,11 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>,
             metadata,
             queue_size: s.queue_size as u64,
             chunked: s.chunked,
-            is_relay: match relay {
-                None    => MigrateIsRelay::False,
-                Some(v) => MigrateIsRelay::True {
-                    relayed_stream,
-                    relay_info: v,
+            is_relay: match access {
+                SourceAccessType::SourceMount { username } => MigrateIsRelay::False { username },
+                SourceAccessType::RelayedMount { relayed_source } => MigrateIsRelay::True {
+                    relayed_stream: relayed_source,
+                    relay_info: relay.expect("Should have non empty RelayInfo on source migration"),
                     on_demand
                 }
             },

@@ -12,7 +12,7 @@ use crate::{
     response::{self, ChunkedResponse},
     auth::{self, AllowedAuthType}, utils,
     broadcast::broadcast_metadata,
-    source::{MoveClientsCommand, MoveClientsType},
+    source::{MoveClientsCommand, MoveClientsType, SourceAccessType},
     migrate
 };
 
@@ -89,10 +89,16 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
                 "start_time": source.1.stats.start_time
             }
         });
-        if let Some(s) = source.1.relayed_source.as_ref() {
-            sinfo.as_object_mut()
-                .expect("Listmounts json response should be an object")
-                .insert("stream_source".to_string(), serde_json::to_value(s)?);
+
+        let s = sinfo.as_object_mut()
+            .expect("Listmounts json response should be an object");
+        match &source.1.access {
+            SourceAccessType::SourceMount { username } => {
+                s.insert("source_username".to_string(), serde_json::to_value(username)?);
+            },
+            SourceAccessType::RelayedMount { relayed_source } => {
+                s.insert("stream_source".to_string(), serde_json::to_value(relayed_source)?);
+            }
         }
         sources.insert(source.0.to_owned(), sinfo);
     }
