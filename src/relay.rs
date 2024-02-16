@@ -818,7 +818,6 @@ async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
                             metadata_remaining: 0,
                             metadata_buffer: Vec::new()
                         },
-                        url,
                         on_demand
                     })
                 }

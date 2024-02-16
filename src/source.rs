@@ -316,9 +316,13 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
 }
 
 pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Option<RelayBroadcastStatus>> {
-    let (relayed, on_demand, stream_src_url) = match info.relayed {
-        Some(v) => (Some(v.info), v.on_demand, Some(v.url)),
-        None => (None, None, None)
+    let (relayed, on_demand, stream_src_url) = match (info.relayed, &info.access) {
+        (Some(v), SourceAccessType::RelayedMount { relayed_source }) => (
+            Some(v.info), v.on_demand,
+            Some(relayed_source.clone())
+        ),
+        (None, _) => (None, None, None),
+        _         => unreachable!()
     };
 
     let mut on_demand_notify = None;

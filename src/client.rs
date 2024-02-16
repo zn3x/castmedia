@@ -434,7 +434,6 @@ pub struct SourceInfo {
 }
 
 pub struct RelayStream {
-    pub url: String,
     pub on_demand: Option<StreamOnDemand>,
     pub info: RelayedInfo
 }

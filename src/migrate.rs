@@ -370,6 +370,22 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
 
                 let snapshot = restore_channel_from_snapshot((snapshot_msgs, info.broadcast_snapshot.1, info.broadcast_snapshot.2));
                 let mut is_relay = None;
+                let (access, relayed) = match info.is_relay {
+                    MigrateIsRelay::True { relayed_stream, on_demand, relay_info } => {
+                        is_relay = Some((relayed_stream.clone(), on_demand));
+                        (
+                            SourceAccessType::RelayedMount { relayed_source: relayed_stream },
+                            Some(RelayStream {
+                                info: relay_info,
+                                on_demand: None
+                            })
+                        )
+                    },
+                    MigrateIsRelay::False { username } => (
+                        SourceAccessType::SourceMount { username: username.clone() },
+                        None
+                    )
+                };
                 let ret = SourceInfo {
                     mountpoint: info.mountpoint,
                     properties: info.properties,
@@ -379,23 +395,8 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     fallback: info.fallback,
                     queue_size: info.queue_size as usize,
                     broadcast: Some(snapshot),
-                    access: match &info.is_relay {
-                        MigrateIsRelay::True { relayed_stream, .. } => {
-                            SourceAccessType::RelayedMount { relayed_source: relayed_stream.clone() }
-                        },
-                        MigrateIsRelay::False { username } => SourceAccessType::SourceMount { username: username.clone() }
-                    },
-                    relayed: match info.is_relay {
-                        MigrateIsRelay::True { relayed_stream, relay_info, on_demand } => {
-                            is_relay = Some((relayed_stream.clone(), on_demand));
-                            Some(RelayStream {
-                                url: relayed_stream,
-                                info: relay_info,
-                                on_demand: None
-                            })
-                        },
-                        MigrateIsRelay::False { .. } => None
-                    }
+                    access,
+                    relayed
                 };
                 
                 if let Some((r, on_demand)) = is_relay {
