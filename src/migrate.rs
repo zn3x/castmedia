@@ -353,7 +353,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
         let source_any: VersionedMigrateConnection = postcard::from_bytes(&buf[..len])?;
         let source: MigrateConnection = source_any.into();
         let cl_info = match source {
-            MigrateConnection_v0_1_0::Source { info } => {
+            MigrateConnection::Source { info } => {
                 // We now read media
                 let mut snapshot_msgs = Vec::new();
                 for _ in 0..info.broadcast_snapshot.0 {
@@ -386,7 +386,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                         MigrateIsRelay::False { username } => SourceAccessType::SourceMount { username: username.clone() }
                     },
                     relayed: match info.is_relay {
-                        MigrateIsRelay_v0_1_0::True { relayed_stream, relay_info, on_demand } => {
+                        MigrateIsRelay::True { relayed_stream, relay_info, on_demand } => {
                             is_relay = Some((relayed_stream.clone(), on_demand));
                             Some(RelayStream {
                                 url: relayed_stream,
@@ -394,7 +394,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                                 on_demand: None
                             })
                         },
-                        MigrateIsRelay_v0_1_0::False { .. } => None
+                        MigrateIsRelay::False { .. } => None
                     }
                 };
                 
@@ -429,7 +429,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
 
                 crate::client::ClientInfo::Source(ret)
             },
-            MigrateConnection_v0_1_0::Client { info } => {
+            MigrateConnection::Client { info } => {
                 crate::client::ClientInfo::Listener(ListenerInfo {
                     mountpoint: info.mountpoint,
                     migrated: Some(ListenerRestoreInfo {
@@ -439,13 +439,13 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     properties: info.properties
                 })
             },
-            MigrateConnection_v0_1_0::MasterMountUpdates { info } => {
+            MigrateConnection::MasterMountUpdates { info } => {
                 crate::client::ClientInfo::MasterMountUpdates(MasterMountUpdatesInfo {
                     mounts: info.mounts,
                     user_id: info.user_id
                 })
             },
-            MigrateConnection_v0_1_0::SlaveMountUpdates { info } => {
+            MigrateConnection::SlaveMountUpdates { info } => {
                 // Migrating slave mount update connections
                 // This must always be called sent to us before
                 // any SlaveInactiveOnDemandSource is sent
@@ -486,7 +486,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                 }
                 continue;
             },
-            MigrateConnection_v0_1_0::SlaveInactiveOnDemandSource { info } => {
+            MigrateConnection::SlaveInactiveOnDemandSource { info } => {
                 // Here we only ever add this inactive ondemand source when
                 // New loaded configuration states that we have same master
                 // but with ondemand flag true
