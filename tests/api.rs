@@ -16,6 +16,7 @@ account:
     pass: 0$pass
     role: source
     mount:
+      - path: '/stream.mp3'
       - path: '/stream1.mp3'
   slave:
     pass: 0$pass
@@ -195,164 +196,182 @@ async fn admin_api() {
     let mut source = spawn_source(AUTH_SOURCE, ADMIN, MOUNT_SOURCE).await;
 
     let mut r;
-    // Checking admin api services that only admin should be able to reach
-    r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_ADMIN, BASE)).await;
-    assert_eq!(r, 405);
-    r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_SOURCE, BASE)).await;
-    assert_eq!(r, 405);
-    r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_SLAVE, BASE)).await;
-    assert_eq!(r, 405);
-    r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_INVALID, BASE)).await;
-    assert_eq!(r, 405);
-    r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_ADMIN, BASE)).await;
-    assert_eq!(r, 405);
-    r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_SOURCE, BASE)).await;
-    assert_eq!(r, 405);
-    r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_INVALID, BASE)).await;
-    assert_eq!(r, 405);
-    r = get_status_code(&format!("http://{}@{}/admin/mountupdates", AUTH_INVALID, BASE)).await;
-    assert_eq!(r, 405);
-    r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_ADMIN, ADMIN)).await;
-    assert_eq!(r, 200);
-    r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_SOURCE, ADMIN)).await;
-    assert_eq!(r, 401);
-    r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_SLAVE, ADMIN)).await;
-    assert_eq!(r, 401);
-    r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_INVALID, ADMIN)).await;
-    assert_eq!(r, 401);
-    r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await;
-    assert_eq!(r, 200);
-    r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_SOURCE, ADMIN)).await;
-    assert_eq!(r, 401);
-    r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_SLAVE, ADMIN)).await;
-    assert_eq!(r, 401);
-    r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_INVALID, ADMIN)).await;
-    assert_eq!(r, 401);
-    r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_SOURCE, ADMIN)).await;
-    assert_eq!(r, 401);
-    r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_SLAVE, ADMIN)).await;
-    assert_eq!(r, 401);
-    r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_INVALID, ADMIN)).await;
-    assert_eq!(r, 401);
-    r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_SOURCE, ADMIN)).await;
-    assert_eq!(r, 401);
-    r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_SLAVE, ADMIN)).await;
-    assert_eq!(r, 401);
-    r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_INVALID, ADMIN)).await;
-    assert_eq!(r, 401);
 
-    // Creating a listener and a new source
-    let mut listener = spawn_listener(BASE, MOUNT_SOURCE).await;
-    let mut source1  = spawn_source(AUTH_SOURCE1, ADMIN, MOUNT_SOURCE1).await;
+    // Repeating test to test consistency when restarting
+    for _ in 0..3 {
+        // Checking admin api services that only admin should be able to reach
+        r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_ADMIN, BASE)).await;
+        assert_eq!(r, 405);
+        r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_SOURCE, BASE)).await;
+        assert_eq!(r, 405);
+        r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_SLAVE, BASE)).await;
+        assert_eq!(r, 405);
+        r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_INVALID, BASE)).await;
+        assert_eq!(r, 405);
+        r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_ADMIN, BASE)).await;
+        assert_eq!(r, 405);
+        r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_SOURCE, BASE)).await;
+        assert_eq!(r, 405);
+        r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_INVALID, BASE)).await;
+        assert_eq!(r, 405);
+        r = get_status_code(&format!("http://{}@{}/admin/mountupdates", AUTH_INVALID, BASE)).await;
+        assert_eq!(r, 405);
+        r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_ADMIN, ADMIN)).await;
+        assert_eq!(r, 200);
+        r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_SOURCE, ADMIN)).await;
+        assert_eq!(r, 401);
+        r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_SLAVE, ADMIN)).await;
+        assert_eq!(r, 401);
+        r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_INVALID, ADMIN)).await;
+        assert_eq!(r, 401);
+        r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await;
+        assert_eq!(r, 200);
+        r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_SOURCE, ADMIN)).await;
+        assert_eq!(r, 401);
+        r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_SLAVE, ADMIN)).await;
+        assert_eq!(r, 401);
+        r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_INVALID, ADMIN)).await;
+        assert_eq!(r, 401);
+        r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_SOURCE, ADMIN)).await;
+        assert_eq!(r, 401);
+        r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_SLAVE, ADMIN)).await;
+        assert_eq!(r, 401);
+        r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_INVALID, ADMIN)).await;
+        assert_eq!(r, 401);
+        r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_SOURCE, ADMIN)).await;
+        assert_eq!(r, 401);
+        r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_SLAVE, ADMIN)).await;
+        assert_eq!(r, 401);
+        r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_INVALID, ADMIN)).await;
+        assert_eq!(r, 401);
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+        // Creating a listener and a new source
+        let mut listener = spawn_listener(BASE, MOUNT_SOURCE).await;
+        let mut source1  = spawn_source(AUTH_SOURCE1, ADMIN, MOUNT_SOURCE1).await;
 
-    // Checking admin api that source can access given that it's on own mount
-    //
-    // Change metadata
-    r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here&song=title_here", AUTH_ADMIN, ADMIN, MOUNT_SOURCE)).await;
-    assert_eq!(r, 200);
-    assert_medatadata(MOUNT_SOURCE, "url_here", "title_here").await;
-    r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here1&song=title_here1", AUTH_SOURCE, ADMIN, MOUNT_SOURCE)).await;
-    assert_eq!(r, 200);
-    assert_medatadata(MOUNT_SOURCE, "url_here1", "title_here1").await;
-    r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here2&song=title_here2", AUTH_SLAVE, ADMIN, MOUNT_SOURCE)).await;
-    assert_eq!(r, 401);
-    assert_medatadata(MOUNT_SOURCE, "url_here1", "title_here1").await;
-    r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here3&song=title_here3", AUTH_INVALID, ADMIN, MOUNT_SOURCE)).await;
-    assert_eq!(r, 401);
-    assert_medatadata(MOUNT_SOURCE, "url_here1", "title_here1").await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Change fallback
-    r = get_status_code(&format!("http://{}@{}/admin/fallbacks?mount={}&fallback={}", AUTH_ADMIN, ADMIN, MOUNT_SOURCE, MOUNT_SOURCE1)).await;
-    assert_eq!(r, 200);
-    assert_fallback(MOUNT_SOURCE, Some(MOUNT_SOURCE1)).await;
-    r = get_status_code(&format!("http://{}@{}/admin/fallbacks?mount={}", AUTH_SOURCE, ADMIN, MOUNT_SOURCE)).await;
-    assert_eq!(r, 200);
-    assert_fallback(MOUNT_SOURCE, None).await;
-    r = get_status_code(&format!("http://{}@{}/admin/fallbacks?mount={}", AUTH_SLAVE, ADMIN, MOUNT_SOURCE)).await;
-    assert_eq!(r, 401);
-    assert_fallback(MOUNT_SOURCE, None).await;
-    r = get_status_code(&format!("http://{}@{}/admin/fallbacks?mount={}", AUTH_INVALID, ADMIN, MOUNT_SOURCE)).await;
-    assert_eq!(r, 401);
-    assert_fallback(MOUNT_SOURCE, None).await;
+        // Checking admin api that source can access given that it's on own mount
+        //
+        // Change metadata
+        //
+        // for /stream.mp3
+        r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here&song=title_here", AUTH_ADMIN, ADMIN, MOUNT_SOURCE)).await;
+        assert_eq!(r, 200);
+        assert_medatadata(MOUNT_SOURCE, "url_here", "title_here").await;
+        r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here1&song=title_here1", AUTH_SOURCE, ADMIN, MOUNT_SOURCE)).await;
+        assert_eq!(r, 200);
+        assert_medatadata(MOUNT_SOURCE, "url_here1", "title_here1").await;
+        r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here2&song=title_here2", AUTH_SOURCE1, ADMIN, MOUNT_SOURCE)).await;
+        assert_eq!(r, 401);
+        assert_medatadata(MOUNT_SOURCE, "url_here1", "title_here1").await;
+        r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here3&song=title_here3", AUTH_SLAVE, ADMIN, MOUNT_SOURCE)).await;
+        assert_eq!(r, 401);
+        assert_medatadata(MOUNT_SOURCE, "url_here1", "title_here1").await;
+        r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here4&song=title_here4", AUTH_INVALID, ADMIN, MOUNT_SOURCE)).await;
+        assert_eq!(r, 401);
+        assert_medatadata(MOUNT_SOURCE, "url_here1", "title_here1").await;
+        // for /stream1.mp3
+        r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here1&song=title_here1", AUTH_SOURCE, ADMIN, MOUNT_SOURCE1)).await;
+        assert_eq!(r, 401);
+        assert_medatadata(MOUNT_SOURCE1, "", "").await;
+        r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here2&song=title_here2", AUTH_SOURCE1, ADMIN, MOUNT_SOURCE1)).await;
+        assert_eq!(r, 200);
+        assert_medatadata(MOUNT_SOURCE1, "url_here2", "title_here2").await;
 
-    r = get_status_code(&format!("http://{}@{}/admin/fallbacks?mount={}&fallback={}", AUTH_SOURCE, ADMIN, MOUNT_SOURCE, MOUNT_SOURCE1)).await;
-    assert_eq!(r, 200);
-    assert_fallback(MOUNT_SOURCE, Some(MOUNT_SOURCE1)).await;
+        // Change fallback
+        r = get_status_code(&format!("http://{}@{}/admin/fallbacks?mount={}&fallback={}", AUTH_ADMIN, ADMIN, MOUNT_SOURCE, MOUNT_SOURCE1)).await;
+        assert_eq!(r, 200);
+        assert_fallback(MOUNT_SOURCE, Some(MOUNT_SOURCE1)).await;
+        r = get_status_code(&format!("http://{}@{}/admin/fallbacks?mount={}", AUTH_SOURCE, ADMIN, MOUNT_SOURCE)).await;
+        assert_eq!(r, 200);
+        assert_fallback(MOUNT_SOURCE, None).await;
+        r = get_status_code(&format!("http://{}@{}/admin/fallbacks?mount={}", AUTH_SLAVE, ADMIN, MOUNT_SOURCE)).await;
+        assert_eq!(r, 401);
+        assert_fallback(MOUNT_SOURCE, None).await;
+        r = get_status_code(&format!("http://{}@{}/admin/fallbacks?mount={}", AUTH_INVALID, ADMIN, MOUNT_SOURCE)).await;
+        assert_eq!(r, 401);
+        assert_fallback(MOUNT_SOURCE, None).await;
 
-    // Listmounts for admin
-    let mounts = get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await
-        .json::<serde_json::Value>()
-        .await
-        .unwrap();
-    let mounts = mounts.as_object()
-        .unwrap();
-    assert!(mounts.contains_key(MOUNT_SOURCE));
-    let stat = mounts
-        .get(MOUNT_SOURCE)
-        .unwrap()
-        .get("properties").unwrap();
-    assert_eq!("audio/mpeg", stat.get("content_type").unwrap().as_str().unwrap());
+        r = get_status_code(&format!("http://{}@{}/admin/fallbacks?mount={}&fallback={}", AUTH_SOURCE, ADMIN, MOUNT_SOURCE, MOUNT_SOURCE1)).await;
+        assert_eq!(r, 200);
+        assert_fallback(MOUNT_SOURCE, Some(MOUNT_SOURCE1)).await;
 
-    let clients = get_response(&format!("http://{}@{}/admin/listclients?mount={}", AUTH_ADMIN, ADMIN, MOUNT_SOURCE)).await
-        .json::<serde_json::Value>()
-        .await
-        .unwrap();
-    let clients = clients.as_object()
-        .unwrap();
-    assert_eq!(1, clients.len());
-    let cl_id = clients.iter().next().unwrap().0;
+        // Listmounts for admin
+        let mounts = get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        let mounts = mounts.as_object()
+            .unwrap();
+        assert!(mounts.contains_key(MOUNT_SOURCE));
+        let stat = mounts
+            .get(MOUNT_SOURCE)
+            .unwrap()
+            .get("properties").unwrap();
+        assert_eq!("audio/mpeg", stat.get("content_type").unwrap().as_str().unwrap());
 
-    // Testing killing clients
-    r = get_status_code(&format!("http://{}@{}/admin/killclient?mount={}&id={}", AUTH_ADMIN, ADMIN, MOUNT_SOURCE, cl_id)).await;
-    assert_eq!(r, 200);
+        let clients = get_response(&format!("http://{}@{}/admin/listclients?mount={}", AUTH_ADMIN, ADMIN, MOUNT_SOURCE)).await
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        let clients = clients.as_object()
+            .unwrap();
+        assert_eq!(1, clients.len());
+        let cl_id = clients.iter().next().unwrap().0;
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    
-    let status = listener.try_wait();
-    assert!(matches!(status, Ok(Some(_))));
+        // Testing killing clients
+        r = get_status_code(&format!("http://{}@{}/admin/killclient?mount={}&id={}", AUTH_ADMIN, ADMIN, MOUNT_SOURCE, cl_id)).await;
+        assert_eq!(r, 200);
 
-    // Testing killing source
-    r = get_status_code(&format!("http://{}@{}/admin/killsource?mount={}", AUTH_ADMIN, ADMIN, MOUNT_SOURCE1)).await;
-    assert_eq!(r, 200);
-    
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let mounts = get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await
-        .json::<serde_json::Value>()
-        .await
-        .unwrap();
-    let mounts = mounts.as_object()
-        .unwrap();
-    assert!(!mounts.contains_key(MOUNT_SOURCE1));
-    
-    let status = source1.try_wait();
-    assert!(matches!(status, Ok(Some(_))));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        
+        let status = listener.try_wait();
+        assert!(matches!(status, Ok(Some(_))));
 
-    // Testing restarting server
-    r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_ADMIN, ADMIN)).await;
-    assert_eq!(r, 200);
+        // Testing killing source
+        r = get_status_code(&format!("http://{}@{}/admin/killsource?mount={}", AUTH_ADMIN, ADMIN, MOUNT_SOURCE1)).await;
+        assert_eq!(r, 200);
+        
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let mounts = get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        let mounts = mounts.as_object()
+            .unwrap();
+        assert!(!mounts.contains_key(MOUNT_SOURCE1));
+        
+        let status = source1.try_wait();
+        assert!(matches!(status, Ok(Some(_))));
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+        // Testing restarting server
+        r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_ADMIN, ADMIN)).await;
+        assert_eq!(r, 200);
 
-    let status = server.child.try_wait();
-    assert!(matches!(status, Ok(Some(_))));
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let mounts = get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await
-        .json::<serde_json::Value>()
-        .await
-        .unwrap();
-    let mounts = mounts.as_object()
-        .unwrap();
-    assert!(mounts.contains_key(MOUNT_SOURCE));
+        let status = server.child.try_wait();
+        assert!(matches!(status, Ok(Some(_))));
+
+        let mounts = get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        let mounts = mounts.as_object()
+            .unwrap();
+        assert!(mounts.contains_key(MOUNT_SOURCE));
+
+        listener.kill().await.ok();
+        source1.kill().await.ok();
+    }
 
     // Stopping server
     r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_ADMIN, ADMIN)).await;
     assert_eq!(r, 200);
 
-    listener.kill().await.ok();
+
     source.kill().await.ok();
-    source1.kill().await.ok();
     drop(server);
 }
 
