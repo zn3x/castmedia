@@ -20,17 +20,26 @@ use crate::{
 
 pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {
     fn fd(&self) -> i32;
+    fn local_addr(&self) -> Result<SocketAddr>;
 }
 
 impl Socket for BufStream<TcpStream> {
     fn fd(&self) -> i32 {
         self.get_ref().as_raw_fd()
     }
+
+    fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.get_ref().local_addr()?)
+    }
 }
 
 impl Socket for BufStream<TlsStream<TcpStream>> {
     fn fd(&self) -> i32 {
         unreachable!("Can't migrate Tls connection")
+    }
+
+    fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.get_ref().get_ref().get_ref().get_ref().local_addr()?)
     }
 }
 

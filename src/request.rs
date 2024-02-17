@@ -124,14 +124,7 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
             }))
         },
         "GET" => {
-            let source_id = utils::clean_path(&path);
-
-            if source_id.starts_with("/admin/") {
-                if !session.admin_addr {
-                    // If this is not an admin interface we properly block this request
-                    return Err(anyhow::Error::msg("Attempt to access admin api from public interface"));
-                }
-
+            if path.starts_with("/admin/") {
                 let auth = get_basic_auth(&request.headers)?;
                 // Warning!! Don't forget to check user && pass are empty
                 if let Some((u, p)) = auth.as_ref() {
@@ -142,16 +135,16 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
 
                 let p = path.split('?').collect::<Vec<&str>>();
                 return Ok(RequestType::Admin(AdminRequest { path: p[0].to_owned(), queries, auth }));
-            } else if source_id.starts_with("/api/") {
+            } else if path.starts_with("/api/") {
                 let p = path.split('?').collect::<Vec<&str>>();
                 return Ok(RequestType::Api(ApiRequest { path: p[0].to_owned(), queries }));
             }
 
-            if !session.server.sources.read().await.contains_key(&source_id) {
+            if !session.server.sources.read().await.contains_key(&path) {
                 return Err(anyhow::Error::msg("Unknewn path wanted by client"));
             }
 
-            Ok(RequestType::Listen(ListenRequest { mountpoint: source_id }))
+            Ok(RequestType::Listen(ListenRequest { mountpoint: path }))
         },
         _ => Err(anyhow::Error::msg("Unknewn method sent by user"))
     }

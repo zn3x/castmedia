@@ -37,6 +37,8 @@ const MASTER_TRANS_UP_INTERVAL: u64      = 120000;
 const MASTER_AUTH_STREAM_ON_DEMAND: bool = false;
 const MASTER_AUTH_RECONNECT_TIMEOUT: u64 = 20000;
 
+const SERVERADDR_ALLOW_AUTH: bool        = true;
+
 const ADMINACC_ENABLED: bool             = true;
 const ADMINACC_BIND: &str                = "127.0.0.1:9100";
 
@@ -59,6 +61,7 @@ pub struct ServerSettings {
     #[serde(default = "default_val_limits")]
     pub limits: ServerLimits,
     /// Other misc settings
+    #[serde(default = "default_val_misc")]
     pub misc: MiscSettings,
     /// Access for admin accounts
     #[serde(default = "default_val_admin_access")]
@@ -133,7 +136,9 @@ pub struct Mount {
 pub struct ServerAddress {
     /// Address to bind to, must be a valid ipv4/ipv6 of an interface
     pub bind: SocketAddr,
-    pub tls: Option<TlsIdentity>
+    pub tls: Option<TlsIdentity>,
+    #[serde(default = "default_val_serveraddr_allow_auth")]
+    pub allow_auth: bool
 }
 
 #[derive(Serialize, Deserialize)]
@@ -262,7 +267,9 @@ impl Default for AdminAccess {
     }
 }
 
-fn default_val_address() -> Vec<ServerAddress> { vec![ ServerAddress { bind: BIND.parse().expect("Should be a valid socket address"), tls: None } ] }
+fn default_val_address() -> Vec<ServerAddress> {
+    vec![ ServerAddress { bind: BIND.parse().expect("Should be a valid socket address"), tls: None, allow_auth: true } ]
+}
 fn default_val_metaint() -> usize { METAINT }
 fn default_val_info() -> ServerInfo { ServerInfo::default() }
 fn default_val_limits() -> ServerLimits { ServerLimits::default() }
@@ -283,8 +290,12 @@ fn default_val_limit_http_max_len() -> usize { HTTP_MAX_LEN }
 fn default_val_limit_master_http_max_len() -> usize { MASTER_HTTP_MAX_LEN }
 fn default_val_limit_master_timeout() -> u64 { MASTER_TIMEOUT }
 
+fn default_val_serveraddr_allow_auth() -> bool { SERVERADDR_ALLOW_AUTH }
+
 fn default_val_adminacc_enabled() -> bool { ADMINACC_ENABLED }
-fn default_val_adminacc_address() -> ServerAddress { ServerAddress { bind: ADMINACC_BIND.parse().expect("Should be a valid socket address"), tls: None } }
+fn default_val_adminacc_address() -> ServerAddress {
+    ServerAddress { bind: ADMINACC_BIND.parse().expect("Should be a valid socket address"), tls: None, allow_auth: true }
+}
 
 fn default_val_accounts() -> HashMap<String, Account> { HashMap::new() }
 
