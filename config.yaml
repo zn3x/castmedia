@@ -1,6 +1,11 @@
 # Specify listening addresses where we will accept clients incoming connections
 address:
+# First interface wil be reserved for listener clients
 - bind: 127.0.0.1:9000
+  allow_auth: false
+# This on the other hand will be used for source clients
+- bind: 127.0.0.1:39203
+  allow_auth: true
 # In icecast, regularly broadcast metadata update to clients, this indicates bytes interval between
 # metadata broadcasts.
 metadata_interval: 32000
@@ -63,3 +68,7 @@ admin_access:
   enabled: true
   address:
     bind: 127.0.0.1:9100
+
+misc:
+  # allow unsafe password for accounts
+  unsafe_pass: false
