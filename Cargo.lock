@@ -232,7 +232,6 @@ dependencies = [
  "passfd",
  "postcard",
  "qanat",
- "reqwest",
  "scrypt",
  "serde",
  "serde_json",
@@ -240,6 +239,7 @@ dependencies = [
  "serde_yaml",
  "socket2",
  "symphonia",
+ "test-utils",
  "tokio",
  "tokio-native-tls",
  "tracing",
@@ -1930,6 +1930,14 @@ dependencies = [
  "redox_syscall",
  "rustix",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "test-utils"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "tokio",
 ]
 
 [[package]]

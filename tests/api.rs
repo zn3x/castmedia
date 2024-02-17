@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use test_utils::{spawn_server, get_response, get_status_code, spawn_source, spawn_listener};
+
 const CONFIG_ADMIN_API: &str = "
 address:
   - bind: 127.0.0.1:9000
@@ -69,50 +71,6 @@ const AUTH_INVALID: &str  = "giberish:andmoregiberish";
 const MOUNT_SOURCE: &str  = "/stream.mp3";
 const MOUNT_SOURCE1: &str = "/stream1.mp3";
 
-struct Server {
-    child: tokio::process::Child
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        _ = self.child.start_kill();
-    }
-}
-
-async fn spawn_server(conf: &str, conf_name: &str) -> Server {
-    let conf = conf.to_owned();
-
-    let conf_file = format!("{}/{}", TEST_DIR, conf_name);
-
-    tokio::fs::write(&conf_file, conf).await
-        .expect("Failed to write config file");
-    
-    let server = tokio::process::Command::new("cargo")
-        .args([
-              "run",
-              "--",
-              "--unsafe-password",
-              &conf_file
-        ])
-        .spawn()
-        .expect("failed to start castmedia");
-
-    Server {
-        child: server
-    }
-}
-
-async fn get_response(url: &str) -> reqwest::Response {
-    let resp = reqwest::get(url).await;
-    assert!(resp.is_ok());
-    resp.unwrap()
-}
-
-async fn get_status_code(url: &str) -> u16 {
-    let resp = get_response(url).await;
-    resp.status().as_u16()
-}
-
 async fn assert_medatadata(mount: &str, url: &str, title: &str) {
     let resp = get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await;
     assert_eq!(resp.status().as_u16(), 200);
@@ -161,35 +119,9 @@ async fn assert_fallback(mount: &str, fallback: Option<&str>) {
     assert_eq!(fallback, pfallback);
 }
 
-async fn spawn_source(auth: &str, addr: &str, mount: &str) -> tokio::process::Child {
-    tokio::process::Command::new("ffmpeg")
-        .args([
-              "-loglevel", "panic",
-              "-re", "-f", "lavfi",
-              "-i", "sine=frequency=1000",
-              "-content_type", "audio/mpeg",
-              "-vn", "-f", "mp3",
-              &format!("icecast://{}@{}{}", auth, addr, mount)
-        ])
-        .spawn()
-        .expect("ffmpeg missing")
-}
-
-async fn spawn_listener(addr: &str, mount: &str) -> tokio::process::Child {
-    tokio::process::Command::new("curl")
-        .args([
-              "-o", "/dev/null",
-              "-L",
-              "-s",
-              &format!("http://{}{}", addr, mount)
-        ])
-        .spawn()
-        .expect("curl missing")
-}
-
 #[tokio::test]
 async fn admin_api() {
-    let mut server = spawn_server(CONFIG_ADMIN_API, "admin_api.yaml").await;
+    let mut server = spawn_server(TEST_DIR, CONFIG_ADMIN_API, "admin_api.yaml").await;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -395,7 +327,7 @@ async fn get_stat(path: &str, key: &str) -> serde_json::Value {
 async fn public_api() {
     let start = chrono::offset::Utc::now().timestamp();
 
-    let server = spawn_server(CONFIG_PUBLIC_API, "public_api.yaml").await;
+    let server = spawn_server(TEST_DIR, CONFIG_PUBLIC_API, "public_api.yaml").await;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -494,3 +426,5 @@ async fn public_api() {
     source.kill().await.ok();
     drop(server);
 }
+
+// TODO: Add stats tests
