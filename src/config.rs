@@ -40,6 +40,8 @@ const MASTER_AUTH_RECONNECT_TIMEOUT: u64 = 20000;
 const ADMINACC_ENABLED: bool             = true;
 const ADMINACC_BIND: &str                = "127.0.0.1:9100";
 
+const MISC_UNSAFE_PASS: bool             = false;
+
 /// Server configuration
 #[derive(Serialize, Deserialize)]
 pub struct ServerSettings {
@@ -56,6 +58,8 @@ pub struct ServerSettings {
     /// Predefined limits that server shall not surpass
     #[serde(default = "default_val_limits")]
     pub limits: ServerLimits,
+    /// Other misc settings
+    pub misc: MiscSettings,
     /// Access for admin accounts
     #[serde(default = "default_val_admin_access")]
     pub admin_access: AdminAccess,
@@ -66,6 +70,13 @@ pub struct ServerSettings {
     /// Master server relaying for slave instance
     #[serde(default = "default_val_master")]
     pub master: Vec<MasterServer>
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct MiscSettings {
+    #[serde(default = "default_val_misc_unsafe_pass")]
+    /// Allow unsafe passwords, this is highly discouraged and should only be used for testing!!
+    pub unsafe_pass: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -201,7 +212,16 @@ impl Default for ServerSettings {
             limits: default_val_limits(),
             admin_access: default_val_admin_access(),
             account: default_val_accounts(),
-            master: default_val_master()
+            master: default_val_master(),
+            misc: default_val_misc()
+        }
+    }
+}
+
+impl Default for MiscSettings {
+    fn default() -> Self {
+        Self {
+            unsafe_pass: default_val_misc_unsafe_pass()
         }
     }
 }
@@ -276,6 +296,9 @@ fn default_val_master_mounts_limit() -> usize { MASTER_MOUNTS_LIMIT }
 fn default_val_master_transparent_update_interval() -> u64 { MASTER_TRANS_UP_INTERVAL }
 fn default_val_master_auth_stream_on_demand() -> bool { MASTER_AUTH_STREAM_ON_DEMAND }
 fn default_val_master_auth_reconnect_timeout() -> u64 { MASTER_AUTH_RECONNECT_TIMEOUT }
+
+fn default_val_misc() -> MiscSettings { MiscSettings::default() }
+fn default_val_misc_unsafe_pass() -> bool { MISC_UNSAFE_PASS }
 
 impl ServerSettings {
     pub fn load(config_path: &str) -> Self {

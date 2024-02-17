@@ -194,7 +194,7 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
         .ok_or(anyhow::Error::msg("Should be able to get current process name"))?;
     let mut successor_fh = std::process::Command::new(name);
     successor_fh.args(["-m", &migrate_file]);
-    if server.args.unsafe_pass {
+    if server.config.misc.unsafe_pass {
         successor_fh.arg("--unsafe-password");
     }
     successor_fh.arg(&server.args.config_file);

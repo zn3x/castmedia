@@ -27,9 +27,6 @@ pub struct ArgParse {
     #[arg(short = "m", long = "migrate")]
     /// For migration purposes only, this command shouldn't be used by user
     pub migrate: Option<String>,
-    #[arg(short = "u", long = "unsafe-password")]
-    /// Allow unsafe passwords, this is highly discouraged and should only be used for testing!!
-    pub unsafe_pass: bool,
     /// Configuration file path
     pub config_file: String
 }

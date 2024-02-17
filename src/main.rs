@@ -45,14 +45,14 @@ async fn main() {
     }
     if args.verify {
         let config = config::ServerSettings::load(&args.config_file);
-        config::ServerSettings::verify(&config, args.unsafe_pass);
+        config::ServerSettings::verify(&config, config.misc.unsafe_pass);
         std::process::exit(0);
     }
     let migrate = args.migrate.clone();
     
     let mut config = config::ServerSettings::load(&args.config_file);
     {
-        let e = config::ServerSettings::verify(&config, args.unsafe_pass);
+        let e = config::ServerSettings::verify(&config, config.misc.unsafe_pass);
         if e > 0 {
             error!("{} errors found in configuration, exiting...", e);
             std::process::exit(1);
