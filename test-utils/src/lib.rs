@@ -22,7 +22,6 @@ pub async fn spawn_server(test_dir: &str, conf: &str, conf_name: &str) -> Server
         .args([
               "run",
               "--",
-              "--unsafe-password",
               &conf_file
         ])
         .spawn()

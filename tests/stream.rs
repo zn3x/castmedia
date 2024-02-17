@@ -27,6 +27,8 @@ admin_access:
   enabled: true
   address:
     bind: 127.0.0.1:9102
+misc:
+  unsafe_pass: true
 ";
 
 static TEST_DIR: &str     = env!("CARGO_TARGET_TMPDIR");

@@ -5,6 +5,8 @@ use test_utils::{spawn_server, get_response, get_status_code, spawn_source, spaw
 const CONFIG_ADMIN_API: &str = "
 address:
   - bind: 127.0.0.1:9000
+  - bind: 127.0.0.1:9030
+    allow_auth: false
 account:
   admin:
     pass: 0$pass
@@ -27,6 +29,8 @@ admin_access:
   enabled: true
   address:
     bind: 127.0.0.1:9100
+misc:
+  unsafe_pass: true
 ";
 
 const CONFIG_PUBLIC_API: &str = "
@@ -50,12 +54,15 @@ admin_access:
   enabled: true
   address:
     bind: 127.0.0.1:9101
+misc:
+  unsafe_pass: true
 ";
 
 static TEST_DIR: &str     = env!("CARGO_TARGET_TMPDIR");
 
 // admin_api
 const BASE: &str          = "127.0.0.1:9000";
+const BASE_NO_AUTH: &str  = "127.0.0.1:9030";
 const ADMIN: &str         = "127.0.0.1:9100";
 
 // public_api
@@ -133,21 +140,21 @@ async fn admin_api() {
     for _ in 0..3 {
         // Checking admin api services that only admin should be able to reach
         r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_ADMIN, BASE)).await;
-        assert_eq!(r, 405);
+        assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_SOURCE, BASE)).await;
-        assert_eq!(r, 405);
+        assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_SLAVE, BASE)).await;
-        assert_eq!(r, 405);
+        assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_INVALID, BASE)).await;
-        assert_eq!(r, 405);
+        assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_ADMIN, BASE)).await;
-        assert_eq!(r, 405);
+        assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_SOURCE, BASE)).await;
-        assert_eq!(r, 405);
+        assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_INVALID, BASE)).await;
-        assert_eq!(r, 405);
+        assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/mountupdates", AUTH_INVALID, BASE)).await;
-        assert_eq!(r, 405);
+        assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_ADMIN, ADMIN)).await;
         assert_eq!(r, 200);
         r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_SOURCE, ADMIN)).await;
@@ -203,6 +210,15 @@ async fn admin_api() {
         r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here4&song=title_here4", AUTH_INVALID, ADMIN, MOUNT_SOURCE)).await;
         assert_eq!(r, 401);
         assert_medatadata(MOUNT_SOURCE, "url_here1", "title_here1").await;
+
+        // Using public interfaces
+        r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here2&song=title_here2", AUTH_SOURCE, BASE_NO_AUTH, MOUNT_SOURCE)).await;
+        assert_eq!(r, 403);
+        assert_medatadata(MOUNT_SOURCE, "url_here1", "title_here1").await;
+        r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here2&song=title_here2", AUTH_SOURCE, BASE, MOUNT_SOURCE)).await;
+        assert_eq!(r, 200);
+        assert_medatadata(MOUNT_SOURCE, "url_here2", "title_here2").await;
+
         // for /stream1.mp3
         r = get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here1&song=title_here1", AUTH_SOURCE, ADMIN, MOUNT_SOURCE1)).await;
         assert_eq!(r, 401);
