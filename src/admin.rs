@@ -187,13 +187,28 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
 
     match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
         &[Some(mount)] => {
-            let kill_switch = match session.server.sources.write().await.get_mut(mount) {
-                Some(mount) => mount.kill.take(),
-                None => {
-                    response::bad_request(&mut session.stream, sid, "Mount not found").await?;
-                    return Ok(())
-                }
-            };
+            let mut kill_switch = None;
+            let mut is_relay    = true;
+            {
+                let mut lock = session.server.sources.write().await;
+                match lock.get_mut(mount) {
+                    Some(source) => {
+                        if let SourceAccessType::SourceMount { .. } = &source.access {
+                            is_relay    = false;
+                            kill_switch = source.kill.take();
+                        }
+                    },
+                    None => {
+                        response::bad_request(&mut session.stream, sid, "Mount not found").await?;
+                        return Ok(())
+                    }
+                };
+            }
+
+            if is_relay {
+                response::forbidden(&mut session.stream, sid, "Can't kill relayed source").await?;
+                return Ok(())
+            }
             
             match kill_switch {
                 Some(kill_switch) => {
