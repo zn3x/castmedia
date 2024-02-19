@@ -50,8 +50,8 @@ async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Resu
             let sid     = &session.server.config.info.id;
 
             match session.server.sources.write().await.get_mut(mount) {
-                Some(mount_ref) => {
-                    mount_ref.fallback = fallback.map(|x| x.to_owned());
+                Some(source) => {
+                    source.fallback = fallback.map(|x| x.to_owned());
                     info!("New fallback {:?} set for {} by {}", fallback, mount, user_id);
                     response::ok_200(&mut session.stream, sid).await?;
                 },
@@ -93,10 +93,10 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
         let s = sinfo.as_object_mut()
             .expect("Listmounts json response should be an object");
         match &source.1.access {
-            SourceAccessType::SourceMount { username } => {
+            SourceAccessType::SourceClient { username } => {
                 s.insert("source_username".to_string(), serde_json::to_value(username)?);
             },
-            SourceAccessType::RelayedMount { relayed_source } => {
+            SourceAccessType::RelayedSource { relayed_source } => {
                 s.insert("stream_source".to_string(), serde_json::to_value(relayed_source)?);
             }
         }
@@ -163,8 +163,8 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
             };
 
             match session.server.sources.read().await.get(mount) {
-                Some(mount_ref) => {
-                    mount_ref.move_listeners_sender.clone().send(Arc::new(move_comm));
+                Some(source) => {
+                    source.move_listeners_sender.clone().send(Arc::new(move_comm));
                     info!("Clients in {} moved to {} by admin {}", mount, destination, user_id);
                     response::ok_200(&mut session.stream, sid).await?;
                 },
@@ -193,7 +193,7 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
                 let mut lock = session.server.sources.write().await;
                 match lock.get_mut(mount) {
                     Some(source) => {
-                        if let SourceAccessType::SourceMount { .. } = &source.access {
+                        if let SourceAccessType::SourceClient { .. } = &source.access {
                             is_relay    = false;
                             kill_switch = source.kill.take();
                         }
@@ -298,7 +298,7 @@ async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<(
             };
 
             let clients = match session.server.sources.read().await.get(mount) {
-                Some(mount) => mount.clients.clone(),
+                Some(source) => source.clients.clone(),
                 None => {
                     response::bad_request(&mut session.stream, sid, "Mount not found").await?;
                     return Ok(());

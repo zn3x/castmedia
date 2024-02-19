@@ -6,7 +6,7 @@ use std::{
         atomic::{Ordering, AtomicBool}
     }
 };
-use futures::{executor::block_on, Future, FutureExt};
+use futures::{executor::block_on, Future};
 use qanat::broadcast::Sender;
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};
@@ -19,7 +19,7 @@ use crate::{
     source::{SourceBroadcast, SourceStats, MoveClientsCommand, MoveClientsType, SourceAccessType},
     migrate::{
         MigrateConnection, VersionedMigrateConnection,
-        MigrateSource, MigrateSourceInfo, MigrateCommand, MigrateIsRelay, ActiveSourceInfo
+        MigrateSource, MigrateSourceInfo, MigrateCommand, MigrateSourceConnectionType, ActiveSourceInfo
     },
     client::{RelayedInfo, StreamOnDemand},
     http::ChunkedResponseReader,
@@ -384,8 +384,8 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>,
             queue_size: s.queue_size as u64,
             chunked: s.chunked,
             is_relay: match access {
-                SourceAccessType::SourceMount { username } => MigrateIsRelay::False { username },
-                SourceAccessType::RelayedMount { relayed_source } => MigrateIsRelay::True {
+                SourceAccessType::SourceClient { username } => MigrateSourceConnectionType::SourceClient { username },
+                SourceAccessType::RelayedSource { relayed_source } => MigrateSourceConnectionType::RelayedSource {
                     relayed_stream: relayed_source,
                     relay_info: relay.expect("Should have non empty RelayInfo on source migration"),
                     on_demand

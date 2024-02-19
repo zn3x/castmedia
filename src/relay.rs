@@ -601,7 +601,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                 // so we don't found source still existant after
                 let mut lock = serv.sources.write().await;
                 if let Some(source) = lock.get_mut(&mount) {
-                    if let SourceAccessType::RelayedMount { relayed_source } = &source.access {
+                    if let SourceAccessType::RelayedSource { relayed_source } = &source.access {
                         if relayed_source.starts_with(serv.config.master[master_ind].url.as_str()) {
                             // This is the same source
                             let kill = source.kill.take();
@@ -636,7 +636,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
             let (mut source, broadcast,
                  kill_notifier)            = Source::new(
                      properties, None,
-                     SourceAccessType::RelayedMount { relayed_source: url },
+                     SourceAccessType::RelayedSource { relayed_source: url },
                      None);
             source.on_demand_notify_reader = Some(wake_src);
 
@@ -822,7 +822,7 @@ async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
                     queue_size: 0,
                     broadcast: None,
                     metadata: None,
-                    access: SourceAccessType::RelayedMount { relayed_source: url.clone() },
+                    access: SourceAccessType::RelayedSource { relayed_source: url.clone() },
                     relayed: Some(RelayStream {
                         info: RelayedInfo {
                             metaint: metaint.unwrap_or(0),

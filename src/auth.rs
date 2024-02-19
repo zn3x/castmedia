@@ -97,7 +97,7 @@ pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType, auth: O
                     if allowed == AllowedAuthType::SourceApi {
                         has_permission = has_permission && match session.server.sources.read().await.get(req_mount) {
                             Some(v) => match &v.access {
-                                crate::source::SourceAccessType::SourceMount { username } => username.eq(&user),
+                                crate::source::SourceAccessType::SourceClient { username } => username.eq(&user),
                                 _ => false
                             },
                             None => false

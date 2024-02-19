@@ -36,18 +36,19 @@ pub struct MigrateSource {
     pub metadata: Vec<u8>,
     pub chunked: bool,
     pub queue_size: u64,
-    pub is_relay: MigrateIsRelay,
+    #[obake(inherit)]
+    pub is_relay: MigrateSourceConnectionType,
 }
 
 #[obake::versioned]
 #[obake(version("0.1.0"))]
 #[obake(derive(Serialize, Deserialize))]
 #[derive(Serialize, Deserialize)]
-pub enum MigrateIsRelay {
-    False {
+pub enum MigrateSourceConnectionType {
+    SourceClient {
         username: String
     },
-    True {
+    RelayedSource {
         relayed_stream: String,
         #[obake(inherit)]
         relay_info: RelayedInfo,
@@ -368,18 +369,18 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                 let snapshot = restore_channel_from_snapshot((snapshot_msgs, info.broadcast_snapshot.1, info.broadcast_snapshot.2));
                 let mut is_relay = None;
                 let (access, relayed) = match info.is_relay {
-                    MigrateIsRelay::True { relayed_stream, on_demand, relay_info } => {
+                    MigrateSourceConnectionType::RelayedSource { relayed_stream, on_demand, relay_info } => {
                         is_relay = Some((relayed_stream.clone(), on_demand));
                         (
-                            SourceAccessType::RelayedMount { relayed_source: relayed_stream },
+                            SourceAccessType::RelayedSource { relayed_source: relayed_stream },
                             Some(RelayStream {
                                 info: relay_info,
                                 on_demand: None
                             })
                         )
                     },
-                    MigrateIsRelay::False { username } => (
-                        SourceAccessType::SourceMount { username: username.clone() },
+                    MigrateSourceConnectionType::SourceClient { username } => (
+                        SourceAccessType::SourceClient { username: username.clone() },
                         None
                     )
                 };

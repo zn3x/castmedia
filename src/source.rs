@@ -105,11 +105,11 @@ impl SourceStats {
 
 #[derive(Debug, Clone)]
 pub enum SourceAccessType {
-    SourceMount {
+    SourceClient {
         /// Account username used to mount source
         username: String
     },
-    RelayedMount {
+    RelayedSource {
         /// URL stream source if this is a relayed stream
         relayed_source: String,
     }
@@ -308,7 +308,7 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
             broadcast: None,
             metadata: None,
             relayed: None,
-            access: SourceAccessType::SourceMount { username: user_id }
+            access: SourceAccessType::SourceClient { username: user_id }
         }
     ).await?;
 
@@ -317,7 +317,7 @@ pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: 
 
 pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Option<RelayBroadcastStatus>> {
     let (relayed, on_demand, stream_src_url) = match (info.relayed, &info.access) {
-        (Some(v), SourceAccessType::RelayedMount { relayed_source }) => (
+        (Some(v), SourceAccessType::RelayedSource { relayed_source }) => (
             Some(v.info), v.on_demand,
             Some(relayed_source.clone())
         ),
