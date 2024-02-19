@@ -241,7 +241,7 @@ Connection: close\r\n\r\n",
     Ok((stream, addr))
 }
 
-async fn fetch_available_sources(server: &Server, url: &Url) -> Result<MasterMounts> {
+async fn fetch_available_mounts(server: &Server, url: &Url) -> Result<MasterMounts> {
     let timeout = Duration::from_millis(server.config.limits.master_timeout);
     tokio::time::timeout(
         timeout,
@@ -487,7 +487,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                             Err(e) => Err(e)
                         };
 
-                        if let Some(v) = relay_stream_on_demand_exepction(ret).await {
+                        if let Some(v) = relay_source_on_demand_exepction(ret).await {
                             relay_source_on_demand(&serv_cl, master_ind, cmount, v, auth_cl).await;
                         }
                     });
@@ -577,7 +577,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                 let auth_cl  = auth.to_owned();
                 let mount_cl = mount.clone();
                 tokio::task::spawn(async move {
-                    _ = relay_stream(
+                    _ = relay_source(
                         &serv_cl, master_ind, mount_cl,
                         None,
                         Some(&auth_cl)
@@ -760,15 +760,15 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
             }
         }
 
-        let ret = relay_stream(serv, master_ind, mount.clone(), Some(on_demand), Some(&auth)).await;
-        match relay_stream_on_demand_exepction(ret).await {
+        let ret = relay_source(serv, master_ind, mount.clone(), Some(on_demand), Some(&auth)).await;
+        match relay_source_on_demand_exepction(ret).await {
             Some(v) => on_demand = v,
             None => break
         }
     }
 }
 
-async fn relay_stream_on_demand_exepction(ret: Result<RelayBroadcastStatus>) -> Option<StreamOnDemand> {
+async fn relay_source_on_demand_exepction(ret: Result<RelayBroadcastStatus>) -> Option<StreamOnDemand> {
     let mut on_demand;
     match ret {
         // Stream suddenly ended (Due to network problems or detecting end of stream before master
@@ -799,7 +799,7 @@ async fn relay_stream_on_demand_exepction(ret: Result<RelayBroadcastStatus>) -> 
     Some(on_demand)
 }
 
-async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
+async fn relay_source(serv: &Arc<Server>, master_ind: usize, mount: String,
                       on_demand: Option<StreamOnDemand>, auth: Option<&str>)
     -> Result<RelayBroadcastStatus> {
     let url = &serv.config.master[master_ind].url;
@@ -865,7 +865,7 @@ async fn relay_stream(serv: &Arc<Server>, master_ind: usize, mount: String,
 
 pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
     // Here we should be fine a we did check bounds before
-    let master_server  = &serv.config.master[master_ind];
+    let master_server = &serv.config.master[master_ind];
 
     match &master_server.relay_scheme {
         MasterServerRelayScheme::Transparent { update_interval } => {
@@ -873,7 +873,7 @@ pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
             loop {
                 interval.tick().await;
 
-                match fetch_available_sources(&serv, &master_server.url).await {
+                match fetch_available_mounts(&serv, &master_server.url).await {
                     Ok(mounts) => {
                         let lock = serv.sources.read().await;
                         for mount in &mounts.mounts {
@@ -881,7 +881,7 @@ pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
                                 let serv_clone  = serv.clone();
                                 let mount_clone = mount.clone();
                                 tokio::spawn(async move {
-                                    relay_stream(
+                                    relay_source(
                                         &serv_clone, master_ind,
                                         mount_clone, None, None
                                     ).await

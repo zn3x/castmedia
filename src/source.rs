@@ -201,7 +201,7 @@ impl Source {
     }
 }
 
-pub async fn handle<'a>(mut session: ClientSession, request: &Request<'a>, req: SourceRequest) -> Result<()> {
+pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a>, req: SourceRequest) -> Result<()> {
     let user_id = match auth::auth(&mut session, auth::AllowedAuthType::SourceMount, req.auth, &req.mountpoint).await {
         Ok(v) => {
             info!("New source request from {} to mount on {}", v, req.mountpoint);
