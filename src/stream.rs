@@ -131,9 +131,9 @@ pub struct BroadcastInfo<'a> {
 }
 
 pub enum RelayBroadcastStatus {
-    Idle(StreamOnDemand),
     Killed,
     StreamEnd,
+    OnDemandStreamEndOrIdle(StreamOnDemand),
     Unreachable(StreamOnDemand)
 }
 
@@ -212,38 +212,35 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
     s.session.server.stats.active_relay_streams.fetch_sub(1, Ordering::Release);
 
     if let Err(e) = err {
-        unmount_source(&s.session.server, s.mountpoint).await;
-        info!("Unmounted source on {} from master ({}): {}", s.mountpoint, master, e);
-
-        RelayBroadcastStatus::StreamEnd
+        info!("Abrupt end of stream for source on {} from master ({}): {}", s.mountpoint, master, e);
     } else if !s.on_demand || killed {
         unmount_source(&s.session.server, s.mountpoint).await;
         info!("Unmounted source on {} from master ({})", s.mountpoint, master);
 
-        if killed {
+        return if killed {
             RelayBroadcastStatus::Killed
         } else {
             RelayBroadcastStatus::StreamEnd
-        }
+        };
     } else {
         info!("Source on {} from master ({}) is now inactive", s.mountpoint, master);
-
-        // We need to remove old channels
-        let (tx, rx)         = qanat::broadcast::channel(1.try_into().expect("1 should be non zero usize"));
-        if let Some(source)  = s.session.server.sources.write().await.get_mut(s.mountpoint) {
-            source.broadcast = rx;
-        }
-
-        RelayBroadcastStatus::Idle(StreamOnDemand {
-            stats: s.stats,
-            broadcast: SourceBroadcast {
-                audio: tx,
-                metadata: s.broadcast.metadata
-            },
-            kill_notifier: s.kill_notifier,
-            on_demand_notify: on_demand_notify.unwrap()
-        })
     }
+
+    // We need to remove old channels
+    let (tx, rx)         = qanat::broadcast::channel(1.try_into().expect("1 should be non zero usize"));
+    if let Some(source)  = s.session.server.sources.write().await.get_mut(s.mountpoint) {
+        source.broadcast = rx;
+    }
+
+    RelayBroadcastStatus::OnDemandStreamEndOrIdle(StreamOnDemand {
+        stats: s.stats,
+        broadcast: SourceBroadcast {
+            audio: tx,
+            metadata: s.broadcast.metadata
+        },
+        kill_notifier: s.kill_notifier,
+        on_demand_notify: on_demand_notify.unwrap()
+    })
 }
 
 pub async fn broadcast(s: BroadcastInfo<'_>) { 

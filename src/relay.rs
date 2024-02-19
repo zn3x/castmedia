@@ -721,6 +721,7 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
     let mut migrate_comm = serv.migrate.clone();
     loop {
         tokio::select! {
+            _ = &mut on_demand.kill_notifier => break,
             _ = on_demand
                 .on_demand_notify
                 .wait_until(|| {
@@ -730,7 +731,6 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
                         None
                     }
                 }) => (),
-            _ = &mut on_demand.kill_notifier => break,
             migrate = migrate_comm.recv() => {
                 let migrate = migrate
                     .expect("Got migrate notice with closed mpsc");
@@ -771,15 +771,17 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
 async fn relay_stream_on_demand_exepction(ret: Result<RelayBroadcastStatus>) -> Option<StreamOnDemand> {
     let mut on_demand;
     match ret {
-        // We don't have any listener to continue pulling stream
-        Ok(RelayBroadcastStatus::Idle(v)) => on_demand = v,
+        // Stream suddenly ended (Due to network problems or detecting end of stream before master
+        // server sending unmount notification)
+        // or we don't have any listener to continue pulling stream
+        // In both cases we keep retrying until we get a notification from master to stop
+        Ok(RelayBroadcastStatus::OnDemandStreamEndOrIdle(v)) => on_demand = v,
+        // Master server told us that source no longer exists
         Ok(RelayBroadcastStatus::Killed) => return None,
-        // Cases:
-        // 1. Stream finished but we were faster to detect
-        // error in stream that to get kill notification.
-        // 2. Network error that caused stream end
-        // We should exit here
-        Err(_) | Ok(RelayBroadcastStatus::StreamEnd) => return None,
+        // Should only happen when on_demand is false
+        // May happen when stream suddenly ends like OnDemandStreamEndOrIdle
+        Err(_) // Unreacheable when on_demand is true
+            | Ok(RelayBroadcastStatus::StreamEnd) => return None,
         // We can't seem to reach master server (reasons may be: network, master refusing
         // connection, ...)
         // we will keep trying until we do so or get a kill notification
