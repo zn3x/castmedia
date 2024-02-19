@@ -666,11 +666,18 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
             sources.insert(mount, task);
         },
         MountUpdate::Metadata { mount, metadata } => {
+            // we skip updating metadata here if either:
+            // 1. on_demand is disabled
+            // 2. on_demand is enable and we are currently listening
+            // 3. no task is currently listening to mount
             if !on_demand || !sources.contains_key(&mount) {
                 return;
             }
 
             if let Some(source) = serv.sources.read().await.get(&mount) {
+                if on_demand && source.stats.active_listeners.load(Ordering::Acquire) != 0 {
+                    return;
+                }
                 let mut lock = source.meta_broadcast_sender.lock().await;
                 relay_broadcast_metadata(
                     &source.metadata,

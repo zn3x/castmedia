@@ -161,21 +161,13 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
     let mut data         = Vec::new();
     let mut chunk_size   = VecDeque::new();
 
-    let fut = if s.on_demand {
-        handle_relay_stream_no_metadata(
-            reader.as_mut(), &s.session.server,
-            s.mountpoint, &mut s.broadcast,
-            &mut s.queue_size, &s.stats,
-            &mut chunk_size, &mut data
-        ).boxed()
-    } else {
-        handle_relay_stream(
-            reader.as_mut(), &s.session.server,
-            s.mountpoint, &mut s.broadcast,
-            &mut s.queue_size, &mut relay,
-            &mut chunk_size, &mut data
-        ).boxed()
-    };
+    let fut = handle_relay_stream(
+        reader.as_mut(), &s.session.server,
+        s.mountpoint, &mut s.broadcast,
+        &mut s.queue_size, &mut relay,
+        &mut chunk_size, &mut data,
+        &s.stats, s.on_demand
+    );
 
     let mut err    = Ok(());
     let mut killed = false;
@@ -474,40 +466,15 @@ fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReader,
     Ok(size)
 }
 
-
-async fn handle_relay_stream_no_metadata(stream: &mut dyn StreamReader,
-                             server: &Server, mountpoint: &str,
-                             broadcast: &mut SourceBroadcast,
-                             queue_size: &mut usize,
-                             stats: &SourceStats,
-                             chunk_size: &mut VecDeque<usize>,
-                             data: &mut Vec<u8>) -> Result<()> {
-    let mut buf  = [0u8; 2048];
-
-    loop {
-        let ret = stream.async_read(&mut buf).await?;
-        data.extend_from_slice(&buf[..ret]);
-
-        if data.len() > 1024 {
-            let v = std::mem::take(data);
-            push_to_queue(broadcast, mountpoint, queue_size, chunk_size, server, v)?;
-
-            if stats.active_listeners.load(Ordering::Acquire) == 0 {
-                break;
-            } 
-        }
-    };
-
-    Ok(())
-}
-
 async fn handle_relay_stream(stream: &mut dyn StreamReader,
                              server: &Server, mountpoint: &str,
                              broadcast: &mut SourceBroadcast,
                              queue_size: &mut usize,
                              relay: &mut RelayedInfo,
                              chunk_size: &mut VecDeque<usize>,
-                             data: &mut Vec<u8>) -> Result<()> {
+                             data: &mut Vec<u8>,
+                             stats: &SourceStats,
+                             on_demand: bool) -> Result<()> {
     let mut buf  = [0u8; 2048];
     let mut ret  = 0;
 
@@ -599,10 +566,16 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
         if data.len() > 1024 {
             let v = std::mem::take(data);
             push_to_queue(broadcast, mountpoint, queue_size, chunk_size, server, v)?;
+
+            if on_demand && stats.active_listeners.load(Ordering::Acquire) == 0 {
+                break;
+            } 
         }
 
         ret = stream.async_read(&mut buf).await?;
     };
+
+    Ok(())
 }
 
 fn push_to_queue(broadcast: &mut SourceBroadcast, mountpoint: &str,
