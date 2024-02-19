@@ -414,9 +414,9 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                             // TODO: What todo when config is switched from auth mode and
                             // vice-versa???
                             _ = match on_demand {
-                                true => master.1.send(RelaySourceMigrate::Active { stream, addr, info: ret }),
+                                true => master.1.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret }),
                                 // TODO
-                                false => master.1.send(RelaySourceMigrate::Active { stream, addr, info: ret })
+                                false => master.1.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret })
                             };
                             continue 'OUTER;
                         }
@@ -492,7 +492,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     for master in &mut slave_tx {
                         if master.0.host_str().eq(&url.host_str())
                             && master.0.port().eq(&url.port()) {
-                            _ = master.1.send(RelaySourceMigrate::Idle { mount: info.mountpoint, properties: info.properties });
+                            _ = master.1.send(RelaySourceMigrate::OnDemandIdle { mount: info.mountpoint, properties: info.properties });
                             continue 'OUTER;
                         }
                     }

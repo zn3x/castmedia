@@ -399,16 +399,18 @@ async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, master_ind:
 }
 
 pub enum RelaySourceMigrate {
-    Idle {
+    OnDemandIdle {
         mount: String,
         properties: IcyProperties
     },
-    Active {
+    OnDemandActive {
         stream: Stream,
         addr: SocketAddr,
         info: SourceInfo
-    }
+    },
     // TODO: We are missing here streams with on_demand disabled
+    Normal {
+    }
 }
 
 async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Stream,
@@ -428,7 +430,9 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
     if let Some(mut m) = migrate_successor {
         while let Some(v) = m.recv().await {
             match v {
-                RelaySourceMigrate::Idle { mount, properties } => {
+                RelaySourceMigrate::Normal {} => {
+                },
+                RelaySourceMigrate::OnDemandIdle { mount, properties } => {
                     handle_mount_update(
                         &mut sources, serv,
                         master_ind, on_demand,
@@ -436,7 +440,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                         &auth
                     ).await;
                 },
-                RelaySourceMigrate::Active { stream, addr, mut info } => {
+                RelaySourceMigrate::OnDemandActive { stream, addr, mut info } => {
                     let wake_sink                  = diatomic_waker::WakeSink::new();
                     let wake_src                   = wake_sink.source();
                     let (mut source, broadcast,
@@ -484,7 +488,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                         };
 
                         if let Some(v) = relay_stream_on_demand_exepction(ret).await {
-                            relay_stream_on_demand(&serv_cl, master_ind, cmount, v, auth_cl).await;
+                            relay_source_on_demand(&serv_cl, master_ind, cmount, v, auth_cl).await;
                         }
                     });
 
@@ -648,7 +652,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
             let auth_cl  = auth.to_owned();
             let mount_cl = mount.clone();
             let task     = tokio::task::spawn(async move {
-                relay_stream_on_demand(
+                relay_source_on_demand(
                     &serv_cl, master_ind,
                     mount_cl,
                     StreamOnDemand {
@@ -708,7 +712,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
     }
 }
 
-async fn relay_stream_on_demand(serv: &Arc<Server>, master_ind: usize, mount: String,
+async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: String,
                                 mut on_demand: StreamOnDemand, auth: String) {
     // We here need to wait until we get notification that we have
     // more than 0 listener
