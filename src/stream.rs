@@ -133,8 +133,9 @@ pub struct BroadcastInfo<'a> {
 pub enum RelayBroadcastStatus {
     Killed,
     StreamEnd,
+    Unreachable,
     OnDemandStreamEndOrIdle(StreamOnDemand),
-    Unreachable(StreamOnDemand)
+    OnDemandUnreachable(StreamOnDemand)
 }
 
 pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
