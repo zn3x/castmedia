@@ -679,6 +679,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                 return;
             }
 
+            // TODO: can we do this without keeping rlock while broadcasting
             if let Some(source) = serv.sources.read().await.get(&mount) {
                 if on_demand && source.stats.active_listeners.load(Ordering::Acquire) != 0 {
                     return;

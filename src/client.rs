@@ -70,20 +70,20 @@ pub async fn handle_listener_request(session: ClientSession, request: Request<'_
 }
 
 async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Result<()> {
+    let source_info = session.server.sources.read().await.get(&info.mountpoint)
+        .and_then(|v| Some((
+            v.properties.clone(),
+            v.broadcast.clone(),
+            v.meta_broadcast.clone(),
+            v.move_listeners_receiver.clone(),
+            v.stats.clone(),
+            v.clients.clone(),
+            v.on_demand_notify_reader.clone()
+        )));
+
     let (props, mut stream, meta_stream,
-         mover, stats, mut clients, on_demand_notify)
-        = match session.server.sources.read().await.get(&info.mountpoint) {
-        Some(v) => {
-            (
-                v.properties.clone(),
-                v.broadcast.clone(),
-                v.meta_broadcast.clone(),
-                v.move_listeners_receiver.clone(),
-                v.stats.clone(),
-                v.clients.clone(),
-                v.on_demand_notify_reader.clone()
-            )
-        },
+         mover, stats, mut clients, on_demand_notify) = match source_info {
+        Some(v) => v,
         None => {
             if info.migrated.is_none() {
                 response::not_found(&mut session.stream, &session.server.config.info.id).await?;
