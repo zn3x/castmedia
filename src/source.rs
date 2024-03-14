@@ -374,11 +374,16 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
                         "Too many sources connected").await?;
                     return Err(anyhow::Error::msg("Max sources limit reached"));
                 } else {
+                    return Ok(Some(RelayBroadcastStatus::LimitReached));
                 }
             }
 
             if lock.try_insert(info.mountpoint.clone(), source).is_err() {
-                return Err(anyhow::Error::msg(format!("Mountpoint {} already exists", info.mountpoint)));
+                if relayed.is_some() {
+                    return Ok(Some(RelayBroadcastStatus::MountExists));
+                } else {
+                    return Err(anyhow::Error::msg(format!("Mountpoint {} already exists", info.mountpoint)));
+                }
             }
         }
 

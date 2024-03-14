@@ -513,7 +513,7 @@ pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: Clien
                     server,
                     stream,
                     addr,
-                    user: Some(crate::auth::UserRef { id: info.user_id.clone() })
+                    user: Some(crate::auth::UserRef { id: info.user_id })
                 },
                 mounts
             ).await;
