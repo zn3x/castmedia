@@ -370,9 +370,8 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
                         &mut session.stream,
                         &session.server.config.info.id,
                         "Too many sources connected").await?;
-                    return Ok(None);
-                } else {
                     return Err(anyhow::Error::msg("Max sources limit reached"));
+                } else {
                 }
             }
 

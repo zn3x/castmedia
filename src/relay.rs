@@ -479,13 +479,9 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                                 addr
                             },
                             info
-                        ).await;
-
-                        let ret = match ret {
-                            Ok(Some(v)) => Ok(v),
-                            Ok(_) => unreachable!(),
-                            Err(e) => Err(e)
-                        };
+                        ).await
+                            .expect("Error shouldn't be returned on relay stream")
+                            .expect("RelayBroadcastStatus should be returned on relay stream");
 
                         // TODO: What to do when mount already exists??
                         if let Some(v) = relay_source_on_demand_exepction(ret).await {
@@ -570,23 +566,6 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
     // Now handling events for every source
     match event {
         MountUpdate::New { mount, properties } => {
-            // If we don't have on_demand enabled
-            // we don't need to do all the following hassle
-            // handle it like normal relay
-            if !on_demand {
-                let serv_cl  = serv.clone();
-                let auth_cl  = auth.to_owned();
-                let mount_cl = mount.clone();
-                tokio::task::spawn(async move {
-                    _ = fetch_source_from_master(
-                        &serv_cl, master_ind, mount_cl,
-                        None,
-                        Some(&auth_cl)
-                    ).await;
-                });
-                return;
-            }
-
             if let Some(task_handle) = sources.remove(&mount) {
                 // When we have a new source by same name, that means source in master
                 // disconnected and reconnected again.
@@ -618,6 +597,20 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                         }
                     }
                 }
+            }
+
+            // If we don't have on_demand enabled
+            // we don't need to do all the following hassle
+            // handle it like normal relay
+            if !on_demand {
+                let serv_cl  = serv.clone();
+                let auth_cl  = auth.to_owned();
+                let mount_cl = mount.clone();
+                let task     = tokio::task::spawn(async move {
+                    relay_source(&serv_cl, master_ind, &mount_cl, Some(&auth_cl)).await;
+                });
+                sources.insert(mount, task);
+                return;
             }
 
             let mut lock = serv.sources.write().await;
@@ -696,12 +689,18 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
         MountUpdate::Unmounted { mount } => {
             // If source disconnects from master then we should do the same
             // Send a kill notification to task
-            if sources.remove(&mount).is_some() {
+            if let Some(task_handle) = sources.remove(&mount) {
                 let mut lock = serv.sources.write().await;
                 if let Some(source) = lock.get_mut(&mount) {
                     if let Some(kill) = source.kill.take() {
                         drop(lock);
                         _ = kill.send(());
+                        if !on_demand {
+                            // We might need to cancel task in case there was
+                            // already an exception and relay_source didn't receive
+                            // Kill signal properly
+                            task_handle.abort();
+                        }
                     }
                 }
                 // We should also try to unmount source
@@ -722,6 +721,16 @@ async fn relay_source(serv: &Arc<Server>, master_ind: usize, mount: &str, auth: 
             auth
         ).await;
 
+        match status {
+            RelayBroadcastStatus::Killed => break,
+            RelayBroadcastStatus::StreamEndOrIdle(_) => (),
+            RelayBroadcastStatus::Unreachable(_) => {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            },
+            // TODO: Better way to handle this
+            RelayBroadcastStatus::MountExists |
+                RelayBroadcastStatus::LimitReached => break
+        }
     }
 }
 
@@ -782,31 +791,32 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
 }
 
 async fn relay_source_on_demand_exepction(ret: RelayBroadcastStatus) -> Option<StreamOnDemand> {
-    let mut on_demand;
     match ret {
         // Stream suddenly ended (Due to network problems or detecting end of stream before master
         // server sending unmount notification)
         // or we don't have any listener to continue pulling stream
         // In both cases we keep retrying until we get a notification from master to stop
-        RelayBroadcastStatus::OnDemandStreamEndOrIdle(v) => on_demand = v,
+        RelayBroadcastStatus::StreamEndOrIdle(v) => v,
         // Master server told us that source no longer exists
-        RelayBroadcastStatus::Killed => return None,
+        RelayBroadcastStatus::Killed => None,
         // We can't seem to reach master server (reasons may be: network, master refusing
         // connection, ...)
         // we will keep trying until we do so or get a kill notification
-        RelayBroadcastStatus::OnDemandUnreachable(v) => {
-            on_demand = v;
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            match on_demand.kill_notifier.try_recv() {
-                // If we get kill notification or channel closed we stop
-                Ok(_) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => return None,
-                _ => ()
+        RelayBroadcastStatus::Unreachable(v) => {
+            match v {
+                Some(mut on_demand) => {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    match on_demand.kill_notifier.try_recv() {
+                        // If we get kill notification or channel closed we stop
+                        Ok(_) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => None,
+                        _ => Some(on_demand)
+                    }
+                },
+                None => None
             }
         },
         _ => unreachable!()
     }
-    
-    Some(on_demand)
 }
 
 async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: String,
@@ -864,11 +874,7 @@ async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: 
                 mount,
                 e
             );
-            if let Some(on_demand) = on_demand {
-                RelayBroadcastStatus::OnDemandUnreachable(on_demand)
-            } else {
-                RelayBroadcastStatus::Unreachable
-            }
+            RelayBroadcastStatus::Unreachable(on_demand)
         }
     }
 }

@@ -132,10 +132,10 @@ pub struct BroadcastInfo<'a> {
 
 pub enum RelayBroadcastStatus {
     Killed,
-    StreamEnd,
-    Unreachable,
-    OnDemandStreamEndOrIdle(StreamOnDemand),
-    OnDemandUnreachable(StreamOnDemand)
+    StreamEndOrIdle(Option<StreamOnDemand>),
+    Unreachable(Option<StreamOnDemand>),
+    MountExists,
+    LimitReached
 }
 
 pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
@@ -221,7 +221,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
         return if killed {
             RelayBroadcastStatus::Killed
         } else {
-            RelayBroadcastStatus::StreamEnd
+            RelayBroadcastStatus::StreamEndOrIdle(None)
         };
     } else {
         info!("Source on {} from master ({}) is now inactive", s.mountpoint, master);
@@ -233,7 +233,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
         source.broadcast = rx;
     }
 
-    RelayBroadcastStatus::OnDemandStreamEndOrIdle(StreamOnDemand {
+    RelayBroadcastStatus::StreamEndOrIdle(Some(StreamOnDemand {
         stats: s.stats,
         broadcast: SourceBroadcast {
             audio: tx,
@@ -241,7 +241,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
         },
         kill_notifier: s.kill_notifier,
         on_demand_notify: on_demand_notify.unwrap()
-    })
+    }))
 }
 
 pub async fn broadcast(s: BroadcastInfo<'_>) { 
