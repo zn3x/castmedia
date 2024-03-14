@@ -346,7 +346,7 @@ pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
                     loop {
                         match authenticated_mode_fetch_updates_stream(&serv, master_ind).await {
                             Ok(v) => return v,
-                            Err(e) => error!("Initial mountupdates connection to master {} failed: {}", master_server.url, e)
+                            Err(e) => error!("Initial mountupdates connection to {} failed: {}", master_server, e)
                         }
                         tokio::time::sleep(timeout).await;
                     }
@@ -424,7 +424,7 @@ pub enum RelaySourceMigrate {
 async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Stream,
                                            master_ind: usize,
                                            migrate_successor: Option<mpsc::UnboundedReceiver<RelaySourceMigrate>>) {
-    let url               = &serv.config.master[master_ind].url;
+    let master            = &serv.config.master[master_ind];
     let (auth, on_demand) = match &serv.config.master[master_ind].relay_scheme {
         MasterServerRelayScheme::Authenticated { user, pass, stream_on_demand, .. } => (
             format!("Authorization: Basic {}\r\n", basic_auth(user, pass)),
@@ -527,7 +527,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
         }
     }
 
-    info!("Starting mount updates from master {}", url);
+    info!("Starting mount updates from {}", master);
 
     serv.stats.active_relay.fetch_add(1, Ordering::Relaxed);
 
@@ -540,7 +540,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
         loop {
             match authenticated_mode_reader(&mut stream, &mut len_enc, &mut buf, &mut chunked).await {
                 Err(e)    => {
-                    error!("Mount updates from master {} stopped: {}", url, e);
+                    error!("Mount updates from {} stopped: {}", master, e);
                     return;
                 },
                 Ok(event) => handle_mount_update(&mut sources, serv, master_ind, on_demand, event, &auth).await
@@ -556,7 +556,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
 
             let info: VersionedMigrateConnection = MigrateConnection::SlaveMountUpdates {
                 info: MigrateSlaveMountUpdates {
-                    master_url: url.to_string()
+                    master_url: master.url.to_string()
                 }
             }.into();
             if let Ok(info) = postcard::to_stdvec(&info) {
@@ -889,8 +889,8 @@ async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: 
             ).await;
             if let Err(e) = ret.as_ref() {
                 error!(
-                    "Master server {} relayind for {} ended with: {}",
-                    serv.config.master[master_ind].url,
+                    "{} relaying for {} ended with: {}",
+                    serv.config.master[master_ind],
                     mount,
                     e
                 );
@@ -901,8 +901,8 @@ async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: 
         },
         Err(e) => {
             error!(
-                "Master server {} relaying for {} failed: {}",
-                serv.config.master[master_ind].url,
+                "{} relaying for {} failed: {}",
+                serv.config.master[master_ind],
                 mount,
                 e
             );
@@ -938,7 +938,7 @@ pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
                         }
                     },
                     Err(e) => {
-                        info!("Fetching mounts from master server failed: {}", e);
+                        info!("Fetching mounts from {} failed: {}", master_server, e);
                     }
                 }
             }

@@ -108,6 +108,12 @@ pub struct MasterServer {
     pub relay_scheme: MasterServerRelayScheme
 }
 
+impl std::fmt::Display for MasterServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "master:[url:{}]", self.url)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
 #[serde(tag = "type")]

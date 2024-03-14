@@ -149,8 +149,8 @@ pub struct ClientSession {
 impl std::fmt::Display for ClientSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.user {
-            Some(v) => write!(f, "[{}, addr:{}]", v, self.addr),
-            None => write!(f, "[unauthentified, addr:{}]", self.addr)
+            Some(v) => write!(f, "client:[{}, addr:{}]", v, self.addr),
+            None => write!(f, "client:[unauthentified, addr:{}]", self.addr)
         }
     }
 }
