@@ -408,8 +408,10 @@ pub enum RelaySourceMigrate {
         addr: SocketAddr,
         info: SourceInfo
     },
-    // TODO: We are missing here streams with on_demand disabled
     Normal {
+        stream: Stream,
+        addr: SocketAddr,
+        info: SourceInfo
     }
 }
 
@@ -430,7 +432,32 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
     if let Some(mut m) = migrate_successor {
         while let Some(v) = m.recv().await {
             match v {
-                RelaySourceMigrate::Normal {} => {
+                RelaySourceMigrate::Normal { stream, addr, info } => {
+                    let mount    = info.mountpoint.clone();
+                    let serv_cl  = serv.clone();
+                    let auth_cl  = auth.to_owned();
+                    let task     = tokio::task::spawn(async move {
+                        let cmount = info.mountpoint.clone();
+                        let ret    = crate::source::handle_source(
+                            Session {
+                                server: serv_cl.clone(),
+                                stream,
+                                addr
+                            },
+                            info
+                        ).await
+                            .expect("Error shouldn't be returned on relay stream")
+                            .expect("RelayBroadcastStatus should be returned on relay stream");
+
+                        match ret {
+                            RelayBroadcastStatus::StreamEndOrIdle(_) |
+                                RelayBroadcastStatus::Unreachable(_) => {
+                                relay_source(&serv_cl, master_ind, &cmount, Some(&auth_cl)).await;
+                            },
+                            _ => ()
+                        }
+                    });
+                    sources.insert(mount, task);
                 },
                 RelaySourceMigrate::OnDemandIdle { mount, properties } => {
                     handle_mount_update(
@@ -483,7 +510,6 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                             .expect("Error shouldn't be returned on relay stream")
                             .expect("RelayBroadcastStatus should be returned on relay stream");
 
-                        // TODO: What to do when mount already exists??
                         if let Some(v) = relay_source_on_demand_exepction(ret).await {
                             relay_source_on_demand(&serv_cl, master_ind, cmount, v, auth_cl).await;
                         }
