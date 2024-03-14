@@ -390,7 +390,7 @@ pub async fn handle(mut session: ClientSession) {
             Ok(v) => v,
             Err(e) => {
                 response::method_not_allowed(&mut session.stream, &session.server.config.info.id).await.ok();
-                info!("Request coming from {} couldn't be handled: {}", session.addr, e);
+                info!("Request coming from {} couldn't be handled: {}", session, e);
                 return;
             }
         };
@@ -488,7 +488,8 @@ pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: Clien
                 admin_addr: false,
                 server,
                 stream,
-                addr
+                addr,
+                user: None
             };
             _ = prepare_listener(session, info).await;
         },
@@ -511,9 +512,9 @@ pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: Clien
                     admin_addr: true,
                     server,
                     stream,
-                    addr
+                    addr,
+                    user: Some(crate::auth::UserRef { id: info.user_id.clone() })
                 },
-                info.user_id,
                 mounts
             ).await;
         }

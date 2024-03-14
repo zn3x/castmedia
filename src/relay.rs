@@ -50,11 +50,16 @@ pub enum MountUpdate {
     }
 }
 
-pub async fn master_mount_updates(mut session: ClientSession, user_id: String,
+pub async fn master_mount_updates(mut session: ClientSession,
                                   // map holding all mounts as tuple (mount, metadata_channel)
                                   mut mounts: HashMap<String, Receiver<Arc<(u64, Vec<u8>)>>>) -> Result<()> {
-    info!("Mount updates stream initialized for {} ({})", user_id, session.addr);
+    info!("Mount updates stream initialized for {}", session);
 
+    let user_id = session.user
+        .as_ref()
+        .expect("Should be identified at this point")
+        .id
+        .clone();
     let chunked_writer = ChunkedResponse::new_ready();
 
     let mut new_source_notify = session.server
@@ -72,7 +77,8 @@ pub async fn master_mount_updates(mut session: ClientSession, user_id: String,
     'NO_SOURCE: loop {
         if let Some(m) = migrate_ch {
             migrate_master_mount_updates(
-                m, user_id,
+                m,
+                user_id,
                 session.stream,
                 mounts
             ).await;

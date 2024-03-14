@@ -202,16 +202,12 @@ impl Source {
 }
 
 pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a>, req: SourceRequest) -> Result<()> {
-    let user_id = match auth::auth(&mut session, auth::AllowedAuthType::SourceMount, req.auth, &req.mountpoint).await {
-        Ok(v) => {
-            info!("New source request from {} to mount on {}", v, req.mountpoint);
-            v
-        },
-        Err(e) => {
-            response::internal_error(&mut session.stream, &session.server.config.info.id).await?;
-            return Err(anyhow::Error::msg(format!("Source authentication failed, cause: {}", e)));
-        }
-    };
+    if let Err(e) = auth::auth(&mut session, auth::AllowedAuthType::SourceMount, req.auth, &req.mountpoint).await {
+        response::internal_error(&mut session.stream, &session.server.config.info.id).await?;
+        return Err(anyhow::Error::msg(format!("Source authentication failed, cause: {}", e)));
+    }
+    
+    info!("New source request from {} to mount on {}", session, req.mountpoint);
 
     let sid = &session.server.config.info.id;
 
@@ -275,6 +271,12 @@ pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a
     }
 
     properties.populate_from_http_headers(&request.headers);
+
+    let user_id = session.user
+        .as_ref()
+        .expect("Should be identified at this point")
+        .id
+        .clone();
 
     let mut fallback = None;
     if let Some(account) = &session.server.config.account.get(&user_id) {

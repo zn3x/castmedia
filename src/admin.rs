@@ -19,8 +19,8 @@ use crate::{
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
     match utils::get_queries_val_for_keys(&["mode", "mount", "song", "url"], &req.queries).as_slice() {
         &[Some(mode), Some(mount), song, url] => {
-            let user_id = auth::auth(session, AllowedAuthType::SourceApi, req.auth, mount).await?;
-            let sid     = &session.server.config.info.id;
+            auth::auth(session, AllowedAuthType::SourceApi, req.auth, mount).await?;
+            let sid = &session.server.config.info.id;
 
             if !mode.eq("updinfo") {
                 response::bad_request(&mut session.stream, sid, "Metadata update request only supports updinfo mode").await?;
@@ -35,7 +35,7 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
             };
 
             if success {
-                info!("Updated mountpoint metadata for {} by {}", mount, user_id);
+                info!("Updated mountpoint metadata for {} by {}", mount, session);
                 response::ok_200(&mut session.stream, sid).await?;
             } else {
                 response::bad_request(&mut session.stream, sid, "Invalid mountpoint").await?;
@@ -53,8 +53,8 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
 async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
     match utils::get_queries_val_for_keys(&["mount", "fallback"], &req.queries).as_slice() {
         &[Some(mount), fallback] => {
-            let user_id = auth::auth(session, AllowedAuthType::SourceApi, req.auth, mount).await?;
-            let sid     = &session.server.config.info.id;
+            auth::auth(session, AllowedAuthType::SourceApi, req.auth, mount).await?;
+            let sid = &session.server.config.info.id;
 
             let success = match session.server.sources.write().await.get_mut(mount) {
                 Some(source) => {
@@ -65,7 +65,7 @@ async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Resu
             };
 
             if success {
-                info!("New fallback {:?} set for {} by {}", fallback, mount, user_id);
+                info!("New fallback {:?} set for {} by {}", fallback, mount, session);
                 response::ok_200(&mut session.stream, sid).await?;
             } else {
                 response::bad_request(&mut session.stream, sid, "Invalid mountpoint").await?;
@@ -80,7 +80,7 @@ async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Resu
 }
 
 async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let _   = auth::admin_auth(session, req.auth).await?;
+    auth::admin_auth(session, req.auth).await?;
     let sid = &session.server.config.info.id;
 
     let mut sources = HashMap::new();
@@ -123,7 +123,7 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
 }
 
 async fn stats(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let _   = auth::admin_auth(session, req.auth).await?;
+    auth::admin_auth(session, req.auth).await?;
     let sid = &session.server.config.info.id;
 
     let stats = json!({
@@ -152,8 +152,8 @@ async fn stats(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
 }
 
 async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let user_id = auth::admin_auth(session, req.auth).await?;
-    let sid     = &session.server.config.info.id;
+    auth::admin_auth(session, req.auth).await?;
+    let sid = &session.server.config.info.id;
 
     match utils::get_queries_val_for_keys(&["mount", "destination"], &req.queries).as_slice() {
         &[Some(mount), Some(destination)] => {
@@ -179,7 +179,7 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
             match session.server.sources.read().await.get(mount) {
                 Some(source) => {
                     source.move_listeners_sender.clone().send(Arc::new(move_comm));
-                    info!("Clients in {} moved to {} by admin {}", mount, destination, user_id);
+                    info!("Clients in {} moved to {} by {}", mount, destination, session);
                     response::ok_200(&mut session.stream, sid).await?;
                 },
                 None => {
@@ -202,8 +202,8 @@ enum SourceKillSwitchState {
 }
 
 async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let user_id = auth::admin_auth(session, req.auth).await?;
-    let sid     = &session.server.config.info.id;
+    auth::admin_auth(session, req.auth).await?;
+    let sid = &session.server.config.info.id;
 
     match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
         &[Some(mount)] => {
@@ -219,7 +219,7 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
             match kill_switch {
                 SourceKillSwitchState::SourceFound(Some(kill_switch)) => {
                     _ = kill_switch.send(());
-                    info!("Source killed for mount {} by admin {}", mount, user_id);
+                    info!("Source killed for mount {} by {}", mount, session);
                     response::ok_200(&mut session.stream, sid).await?;
                 },
                 SourceKillSwitchState::SourceFound(None) => {
@@ -244,7 +244,7 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
 }
 
 async fn list_clients(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let _   = auth::admin_auth(session, req.auth).await?;
+    auth::admin_auth(session, req.auth).await?;
     let sid = &session.server.config.info.id;
 
     let mount = match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
@@ -300,8 +300,8 @@ enum ClientKillSwitchState {
 }
 
 async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let user_id = auth::admin_auth(session, req.auth).await?;
-    let sid     = &session.server.config.info.id;
+    auth::admin_auth(session, req.auth).await?;
+    let sid = &session.server.config.info.id;
 
     match utils::get_queries_val_for_keys(&["mount", "id"], &req.queries).as_slice() {
         &[Some(mount), Some(id)] => {
@@ -328,7 +328,7 @@ async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<(
             match kill_switch {
                 ClientKillSwitchState::ClientFound(Some(kill_switch)) => {
                     _ = kill_switch.send(());
-                    info!("Client {} killed for mount {} by admin {}", id, mount, user_id);
+                    info!("Client {} killed for mount {} by {}", id, mount, session);
                     response::ok_200(&mut session.stream, sid).await?;
                 },
                 ClientKillSwitchState::ClientFound(None) => {
@@ -351,8 +351,8 @@ async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<(
 }
 
 async fn server_restart(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let user_id = auth::admin_auth(session, req.auth).await?;
-    let sid     = &session.server.config.info.id;
+    auth::admin_auth(session, req.auth).await?;
+    let sid = &session.server.config.info.id;
 
     // Checking if all bind addresses are not tls
     let uses_tls = session.server.config.address
@@ -366,7 +366,7 @@ async fn server_restart(session: &mut ClientSession, req: AdminRequest) -> Resul
 
     match session.server.migrate_tx.lock().await.take() {
         Some(migrate) => {
-            info!("Starting zero downtime migration requested by admin {}", user_id);
+            info!("Starting zero downtime migration requested by {}", session);
             migrate::handle(session.server.clone(), migrate).await;
             response::ok_200(&mut session.stream, sid).await?;
         },
@@ -379,22 +379,22 @@ async fn server_restart(session: &mut ClientSession, req: AdminRequest) -> Resul
 }
 
 async fn server_shutdown(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    let user_id = auth::admin_auth(session, req.auth).await?;
-    let sid     = &session.server.config.info.id;
+    auth::admin_auth(session, req.auth).await?;
+    let sid = &session.server.config.info.id;
 
     _ = response::ok_200(&mut session.stream, sid).await;
 
-    info!("Stopping server as requested by admin {}", user_id);
+    info!("Stopping server as requested by {}", session);
 
     std::process::exit(0);
 }
 
 async fn mount_updates(mut session: ClientSession, req: AdminRequest) -> Result<()> {
-    let user_id = auth::auth(&mut session, AllowedAuthType::Slave, req.auth, "").await?;
+    auth::auth(&mut session, AllowedAuthType::Slave, req.auth, "").await?;
 
     ChunkedResponse::new(&mut session.stream, &session.server.config.info.id).await?;
 
-    crate::relay::master_mount_updates(session, user_id, HashMap::new()).await
+    crate::relay::master_mount_updates(session, HashMap::new()).await
 }
 
 pub async fn handle_request<'a>(mut session: ClientSession, req: AdminRequest) -> Result<()> {

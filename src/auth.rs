@@ -72,7 +72,19 @@ pub async fn verify_auth_enabled(session: &mut ClientSession) -> Result<()> {
     Ok(())
 }
 
-pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType, auth: Option<(String, String)>, req_mount: &str) -> Result<String> {
+pub struct UserRef {
+    pub id: String
+}
+
+impl std::fmt::Display for UserRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "user:{}", self.id)
+    }
+}
+
+pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType,
+                      auth: Option<(String, String)>, req_mount: &str)
+    -> Result<()> {
     // Making sure we are receiving this through admin interface
     if let Some((user, pass)) = auth {
         verify_auth_enabled(session).await?;
@@ -122,7 +134,8 @@ pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType, auth: O
                 if session.server.hash_calculator.send(HashCalculation { user: user.clone(), pass, resp: tx }).is_ok() {
                     if let Ok(true) = rx.await {
                         session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
-                        return Ok(user);
+                        session.user = Some(UserRef { id: user });
+                        return Ok(());
                     }
                 }
             }
@@ -133,7 +146,7 @@ pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType, auth: O
     Err(anyhow::Error::msg("Authentication failed"))
 }
 
-pub async fn admin_auth(session: &mut ClientSession, auth: Option<(String, String)>) -> Result<String> {
+pub async fn admin_auth(session: &mut ClientSession, auth: Option<(String, String)>) -> Result<()> {
     // Making sure we are receiving this through admin interface
     if session.admin_addr {
         if !session.server.config.admin_access.address.allow_auth {
@@ -147,7 +160,8 @@ pub async fn admin_auth(session: &mut ClientSession, auth: Option<(String, Strin
                 if session.server.hash_calculator.send(HashCalculation { user: v.0.clone(), pass: v.1, resp: tx }).is_ok() {
                     if let Ok(true) = rx.await {
                         session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
-                        return Ok(v.0);
+                        session.user = Some(UserRef { id: v.0 });
+                        return Ok(());
                     }
                 }
             }

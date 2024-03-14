@@ -15,7 +15,8 @@ use anyhow::Result;
 use crate::{
     config::{ServerSettings, TlsIdentity, Account}, 
     client, source::Source, migrate::MigrateCommand,
-    auth::{self, HashCalculation}, ArgParse, relay
+    auth::{self, HashCalculation}, ArgParse, relay,
+    auth::UserRef
 };
 
 pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {
@@ -140,7 +141,18 @@ pub struct ClientSession {
     /// Socket of this client session
     pub stream: Box<dyn Socket>,
     /// Address of our peer
-    pub addr: SocketAddr
+    pub addr: SocketAddr,
+    /// Assign account when user authentifies
+    pub user: Option<UserRef>
+}
+
+impl std::fmt::Display for ClientSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.user {
+            Some(v) => write!(f, "[{}, addr:{}]", v, self.addr),
+            None => write!(f, "[unauthentified, addr:{}]", self.addr)
+        }
+    }
 }
 
 /// A generic session
@@ -171,7 +183,8 @@ async fn accept_connections(serv: Arc<Server>, listener: TcpListener, admin_addr
                             server: serv_clone,
                             // Use bufferer for socket to reduce syscalls we make
                             stream: Box::new(BufStream::new(stream)),
-                            addr
+                            addr,
+                            user: None
                         }).await;
                     }
                 });
@@ -283,7 +296,8 @@ async fn tls_connection_acceptor(serv: &Arc<Server>, listener: &TcpListener, adm
                             server: serv_clone,
                             // Use bufferer for socket to reduce syscalls we make
                             stream: Box::new(BufStream::new(tls_stream)),
-                            addr
+                            addr,
+                            user: None
                         }).await;
                     }
                 });
