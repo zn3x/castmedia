@@ -477,6 +477,13 @@ pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: Clien
 
     match client {
         ClientInfo::Source(info) => {
+            // We will only allow source clients that are still present in config
+            if let SourceAccessType::SourceClient { username } = &info.access {
+                if !server.config.account.contains_key(username) {
+                    return;
+                }
+            }
+
             let session = Session {
                 server,
                 stream,
@@ -495,6 +502,11 @@ pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: Clien
             _ = prepare_listener(session, info).await;
         },
         ClientInfo::MasterMountUpdates(mut info) => {
+            // Same thing as source clients
+            if !server.config.account.contains_key(&info.user_id) {
+                return;
+            }
+
             let mut mounts = HashMap::new();
 
             _ = migrate_finished.recv().await;

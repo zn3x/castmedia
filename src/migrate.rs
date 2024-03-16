@@ -412,18 +412,17 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
                     for master in &slave_tx {
                         if master.0.host_str().eq(&url.host_str())
                             && master.0.port().eq(&url.port()) {
-                            // TODO: What todo when config is switched from auth mode and
-                            // vice-versa???
+                            // When config is switched from on_demand mode or vice-versa
+                            // we should comply
                             _ = match on_demand {
-                                true => master.1.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret }),
-                                // TODO
-                                false => master.1.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret })
+                                true  => master.1.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret }),
+                                false => master.1.send(RelaySourceMigrate::Normal { stream, addr, info: ret })
                             };
                             continue 'OUTER;
                         }
                     }
-                    // TODO: If we don't find a source from instance belonging to any master
-                    // What should we do with it
+                    // If we can't find a master server for this relay source
+                    // we will drop it here
                 }
 
                 crate::client::ClientInfo::Source(ret)
