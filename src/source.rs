@@ -345,9 +345,14 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
         (source, broadcast, kill_notifier) = Source::new(info.properties, info.fallback,
                                                          info.access, info.broadcast);
 
-        // To prevent early readers from having no header
-        if let Some(metadata) = info.metadata {
-            broadcast.metadata.send(Arc::new((0, metadata)));
+        // Handling two cases here
+        // 1. On migration, we need to push metadata here with 0 height so any listener
+        // can get latest metadata
+        // 2. If source never ever broadcasts metadata
+        // we do this to respect metadata interval for reader
+        match info.metadata {
+            Some(metadata) => broadcast.metadata.send(Arc::new((0, metadata))),
+            None           => crate::broadcast::broadcast_metadata(&source, &None, &None).await
         }
 
         // We only ever need to keep track of media
@@ -356,11 +361,6 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
         // We must write initial read length to stats
         //source.stats.bytes_read.fetch_add(info.initial_bytes_read as u64, Ordering::Relaxed);
         */
-
-        // If source never ever broadcasts metadata
-        // we do this to respect metadata interval for reader
-        crate::broadcast::broadcast_metadata(&source, &None, &None).await;
-
         source_stats = source.stats.clone();
 
         // Add this mountpoint to mountpoints hashmap
