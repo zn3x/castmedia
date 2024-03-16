@@ -3,7 +3,7 @@ use std::{
     num::NonZeroUsize,
     sync::{
         Arc,
-        atomic::{Ordering, AtomicBool}
+        atomic::Ordering
     }
 };
 use futures::{executor::block_on, Future};
@@ -12,7 +12,7 @@ use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOpt
 use tracing::{error, info};
 use anyhow::Result;
 
-use tokio::{time::timeout, io::AsyncReadExt, sync::oneshot};
+use tokio::{time::timeout, io::AsyncReadExt, sync::{oneshot, mpsc}};
 
 use crate::{
     server::{Stream, Session, Server},
@@ -244,7 +244,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
     }))
 }
 
-pub async fn broadcast(s: BroadcastInfo<'_>) { 
+pub async fn broadcast(mut s: BroadcastInfo<'_>) { 
     info!("Mounted source on {}", s.mountpoint);
 
     let omountpoint = s.mountpoint.to_owned();
@@ -264,40 +264,16 @@ pub async fn broadcast(s: BroadcastInfo<'_>) {
 
     let media_broadcast = s.broadcast.audio.clone();
     let server          = s.session.server.clone();
-    // For now we are using threads for source
-    let abort_handle  = Arc::new(AtomicBool::new(false));
-    let abort_cl      = abort_handle.clone();
-    let mut fut       = tokio::task::spawn_blocking(move || {
-        match handle_source_stream(&omountpoint, reader, &s.session.server, s.broadcast, abort_cl, s.queue_size) {
-            Ok(v) => Ok(v),
-            Err(e) => {
-                error!("Source stream for {} closed: {}", omountpoint, e);
-                Err(e)
-            }
-        }
-    });
+    let fut             = handle_source_stream(&omountpoint, reader, &s.session.server, s.broadcast, &mut s.queue_size);
     
     // Here we either wait for source to broadcast till it disconnects
     // Or we receive a command to kill it from admin
     // Or we receive command for a migration
     let mut migrate_comm = server.migrate.clone();
     tokio::select! {
-        _ = &mut fut => (),
-        _ = s.kill_notifier => {
-            abort_handle.store(true, Ordering::Relaxed);
-            // We also need to wait here so we don't free rguard while other thread
-            // may still be accessing it's pointer
-            _ = fut.await;
-        },
+        _ = fut => (),
+        _ = s.kill_notifier => (),
         migrate = migrate_comm.recv() => {
-            abort_handle.store(true, Ordering::Relaxed);
-
-            let queue_size = if let Ok(Ok(v)) = fut.await {
-                v
-            } else {
-                0
-            };
-
             migrate_stream(
                 MigrateStreamProps {
                     server: &server,
@@ -305,7 +281,7 @@ pub async fn broadcast(s: BroadcastInfo<'_>) {
                     mountpoint: s.mountpoint,
                     media_broadcast,
                     chunked: s.chunked,
-                    queue_size,
+                    queue_size: s.queue_size,
                     stream: rguard
                 },
                 None,
@@ -412,56 +388,54 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>,
     }
 }
 
-fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReader,
-                      server: &Server, mut broadcast: SourceBroadcast,
-                      abort_handle: Arc<AtomicBool>, queue_size: usize) -> Result<usize> {
-    let mss  = MediaSourceStream::new(Box::new(ReadOnlySource::new(st)), Default::default());
-    let hint = Hint::new();
+async fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReader,
+                              server: &Server, mut broadcast: SourceBroadcast,
+                              queue_size: &mut usize) {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tokio::task::spawn_blocking(move || {
+        let mss  = MediaSourceStream::new(Box::new(ReadOnlySource::new(st)), Default::default());
+        let hint = Hint::new();
 
-    // Use the default options for metadata and format readers.
-    let meta_opts: MetadataOptions  = Default::default();
-    let fmt_opts: FormatOptions     = Default::default();
+        // Use the default options for metadata and format readers.
+        let meta_opts: MetadataOptions  = Default::default();
+        let fmt_opts: FormatOptions     = Default::default();
 
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &fmt_opts, &meta_opts)?;
+        let probed = match symphonia::default::get_probe()
+            .format(&hint, mss, &fmt_opts, &meta_opts) {
+            Ok(v) => v,
+            Err(_) => return
+        };
 
-    //broadcast_metadata(&mut broadcast, probed.metadata.get());
+        //broadcast_metadata(&mut broadcast, probed.metadata.get());
 
-    let mut format = probed.format;
+        let mut format = probed.format;
 
-    // Current total size we are holding in broadcast queue
-    let mut size       = queue_size;
+        loop {
+            match format.next_packet() {
+                Ok(packet) => {
+                    if tx.send(packet).is_err() {
+                        break;
+                    }
+                },
+                Err(e) => {
+                    error!("Broadcast failed: {}", e);
+                    break
+                }
+            }
+        }
+    });
     // Size of every chunk in broadcast queue
     let mut chunk_size = VecDeque::new();
 
-    'PACKET: loop {
-        // Get the next packet from the media format.
-        match format.next_packet() {
-            Ok(packet) => {
-                let slice = packet.data.into_vec();
+    // Get the next packet from the media format.
+    while let Some(packet) = rx.recv().await {
+        let slice = packet.data.into_vec();
 
-                if let Err(e) = push_to_queue(&mut broadcast, mountpoint, &mut size, &mut chunk_size, server, slice) {
-                    error!("Broadcast failed: {}", e);
-                    break 'PACKET;
-                }
-            },
-            Err(e) => {
-                // A unrecoverable error occurred, halt reading
-                return Err(e.into());
-            }
-        };
-
-        // Consume any new metadata that has been read since the last packet.
-        while !format.metadata().is_latest() {
-            format.metadata().pop();
-        }
-
-        if abort_handle.load(Ordering::Relaxed) {
+        if let Err(e) = push_to_queue(&mut broadcast, mountpoint, queue_size, &mut chunk_size, server, slice) {
+            error!("Broadcast failed: {}", e);
             break;
         }
-    };
-
-    Ok(size)
+    }
 }
 
 async fn handle_relay_stream(stream: &mut dyn StreamReader,
