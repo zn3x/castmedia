@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 tokio = "^1.29.0"
 reqwest = { version = "0.11.24", features = [ "json", "blocking" ] }
+base64 = "0.21.2"

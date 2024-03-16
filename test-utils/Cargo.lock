@@ -764,6 +764,7 @@ dependencies = [
 name = "test-utils"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "reqwest",
  "tokio",
 ]
