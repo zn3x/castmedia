@@ -142,9 +142,9 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
                              mut relay: RelayedInfo, master: String,
                              on_demand_notify: Option<diatomic_waker::WakeSink>) -> RelayBroadcastStatus {
     if !s.on_demand {
-        info!("Mounted source on {} from master ({})", s.mountpoint, master);
+        info!("Mounted source on {} (from {})", s.mountpoint, master);
     } else {
-        info!("Source on {} from master ({}) is now active", s.mountpoint, master);
+        info!("Source on {} (from {}) is now active", s.mountpoint, master);
     }
 
     let reader = SimpleReader::new(
@@ -213,10 +213,10 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
     s.session.server.stats.active_relay_streams.fetch_sub(1, Ordering::Release);
 
     if let Err(e) = err {
-        info!("Abrupt end of stream for source on {} from master ({}): {}", s.mountpoint, master, e);
+        info!("Abrupt end of stream for source on {} (from {}): {}", s.mountpoint, master, e);
     } else if !s.on_demand || killed {
         unmount_source(&s.session.server, s.mountpoint).await;
-        info!("Unmounted source on {} from master ({})", s.mountpoint, master);
+        info!("Unmounted source on {} (from {})", s.mountpoint, master);
 
         return if killed {
             RelayBroadcastStatus::Killed
@@ -224,7 +224,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
             RelayBroadcastStatus::StreamEndOrIdle(None)
         };
     } else {
-        info!("Source on {} from master ({}) is now inactive", s.mountpoint, master);
+        info!("Source on {} (from {}) is now inactive", s.mountpoint, master);
     }
 
     // We need to remove old channels
