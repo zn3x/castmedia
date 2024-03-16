@@ -310,7 +310,7 @@ pub async fn listener_broadcast<'a>(mut session: ClientSession,
                         info: MigrateClient {
                             mountpoint: mountpoint.clone(),
                             properties: client.properties,
-                            resume_point: stream.last_index(),
+                            resume_point: stream.read_position(),
                             metaint: *metaint as u64
                         }
                     };
