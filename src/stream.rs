@@ -332,20 +332,20 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>,
     let migrate = s.migrate
         .expect("Got migrate notice with closed mpsc");
     // Now we fetch all info needed
-    let (properties, fallback, metadata, access);
-    {
-        let lock   = s.server.sources.read().await;
-        let source = lock.get(s.mountpoint)
-            .expect("Source should still exist at this point");
-        // Can we not clone here?
-        properties = source.properties.as_ref().clone();
-        fallback   = source.fallback.clone();
-        metadata   = match source.meta_broadcast.clone().try_recv().ok() {
-            Some(v) => v.as_ref().clone().1,
-            None    => metadata_encode(&None, &None)
-        };
-        access = source.access.clone();
-    }
+    let (properties, fallback, mut metadata_ch, access) = s.server.sources.read().await
+        .get(s.mountpoint)
+        .map(|x| (
+            x.properties.as_ref().clone(),
+            x.fallback.clone(),
+            x.meta_broadcast.clone(),
+            x.access.clone()
+        ))
+        .expect("Source should still exist at this point");
+    let metadata = match metadata_ch.try_recv().ok() {
+        Some(v) => v.as_ref().clone().1,
+        None    => metadata_encode(&None, &None)
+    };
+    drop(metadata_ch);
 
     let mountpoint = s.mountpoint.to_owned();
     // We need to first take a snapshot of media channel

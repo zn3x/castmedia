@@ -4,7 +4,7 @@ use std::{
 };
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, hash_map::Entry};
 use qanat::broadcast::{Receiver, RecvError, Sender};
 use tokio::{
     io::{AsyncWriteExt, BufStream},
@@ -130,19 +130,19 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
     let mut id;
     // We need to insert listener to list of active clients of mountpoint
     {
+        let client = Client {
+            properties: info.properties,
+            kill: Some(kill),
+            stats: client_stats.clone()
+        };
         let mut lock = clients.write().await;
         // We need to create a unique uuid for client
         loop {
             id = uuid::Uuid::new_v4();
-            if lock.contains_key(&id) {
-                continue;
+            if let Entry::Vacant(v) = lock.entry(id) {
+                v.insert(client);
+                break;
             }
-            lock.insert(id, Client {
-                properties: info.properties,
-                kill: Some(kill),
-                stats: client_stats.clone()
-            });
-            break;
         };
     }
 
@@ -356,16 +356,17 @@ async fn change_mount(stream: &mut Receiver<Arc<Vec<u8>>>, meta_stream: &mut Rec
         .expect("Client should still by in mountpoint clients hashmap");
     
     // Now we move to new clients list
-    *clients     = new.clients.clone();
-    let mut lock = clients.write().await;
-    loop {
-        if lock.contains_key(&*id) {
+    *clients         = new.clients.clone();
+    {
+        let mut lock = clients.write().await;
+        loop {
+            if let Entry::Vacant(v) = lock.entry(*id) {
+                v.insert(client);
+                break;
+            }
             *id = uuid::Uuid::new_v4();
-            continue;
-        }
-        lock.insert(*id, client);
-        break;
-    };
+        };
+    }
 
     // We need to also update client stats
     client_stats.start_time.store(chrono::offset::Utc::now().timestamp(), Ordering::Relaxed);
