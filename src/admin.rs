@@ -157,16 +157,15 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
 
     match utils::get_queries_val_for_keys(&["mount", "destination"], &req.queries).as_slice() {
         &[Some(mount), Some(destination)] => {
-            let move_comm = match session.server.sources.read().await.get(destination) {
-                Some(destination) => Some(MoveClientsCommand {
-                        broadcast: destination.broadcast.clone(),
-                        meta_broadcast: destination.meta_broadcast.clone(),
-                        move_listeners_receiver: destination.move_listeners_receiver.clone(),
-                        clients: destination.clients.clone(),
-                        move_type: MoveClientsType::Move
-                }),
-                None => None
-            };
+            let move_comm = session.server.sources.read().await.get(destination).map(|destination|
+                MoveClientsCommand {
+                    broadcast: destination.broadcast.clone(),
+                    meta_broadcast: destination.meta_broadcast.clone(),
+                    move_listeners_receiver: destination.move_listeners_receiver.clone(),
+                    clients: destination.clients.clone(),
+                    move_type: MoveClientsType::Move
+                }
+            );
 
             let move_comm = match move_comm {
                 Some(v) => v,
@@ -176,9 +175,12 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
                 }
             };
 
-            match session.server.sources.read().await.get(mount) {
-                Some(source) => {
-                    source.move_listeners_sender.clone().send(Arc::new(move_comm));
+            let move_listeners_sender = session.server.sources.read().await
+                .get(mount)
+                .map(|x| x.move_listeners_sender.clone());
+            match move_listeners_sender {
+                Some(mut move_listeners_sender) => {
+                    move_listeners_sender.send(Arc::new(move_comm));
                     info!("Clients in {} moved to {} by {}", mount, destination, session);
                     response::ok_200(&mut session.stream, sid).await?;
                 },
@@ -195,10 +197,10 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
     Ok(())
 }
 
-enum SourceKillSwitchState {
-    SourceFound(Option<tokio::sync::oneshot::Sender<()>>),
-    SourceIsRelayed,
-    SourceNotFound
+enum SourceKillSwitchFound {
+    Some(Option<tokio::sync::oneshot::Sender<()>>),
+    IsRelayed,
+    None
 }
 
 async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
@@ -207,30 +209,30 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
 
     match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
         &[Some(mount)] => {
-            let mut kill_switch = SourceKillSwitchState::SourceNotFound;
+            let mut kill_switch = SourceKillSwitchFound::None;
             if let Some(source) = session.server.sources.write().await.get_mut(mount) {
                 kill_switch = if let SourceAccessType::SourceClient { .. } = &source.access {
-                    SourceKillSwitchState::SourceFound(source.kill.take())
+                    SourceKillSwitchFound::Some(source.kill.take())
                 } else {
-                    SourceKillSwitchState::SourceIsRelayed
+                    SourceKillSwitchFound::IsRelayed
                 }
             };
 
             match kill_switch {
-                SourceKillSwitchState::SourceFound(Some(kill_switch)) => {
+                SourceKillSwitchFound::Some(Some(kill_switch)) => {
                     _ = kill_switch.send(());
                     info!("Source killed for mount {} by {}", mount, session);
                     response::ok_200(&mut session.stream, sid).await?;
                 },
-                SourceKillSwitchState::SourceFound(None) => {
+                SourceKillSwitchFound::Some(None) => {
                     // This might really only happen in a small interval between a killsource
                     // command and before source being removed from hash of active sources
                     response::bad_request(&mut session.stream, sid, "Source for mountpoint already killed").await?;
                 },
-                SourceKillSwitchState::SourceIsRelayed => {
+                SourceKillSwitchFound::IsRelayed => {
                     response::forbidden(&mut session.stream, sid, "Can't kill relayed source").await?;
                 },
-                SourceKillSwitchState::SourceNotFound => {
+                SourceKillSwitchFound::None => {
                     response::bad_request(&mut session.stream, sid, "Mount not found").await?;
                 }
             }
@@ -258,7 +260,7 @@ async fn list_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
     let clients = {
         let clients = session.server.sources.read().await
             .get(mount)
-            .and_then(|x| Some(x.clients.clone()));
+            .map(|x| x.clients.clone());
         match clients {
             Some(v) => v,
             None => {
@@ -293,10 +295,10 @@ async fn list_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
     Ok(())
 }
 
-enum ClientKillSwitchState {
-    SourceNotFound,
-    ClientFound(Option<tokio::sync::oneshot::Sender<()>>),
-    ClientNotFound
+enum ClientKillSwitchFound {
+    SourceMissing,
+    Some(Option<tokio::sync::oneshot::Sender<()>>),
+    None
 }
 
 async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
@@ -314,30 +316,29 @@ async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<(
             };
 
             let clients = session.server.sources.read().await
-                .get(mount)
-                .and_then(|x| Some(x.clients.clone()));
+                .get(mount).map(|x| x.clients.clone());
 
             let kill_switch = match clients {
                 Some(clients) => match clients.write().await.get_mut(&id) {
-                    Some(v) => ClientKillSwitchState::ClientFound(v.kill.take()),
-                    None => ClientKillSwitchState::ClientNotFound
+                    Some(v) => ClientKillSwitchFound::Some(v.kill.take()),
+                    None => ClientKillSwitchFound::None
                 },
-                None => ClientKillSwitchState::SourceNotFound
+                None => ClientKillSwitchFound::SourceMissing
             };
 
             match kill_switch {
-                ClientKillSwitchState::ClientFound(Some(kill_switch)) => {
+                ClientKillSwitchFound::Some(Some(kill_switch)) => {
                     _ = kill_switch.send(());
                     info!("Client {} killed for mount {} by {}", id, mount, session);
                     response::ok_200(&mut session.stream, sid).await?;
                 },
-                ClientKillSwitchState::ClientFound(None) => {
+                ClientKillSwitchFound::Some(None) => {
                     response::bad_request(&mut session.stream, sid, "Client already killed").await?;
                 },
-                ClientKillSwitchState::ClientNotFound => {
+                ClientKillSwitchFound::None => {
                     response::bad_request(&mut session.stream, sid, "Mount not found").await?;
                 },
-                ClientKillSwitchState::SourceNotFound => {
+                ClientKillSwitchFound::SourceMissing => {
                     response::bad_request(&mut session.stream, sid, "Client with specified id not found").await?;
                 }
             }

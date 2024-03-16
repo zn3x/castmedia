@@ -90,8 +90,8 @@ pub struct SourceStats {
     pub bytes_sent: AtomicU64,
 }
 
-impl SourceStats {
-    pub fn new() -> Self {
+impl Default for SourceStats {
+    fn default() -> Self {
         Self {
             start_time: chrono::offset::Utc::now()
                 .timestamp(),
@@ -182,7 +182,7 @@ impl Source {
             properties: Arc::new(properties),
             metadata: Arc::new(RwLock::new(None)),
             clients: Arc::new(RwLock::new(HashMap::new())),
-            stats: Arc::new(SourceStats::new()),
+            stats: Arc::new(SourceStats::default()),
             fallback,
             access,
             on_demand_notify_reader: None,

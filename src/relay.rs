@@ -748,7 +748,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
 async fn relay_source(serv: &Arc<Server>, master_ind: usize, mount: &str, auth: Option<&str>) {
     loop {
         let status = fetch_source_from_master(
-            &serv, master_ind, mount.to_owned(),
+            serv, master_ind, mount.to_owned(),
             None,
             auth
         ).await;

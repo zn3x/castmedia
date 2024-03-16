@@ -105,6 +105,7 @@ Content-Type: application/json; charset=utf-8\r\n",
     Ok(())
 }
 
+#[derive(Default)]
 pub struct ChunkedResponse {}
 
 impl ChunkedResponse {
@@ -120,7 +121,7 @@ Content-Type: application/json; charset=utf-8\r\n").await?;
 
     /// Reuse stream already sent headers
     pub fn new_ready() -> Self {
-        Self {}
+        Self::default()
     }
 
     pub async fn send(&self, stream: &mut Stream, buf: &[u8]) -> Result<()> {

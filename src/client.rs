@@ -71,7 +71,7 @@ pub async fn handle_listener_request(session: ClientSession, request: Request<'_
 
 async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Result<()> {
     let source_info = session.server.sources.read().await.get(&info.mountpoint)
-        .and_then(|v| Some((
+        .map(|v| (
             v.properties.clone(),
             v.broadcast.clone(),
             v.meta_broadcast.clone(),
@@ -79,7 +79,7 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
             v.stats.clone(),
             v.clients.clone(),
             v.on_demand_notify_reader.clone()
-        )));
+        ));
 
     let (props, mut stream, meta_stream,
          mover, stats, mut clients, on_demand_notify) = match source_info {

@@ -321,7 +321,7 @@ impl ServerSettings {
     pub fn load(config_path: &str) -> Self {
         match std::fs::read_to_string(config_path) {
             Ok(v) => {
-                match Self::from_str(&v) {
+                match Self::from_string(&v) {
                     Ok(v) => {
                         info!("Loaded configuration from {}", config_path);
                         v
@@ -339,8 +339,8 @@ impl ServerSettings {
         }
     }
 
-    pub fn from_str(config: &str) -> Result<Self> {
-        Ok(serde_yaml::from_str::<ServerSettings>(&config)?)
+    pub fn from_string(config: &str) -> Result<Self> {
+        Ok(serde_yaml::from_str::<ServerSettings>(config)?)
     }
 
     pub fn hash_passwords(config: &mut ServerSettings) {

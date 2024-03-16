@@ -92,6 +92,7 @@ impl<'a> ResponseReader<'a> {
     }
 }
 
+#[derive(Default)]
 pub struct ChunkedResponseReader {
     bytes_left: usize,
     reader: [u8; 1]
@@ -99,10 +100,7 @@ pub struct ChunkedResponseReader {
 
 impl ChunkedResponseReader {
     pub fn new() -> Self {
-        Self {
-            bytes_left: 0,
-            reader: [0u8]
-        }
+        Self::default()
     }
 
     pub async fn read_exact<T: AsyncRead + Unpin>(&mut self, stream: &mut T, buf: &mut [u8]) -> std::io::Result<usize> {
