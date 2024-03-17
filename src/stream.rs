@@ -228,7 +228,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
     }
 
     // We need to remove old channels
-    let (tx, rx)         = qanat::broadcast::channel(1.try_into().expect("1 should be non zero usize"));
+    let (tx, rx)         = qanat::broadcast::channel(NonZeroUsize::MIN);
     if let Some(source)  = s.session.server.sources.write().await.get_mut(s.mountpoint) {
         source.broadcast = rx;
     }

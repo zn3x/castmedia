@@ -170,7 +170,7 @@ impl Source {
                fallback: Option<String>,
                access: SourceAccessType,
                migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
-        let size: NonZeroUsize  = 1.try_into().expect("1 should be posetif");
+        let size: NonZeroUsize  = NonZeroUsize::MIN;
         let (tx, rx)            = match migrated {
             Some(v)            => v,
             None               => qanat::broadcast::channel(size)
