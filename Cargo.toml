@@ -3,13 +3,11 @@ name = "castmedia"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 qanat = { git = "https://codeberg.org/zesty/qanat" }
 
-tokio = { version = "1.29.0", features = [ "full" ] }
-tokio-native-tls = "0.3.1" 
+tokio = { version = "1.29.0", features = [ "net", "fs", "io-util", "time", "sync", "rt-multi-thread", "macros" ] }
+tokio-native-tls = "0.3.1"
 
 inotify = "0.10"
 
@@ -19,7 +17,6 @@ hashbrown = { version = "0.14.0", features = [ "serde" ] }
 
 url = { version = "2.4.1", features = [ "serde" ] }
 httparse = "1.8.0"
-httpdate = "1.0.2"
 urlencoding = "2.1.2"
 base64 = "0.21.2"
 uuid = { version = "1.4.1", features = ["v4", "serde"] }

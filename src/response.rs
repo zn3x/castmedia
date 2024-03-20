@@ -1,9 +1,13 @@
-use std::time::SystemTime;
 use anyhow::Result;
-use httpdate::fmt_http_date;
 use tokio::io::AsyncWriteExt;
 
 use crate::{server::Stream, source::IcyProperties};
+
+fn current_time() -> String {
+    chrono::offset::Utc::now()
+        .format("%a, %e %b %Y %T GMT")
+        .to_string()
+}
 
 async fn server_info(stream: &mut Stream, server_id: &str) -> Result<()> {
     stream.write_all(format!("Server: {}\r\n\
@@ -13,7 +17,7 @@ Expires: Mon, 26 Jul 1997 05:00:00 GMT\r\n\
 Pragma: no-cache\r\n\
 Access-Control-Allow-Origin: *\r\n\r\n",
         server_id,
-        fmt_http_date(SystemTime::now())
+        current_time()
     ).as_bytes()).await?;
 
     stream.flush().await?;
