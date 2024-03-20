@@ -348,7 +348,7 @@ fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_han
             buf.reserve(len - buf.len());
         }
         predeseccor.read_exact(&mut buf[..len])?;
-        let source_any: VersionedMigrateConnection = postcard::from_bytes(&buf[..len])?;
+        let source_any: VersionedMigrateConnection = serde_json::from_slice(&buf[..len])?;
         let source: MigrateConnection = source_any.into();
         let cl_info = match source {
             MigrateConnection::Source { info } => {

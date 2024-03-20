@@ -368,7 +368,7 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>,
         }
     };
     let info: VersionedMigrateConnection = info.into();
-    if let Ok(info) = postcard::to_stdvec(&info) {
+    if let Ok(info) = serde_json::to_vec(&info) {
         _ = migrate.source.send(MigrateSourceInfo {
             info,
             active: Some(ActiveSourceInfo {

@@ -205,7 +205,7 @@ async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat
     };
 
     let info: VersionedMigrateConnection = info.into();
-    if let Ok(info) = postcard::to_stdvec(&info) {
+    if let Ok(info) = serde_json::to_vec(&info) {
         _ = migrate.master_mountupdates.send(MigrateMasterMountUpdatesInfo {
             info,
             sock: stream
@@ -559,7 +559,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                     master_url: master.url.to_string()
                 }
             }.into();
-            if let Ok(info) = postcard::to_stdvec(&info) {
+            if let Ok(info) = serde_json::to_vec(&info) {
                 _ = migrate.slave_mountupdates.send(Some(
                         crate::migrate::MigrateSlaveMountUpdatesInfo { info, sock: stream }
                 ));
@@ -798,7 +798,7 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
                             properties
                         }
                     }.into();
-                    if let Ok(info) = postcard::to_stdvec(&info) {
+                    if let Ok(info) = serde_json::to_vec(&info) {
                         _ = migrate
                             .source
                             .send(crate::migrate::MigrateSourceInfo {

@@ -316,7 +316,7 @@ pub async fn listener_broadcast<'a>(mut session: ClientSession,
                     };
                     let info: VersionedMigrateConnection = info.into();
                     // Well, can't do nothing if we ran out of memory here
-                    if let Ok(info) = postcard::to_stdvec(&info) {
+                    if let Ok(info) = serde_json::to_vec(&info) {
                         _ = migrate.listener.send(MigrateClientInfo {
                             info,
                             mountpoint,

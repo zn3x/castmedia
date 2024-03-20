@@ -23,7 +23,6 @@ uuid = { version = "1.4.1", features = ["v4", "serde"] }
 
 chrono = "0.4.28"
 
-postcard = { version = "1.0.8", features = [ "use-std" ] }
 serde_json = "1.0.105"
 serde_yaml = "0.9.22"
 serde = { version = "1.0.164", features = [ "derive" ] }
@@ -50,4 +49,5 @@ scrypt = "0.11.0"
 diatomic-waker = "0.1.0"
 
 [dev-dependencies]
+tokio = { version = "1.29.0", features = [ "full" ] }
 test-utils = { path = "test-utils" }
