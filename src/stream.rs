@@ -4,7 +4,7 @@ use std::{
     sync::{
         Arc,
         atomic::Ordering
-    }
+    }, pin::Pin
 };
 use futures::{executor::block_on, Future};
 use qanat::broadcast::Sender;
@@ -44,11 +44,10 @@ async fn read_with_stats(stats: &SourceStats, time: Duration, fut: impl Future<O
 }
 
 // TODO: Proper async interface...
-// TODO: Remove async_trait when async traits stabilized
-#[async_trait::async_trait]
+// TODO: lang async trait seems to be hard to shove here for now, keeping the same hack here
 pub trait StreamReader: Send + Sync + Read {
     fn fd(&self) -> i32;
-    async fn async_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
+    fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>>;
 }
 
 pub struct SimpleReader {
@@ -63,18 +62,17 @@ impl SimpleReader {
     }
 }
 
-#[async_trait::async_trait]
 impl StreamReader for SimpleReader {
     fn fd(&self) -> i32 {
         self.stream.fd()
     }
 
-    async fn async_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        read_with_stats(
+    fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>> {
+        Box::pin(read_with_stats(
             &self.stats,
             self.timeout,
             self.stream.read(buf)
-        ).await
+        ))
     }
 }
 
@@ -98,18 +96,17 @@ impl ChunkedReader {
     }
 }
 
-#[async_trait::async_trait]
 impl StreamReader for ChunkedReader {
     fn fd(&self) -> i32 {
         self.inner.stream.fd()
     }
 
-    async fn async_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        read_with_stats(
+    fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>> {
+        Box::pin(read_with_stats(
             &self.inner.stats,
             self.inner.timeout,
             self.chunked.read(&mut self.inner.stream, buf)
-        ).await
+        ))
     }
 }
 
