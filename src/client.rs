@@ -5,10 +5,13 @@ use std::{
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
 use hashbrown::{HashMap, hash_map::Entry};
-use qanat::broadcast::{Receiver, RecvError, Sender};
+use qanat::{
+    broadcast::{Receiver, RecvError, Sender},
+    oneshot
+};
 use tokio::{
     io::{AsyncWriteExt, BufStream},
-    sync::{RwLock, oneshot},
+    sync::RwLock,
     net::TcpStream
 };
 use tracing::{info, error};
@@ -121,8 +124,8 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
         }
     }
     
-    let (kill, kill_rx) = oneshot::channel();
-    let client_stats    = Arc::new(ClientStats {
+    let (kill, mut kill_rx) = oneshot::channel();
+    let client_stats        = Arc::new(ClientStats {
         start_time: AtomicI64::new(chrono::offset::Utc::now().timestamp()),
         bytes_sent: AtomicU64::new(0)
     });
@@ -179,7 +182,7 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
                              &mut id, &mut clients, &client_stats, info.mountpoint) => {
             r
         },
-        _ = kill_rx => {
+        _ = kill_rx.recv() => {
             Err(anyhow::Error::msg("Client killed by admininstrator command"))
         }
     };

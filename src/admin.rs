@@ -198,7 +198,7 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
 }
 
 enum SourceKillSwitchFound {
-    Some(Option<tokio::sync::oneshot::Sender<()>>),
+    Some(Option<qanat::oneshot::Sender<()>>),
     IsRelayed,
     None
 }
@@ -297,7 +297,7 @@ async fn list_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
 
 enum ClientKillSwitchFound {
     SourceMissing,
-    Some(Option<tokio::sync::oneshot::Sender<()>>),
+    Some(Option<qanat::oneshot::Sender<()>>),
     None
 }
 

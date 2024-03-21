@@ -1,9 +1,10 @@
 use std::sync::{atomic::Ordering, Arc};
 
 use anyhow::Result;
+use futures::executor::block_on;
 use hashbrown::HashMap;
 use scrypt::password_hash::PasswordVerifier;
-use tokio::sync::{mpsc, oneshot};
+use qanat::{mpsc, oneshot};
 
 use crate::{server::{ClientSession, Server}, response, config::Account};
 
@@ -39,7 +40,7 @@ pub fn password_hasher_thread(server: Arc<Server>, mut rx: mpsc::UnboundedReceiv
         hashes.insert(user.clone(), Hash::Scrypt(hash));
     }
 
-    while let Some(req) = rx.blocking_recv() {
+    while let Ok(req) = block_on(rx.recv()) {
         match &hashes.get(&req.user) {
             Some(Hash::Scrypt(hash)) => {
                 _ = req.resp.send(scrypt::Scrypt.verify_password(req.pass.as_bytes(), hash).is_ok());
@@ -130,9 +131,9 @@ pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType,
 
             // Doing authentication here
             if has_permission {
-                let (tx, rx) = oneshot::channel();
+                let (tx, mut rx) = oneshot::channel();
                 if session.server.hash_calculator.send(HashCalculation { user: user.clone(), pass, resp: tx }).is_ok() {
-                    if let Ok(true) = rx.await {
+                    if let Ok(true) = rx.recv().await {
                         session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
                         session.user = Some(UserRef { id: user });
                         return Ok(());
@@ -156,9 +157,9 @@ pub async fn admin_auth(session: &mut ClientSession, auth: Option<(String, Strin
 
         if let Some(v) = auth {
             if let Some(Account::Admin { .. }) = session.server.config.account.get(&v.0) {
-                let (tx, rx) = oneshot::channel();
+                let (tx, mut rx) = oneshot::channel();
                 if session.server.hash_calculator.send(HashCalculation { user: v.0.clone(), pass: v.1, resp: tx }).is_ok() {
-                    if let Ok(true) = rx.await {
+                    if let Ok(true) = rx.recv().await {
                         session.server.stats.admin_api_connections_success.fetch_add(1, Ordering::Relaxed);
                         session.user = Some(UserRef { id: v.0 });
                         return Ok(());

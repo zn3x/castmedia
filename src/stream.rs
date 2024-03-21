@@ -11,8 +11,8 @@ use qanat::broadcast::Sender;
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};
 use anyhow::Result;
-
-use tokio::{time::timeout, io::AsyncReadExt, sync::{oneshot, mpsc}};
+use qanat::{oneshot, mpsc};
+use tokio::{time::timeout, io::AsyncReadExt};
 
 use crate::{
     server::{Stream, Session, Server},
@@ -178,7 +178,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
                 err = Err(e);
             }
         },
-        _ = &mut s.kill_notifier => killed = true,
+        _ = s.kill_notifier.recv() => killed = true,
         migrate = migrate_comm.recv() => {
             // We should broadcast all media data currently held before migrating
             if !data.is_empty() {
@@ -269,7 +269,7 @@ pub async fn broadcast(mut s: BroadcastInfo<'_>) {
     let mut migrate_comm = server.migrate.clone();
     tokio::select! {
         _ = fut => (),
-        _ = s.kill_notifier => (),
+        _ = s.kill_notifier.recv() => (),
         migrate = migrate_comm.recv() => {
             migrate_stream(
                 MigrateStreamProps {
@@ -425,7 +425,7 @@ async fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReade
     let mut chunk_size = VecDeque::new();
 
     // Get the next packet from the media format.
-    while let Some(packet) = rx.recv().await {
+    while let Ok(packet) = rx.recv().await {
         let slice = packet.data.into_vec();
 
         if let Err(e) = push_to_queue(&mut broadcast, mountpoint, queue_size, &mut chunk_size, server, slice) {

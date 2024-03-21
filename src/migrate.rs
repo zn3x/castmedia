@@ -4,7 +4,8 @@ use std::{
 };
 use anyhow::Result;
 use qanat::broadcast::{Sender, restore_channel_from_snapshot, self};
-use tokio::{sync::mpsc::{self, UnboundedSender, UnboundedReceiver}, runtime::Handle};
+use tokio::runtime::Handle;
+use qanat::mpsc::{self, UnboundedSender, UnboundedReceiver};
 use serde::{Serialize, Deserialize};
 use passfd::FdPassingExt;
 use tracing::{error, info};

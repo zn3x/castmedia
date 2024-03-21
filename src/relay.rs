@@ -5,10 +5,12 @@ use std::{
 use anyhow::Result;
 use ::futures::{future::select_all, FutureExt};
 use hashbrown::{HashMap, hash_map::OccupiedError};
-use qanat::broadcast::{RecvError, Receiver};
+use qanat::{
+    mpsc,
+    broadcast::{RecvError, Receiver}
+};
 use serde_json::json;
 use tokio::{
-    sync::mpsc,
     net::TcpStream,
     io::{BufStream, AsyncWriteExt}, task::JoinHandle
 };
@@ -436,7 +438,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
 
     let mut sources = HashMap::new();
     if let Some(mut m) = migrate_successor {
-        while let Some(v) = m.recv().await {
+        while let Ok(v) = m.recv().await {
             match v {
                 RelaySourceMigrate::Normal { stream, addr, info } => {
                     let mount    = info.mountpoint.clone();
@@ -775,7 +777,7 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
     let mut migrate_comm = serv.migrate.clone();
     loop {
         tokio::select! {
-            _ = &mut on_demand.kill_notifier => break,
+            _ = on_demand.kill_notifier.recv() => break,
             _ = on_demand
                 .on_demand_notify
                 .wait_until(|| {
@@ -840,7 +842,7 @@ async fn relay_source_on_demand_exepction(ret: RelayBroadcastStatus) -> Option<S
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     match on_demand.kill_notifier.try_recv() {
                         // If we get kill notification or channel closed we stop
-                        Ok(_) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => None,
+                        Ok(_) | Err(qanat::oneshot::TryRecvError::Closed) => None,
                         _ => Some(on_demand)
                     }
                 },
