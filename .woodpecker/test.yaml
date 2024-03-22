@@ -6,6 +6,10 @@ steps:
     image: rust
     environment: [CARGO_TERM_COLOR=always]
     commands:
+      - apt update && apt -y install ffmpeg curl
       - rustup default $RUST
       - cargo check
+      - cargo build
       - cargo test
+    when:
+      event: push
