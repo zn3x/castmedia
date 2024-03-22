@@ -9,3 +9,5 @@ steps:
       - rustup default $RUST
       - cargo check
       - cargo test
+    when:
+      event: [push, pull_request, pull_request_closed]
