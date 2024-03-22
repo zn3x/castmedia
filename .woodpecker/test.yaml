@@ -9,6 +9,7 @@ steps:
       - apt update && apt install ffmpeg curl
       - rustup default $RUST
       - cargo check
+      - cargo build
       - cargo test
     when:
       event: [push, pull_request, pull_request_closed]
