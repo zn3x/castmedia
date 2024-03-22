@@ -12,4 +12,4 @@ steps:
       - cargo build
       - cargo test
     when:
-      event: [push, pull_request, pull_request_closed]
+      event: [pull_request, pull_request_closed]
