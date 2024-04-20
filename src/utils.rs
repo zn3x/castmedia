@@ -118,7 +118,7 @@ pub fn get_header< 'a >(key: &str, headers: &[httparse::Header< 'a >]) -> Option
 pub fn get_basic_auth( headers: &[httparse::Header] ) -> Result<Option<(String, String)>> {
     if let Some(auth) = get_header("Authorization", headers) {
         let basic_auth = std::str::from_utf8(auth)?.replace("Basic ", "");
-        let bs64       = base64::engine::general_purpose::URL_SAFE;
+        let bs64       = base64::engine::general_purpose::STANDARD;
         if let Some((name, pass)) = std::str::from_utf8(&bs64.decode(basic_auth)?)?.split_once(':') {
             return Ok(Some((String::from(name), String::from(pass))))
         }
@@ -130,7 +130,7 @@ pub fn basic_auth(user: &str, pass: &str) -> String {
     let mut s = String::from(user);
     s.push(':');
     s.push_str(pass);
-    let bs64 = base64::engine::general_purpose::URL_SAFE;
+    let bs64 = base64::engine::general_purpose::STANDARD;
     bs64.encode(s)
 }
 
