@@ -3,7 +3,7 @@ use std::{
     os::unix::net::{UnixListener, UnixStream}, io::{Write, Read}, time::Duration, num::NonZeroUsize
 };
 use anyhow::Result;
-use qanat::broadcast::{Sender, restore_channel_from_snapshot, self};
+use qanat::broadcast::{restore_channel_from_snapshot, self};
 use tokio::runtime::Handle;
 use qanat::mpsc::{self, UnboundedSender, UnboundedReceiver};
 use serde::{Serialize, Deserialize};
@@ -150,10 +150,10 @@ pub struct MigrateCommand {
     pub slave_mountupdates: mpsc::UnboundedSender<Option<MigrateSlaveMountUpdatesInfo>>,
 }
 
-pub async fn spawn_listener(server: Arc<Server>, migrate: Sender<Arc<MigrateCommand>>) {
+pub async fn spawn_listener(server: Arc<Server>) {
     // Spawning another task that will handle migration
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = migrate_predecessor(server, migrate) {
+        if let Err(e) = migrate_predecessor(server) {
             error!("Migration failed: {}", e);
             std::process::exit(2);
         }
@@ -163,20 +163,20 @@ pub async fn spawn_listener(server: Arc<Server>, migrate: Sender<Arc<MigrateComm
 pub async fn handle_successor(server: Arc<Server>) {
     // For us to spawn all client tasks we must also pass runtime handle to blocking task
     let runtime_handle = Handle::current();
-    tokio::task::spawn_blocking(move || {
+    _ = tokio::task::spawn_blocking(move || {
         if let Err(e) = migrate_successor(server, runtime_handle) {
             error!("Migration failed: {}", e);
-            std::process::exit(2);
         }
-    });
+    }).await;
 }
 
-fn migrate_predecessor(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand>>) -> Result<()> {
+fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
     // Start listening and wait for a successor connection
     let bind = server.config.migrate.bind.as_ref().unwrap();
     _ = std::fs::remove_file(bind);
     let migrate_sock = UnixListener::bind(bind)
         .map_err(|_| anyhow::Error::msg("We should be able to create a unix socket"))?;
+    info!("Listening on {} (Migration socket)", bind);
     // Our job pretty much done
     // Our child will take care of the rest :')
     // It was a good life afterall
@@ -184,6 +184,12 @@ fn migrate_predecessor(server: Arc<Server>, mut migrate: Sender<Arc<MigrateComma
         .map_err(|_| anyhow::Error::msg("Can't accept connection from spawned child"))?;
 
     info!("New instance asking for migration, beginning migration...");
+
+    let mut migrate = server
+        .migrate_tx
+        .blocking_lock()
+        .take()
+        .ok_or(anyhow::Error::msg("Migration tx taken already"))?;
 
     let (tx, mut rx)   = mpsc::unbounded_channel();
     let (tx1, mut rx1) = mpsc::unbounded_channel();

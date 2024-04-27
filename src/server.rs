@@ -10,7 +10,7 @@ use tokio::{
     task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock, Mutex}
 };
 use tokio_native_tls::{native_tls, TlsStream, TlsAcceptor};
-use tracing::{info, error};
+use tracing::{info, error, warn};
 use hashbrown::{HashMap, hash_map::DefaultHashBuilder};
 use inotify::{Inotify, WatchMask};
 use anyhow::Result;
@@ -407,9 +407,13 @@ pub async fn listener(config: ServerSettings) {
         info!("Server started on {}", local);
     }
     
-    // Doing migration if there is an active instance
     if serv.config.migrate.enabled {
+        // Doing migration if there is an active instance
         crate::migrate::handle_successor(serv.clone()).await;
+        // After it we start listening ourselves
+        crate::migrate::spawn_listener(serv.clone()).await;
+    } else {
+        warn!("Migration is disabled, zero downtimes won't be possible");
     }
 
     if !serv.config.master.is_empty() {
