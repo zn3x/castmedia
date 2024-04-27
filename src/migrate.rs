@@ -228,6 +228,7 @@ fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
             if count >= total {
                 break;
             }
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -241,6 +242,7 @@ fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
             // We got all sources and now exiting
             break;
         }
+        std::thread::sleep(Duration::from_millis(10));
     }
     successor.write_all(&0u64.to_be_bytes())?;
 
@@ -263,6 +265,7 @@ fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
         if lock.len() == 0 {
             break;
         }
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     // Doing best effort here as there is no way to knew if
