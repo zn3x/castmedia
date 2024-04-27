@@ -12,8 +12,7 @@ use crate::{
     response::{self, ChunkedResponse},
     auth::{self, AllowedAuthType}, utils,
     broadcast::broadcast_metadata,
-    source::{MoveClientsCommand, MoveClientsType, SourceAccessType},
-    migrate
+    source::{MoveClientsCommand, MoveClientsType, SourceAccessType}
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
@@ -351,34 +350,6 @@ async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<(
     Ok(())
 }
 
-async fn server_restart(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    auth::admin_auth(session, req.auth).await?;
-    let sid = &session.server.config.info.id;
-
-    // Checking if all bind addresses are not tls
-    let uses_tls = session.server.config.address
-        .iter()
-        .any(|x| x.tls.is_some() && x.tls.as_ref().unwrap().enabled);
-    if uses_tls || (session.server.config.admin_access.address.tls.is_some()
-        && session.server.config.admin_access.address.tls.as_ref().unwrap().enabled) {
-        response::forbidden(&mut session.stream, sid, "Migration with Tls not supported").await?;
-        return Ok(());
-    }
-
-    match session.server.migrate_tx.lock().await.take() {
-        Some(migrate) => {
-            info!("Starting zero downtime migration requested by {}", session);
-            migrate::handle(session.server.clone(), migrate).await;
-            response::ok_200(&mut session.stream, sid).await?;
-        },
-        None => {
-            response::bad_request(&mut session.stream, sid, "Migration in progress...").await?;
-        }
-    }
-
-    Ok(())
-}
-
 async fn server_shutdown(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
     auth::admin_auth(session, req.auth).await?;
     let sid = &session.server.config.info.id;
@@ -424,8 +395,6 @@ pub async fn handle_request<'a>(mut session: ClientSession, req: AdminRequest) -
         "/admin/listclients" => list_clients(&mut session, req).await,
         // Kill a specific listener
         "/admin/killclient" => kill_client(&mut session, req).await,
-        // Do a zero downtime server restart
-        "/admin/restart" => server_restart(&mut session, req).await,
         // Shutdown server
         "/admin/shutdown" => server_shutdown(&mut session, req).await,
         
