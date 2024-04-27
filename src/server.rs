@@ -411,7 +411,16 @@ pub async fn listener(config: ServerSettings) {
         // Doing migration if there is an active instance
         crate::migrate::handle_successor(serv.clone()).await;
         // After it we start listening ourselves
-        crate::migrate::spawn_listener(serv.clone()).await;
+        // Checking if all bind addresses are not tls
+        let uses_tls = serv.config.address
+            .iter()
+            .any(|x| x.tls.is_some() && x.tls.as_ref().unwrap().enabled);
+        if uses_tls || (serv.config.admin_access.address.tls.is_some()
+            && serv.config.admin_access.address.tls.as_ref().unwrap().enabled) {
+            warn!("Migration listener won't be started because Tls migration is not supported!");
+        } else {
+            crate::migrate::spawn_listener(serv.clone()).await;
+        }
     } else {
         warn!("Migration is disabled, zero downtimes won't be possible");
     }
