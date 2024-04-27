@@ -42,6 +42,8 @@ const SERVERADDR_ALLOW_AUTH: bool        = true;
 const ADMINACC_ENABLED: bool             = true;
 const ADMINACC_BIND: &str                = "127.0.0.1:9100";
 
+const MIGRATE_ENABLED: bool              = false;
+
 const MISC_UNSAFE_PASS: bool             = false;
 
 /// Server configuration
@@ -60,6 +62,9 @@ pub struct ServerSettings {
     /// Predefined limits that server shall not surpass
     #[serde(default = "default_val_limits")]
     pub limits: ServerLimits,
+    /// Migration related
+    #[serde(default = "default_val_migrate")]
+    pub migrate: Migrate,
     /// Other misc settings
     #[serde(default = "default_val_misc")]
     pub misc: MiscSettings,
@@ -73,6 +78,13 @@ pub struct ServerSettings {
     /// Master server relaying for slave instance
     #[serde(default = "default_val_master")]
     pub master: Vec<MasterServer>
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Migrate {
+    #[serde(default = "default_val_migrate_enabled")]
+    pub enabled: bool,
+    pub bind: Option<String>
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -221,6 +233,7 @@ impl Default for ServerSettings {
             metaint: default_val_metaint(),
             info: default_val_info(),
             limits: default_val_limits(),
+            migrate: default_val_migrate(),
             admin_access: default_val_admin_access(),
             account: default_val_accounts(),
             master: default_val_master(),
@@ -273,6 +286,15 @@ impl Default for AdminAccess {
     }
 }
 
+impl Default for Migrate {
+    fn default() -> Self {
+        Self {
+            enabled: default_val_migrate_enabled(),
+            bind: None
+        }
+    }
+}
+
 fn default_val_address() -> Vec<ServerAddress> {
     vec![ ServerAddress { bind: BIND.parse().expect("Should be a valid socket address"), tls: None, allow_auth: true } ]
 }
@@ -313,6 +335,9 @@ fn default_val_master_mounts_limit() -> usize { MASTER_MOUNTS_LIMIT }
 fn default_val_master_transparent_update_interval() -> u64 { MASTER_TRANS_UP_INTERVAL }
 fn default_val_master_auth_stream_on_demand() -> bool { MASTER_AUTH_STREAM_ON_DEMAND }
 fn default_val_master_auth_reconnect_timeout() -> u64 { MASTER_AUTH_RECONNECT_TIMEOUT }
+
+fn default_val_migrate() -> Migrate { Migrate::default() }
+fn default_val_migrate_enabled() -> bool { MIGRATE_ENABLED }
 
 fn default_val_misc() -> MiscSettings { MiscSettings::default() }
 fn default_val_misc_unsafe_pass() -> bool { MISC_UNSAFE_PASS }
@@ -518,6 +543,22 @@ impl ServerSettings {
             if let MasterServerRelayScheme::Transparent { update_interval } = &master.relay_scheme {
                 if *update_interval > 200000 {
                     warn!("Update interval {} for {} may be too big", master.url, update_interval);
+                }
+            }
+        }
+
+        if config.migrate.enabled {
+            match config.migrate.bind.as_ref() {
+                Some(f) => {
+                    _ = std::fs::remove_file(f);
+                    if let Err(e) = std::os::unix::net::UnixListener::bind(f) {
+                        error!("Migration socket can't bind to {}: {}", f, e);
+                        errors += 1;
+                    }
+                },
+                None => {
+                    error!("Migration socket path must be specified when migration is enabled");
+                    errors += 1;
                 }
             }
         }

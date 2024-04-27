@@ -68,7 +68,12 @@ admin_access:
   enabled: true
   address:
     bind: 127.0.0.1:9100
-
+# Migration related configuration
+migrate:
+  # This must be enabled in both current instance and successor instance for migration to be successfully done
+  enabled: true
+  # The unix socket address where an instance waits for a successor instance to pass it's state to
+  bind: /tmp/migrate.sock
 misc:
   # allow unsafe password for accounts
   unsafe_pass: false
