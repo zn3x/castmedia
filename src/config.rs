@@ -550,9 +550,10 @@ impl ServerSettings {
         if config.migrate.enabled {
             match config.migrate.bind.as_ref() {
                 Some(f) => {
-                    _ = std::fs::remove_file(f);
-                    if let Err(e) = std::os::unix::net::UnixListener::bind(f) {
-                        error!("Migration socket can't bind to {}: {}", f, e);
+                    let path = std::path::Path::new(f);
+                    
+                    if !path.is_file() && path.parent().map(|x| x.exists()).ne(&Some(true)) {
+                        error!("Path {} for migration socket doesn't look valid", f);
                         errors += 1;
                     }
                 },
