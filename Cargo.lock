@@ -66,26 +66,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0952808a6c2afd1aa8947271f3a60f1a6763c7b912d210184c5149b5cf147247"
 
 [[package]]
-name = "arg"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "568bbed0b9810cd4b43c8560ff3c5d2318b29d78fc314818d156bbed7075d394"
-dependencies = [
- "arg-derive",
-]
-
-[[package]]
-name = "arg-derive"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "849efc162c06e51ce911bf4fe702f62a08f3b6ebbbfc5178e86c6bae449c2c60"
-dependencies = [
- "quote",
- "syn 1.0.109",
- "tabwriter",
-]
-
-[[package]]
 name = "arrayvec"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -192,7 +172,6 @@ name = "castmedia"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arg",
  "base64",
  "chrono",
  "diatomic-waker",
@@ -1700,15 +1679,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tabwriter"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a327282c4f64f6dc37e3bba4c2b6842cc3a992f204fa58d917696a89f691e5f6"
-dependencies = [
- "unicode-width",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1938,12 +1908,6 @@ checksum = "a56d1686db2308d901306f92a263857ef59ea39678a5458e7cb17f01415101f5"
 dependencies = [
  "tinyvec",
 ]
-
-[[package]]
-name = "unicode-width"
-version = "0.1.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e51733f11c9c4f72aa0c160008246859e340b00807569a0da0e7a1079b27ba85"
 
 [[package]]
 name = "unsafe-libyaml"
