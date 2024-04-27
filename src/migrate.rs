@@ -160,11 +160,11 @@ pub async fn spawn_listener(server: Arc<Server>, migrate: Sender<Arc<MigrateComm
     });
 }
 
-pub async fn handle_successor(server: Arc<Server>, migrate: String) {
+pub async fn handle_successor(server: Arc<Server>) {
     // For us to spawn all client tasks we must also pass runtime handle to blocking task
     let runtime_handle = Handle::current();
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = migrate_successor(server, migrate, runtime_handle) {
+        if let Err(e) = migrate_successor(server, runtime_handle) {
             error!("Migration failed: {}", e);
             std::process::exit(2);
         }
@@ -301,11 +301,12 @@ fn write_sources(successor: &mut UnixStream,
     Ok(())
 }
 
-fn migrate_successor(server: Arc<Server>, migrate: String, runtime_handle: Handle) -> Result<()> {
-    info!("Starting migration from old instance.");
-    let mut predeseccor = UnixStream::connect(migrate)
+fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> {
+    let bind = server.config.migrate.bind.as_ref().unwrap();
+    let mut predeseccor = UnixStream::connect(bind)
         .map_err(|_| anyhow::Error::msg("No instance currently running found on migration socket"))?;
 
+    info!("Starting migration from old instance.");
     let mut slave_id = match server.config.master.is_empty() {
         true => Vec::new(),
         false => (0..server.config.master.len()).collect::<Vec<_>>()

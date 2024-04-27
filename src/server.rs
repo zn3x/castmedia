@@ -18,7 +18,7 @@ use anyhow::Result;
 use crate::{
     config::{ServerSettings, TlsIdentity, Account}, 
     client, source::Source, migrate::MigrateCommand,
-    auth::{self, HashCalculation}, ArgParse, relay,
+    auth::{self, HashCalculation}, relay,
     auth::UserRef
 };
 
@@ -52,8 +52,6 @@ pub type Stream = Box<dyn Socket>;
 /// Struct holding all info related to server
 pub struct Server {
     pub config: ServerSettings,
-    /// argument to be used on restart
-    pub args: ArgParse,
     /// Semaphore intended to cap concurrent connection to server
     pub max_clients: Arc<Semaphore>,
     /// List of all sources whereas the mountpoint is the key
@@ -343,7 +341,7 @@ async fn bind(bind: SocketAddr) -> TcpListener {
     }
 }
 
-pub async fn listener(config: ServerSettings, args: ArgParse, migrate_op: Option<String>) {
+pub async fn listener(config: ServerSettings) {
     let start_time  = chrono::offset::Utc::now();
     let init_size   = 1.try_into().expect("1 should not be 0");
     let (tx, rx)    = channel(init_size);
@@ -361,7 +359,6 @@ pub async fn listener(config: ServerSettings, args: ArgParse, migrate_op: Option
             new_source_event_rx: rx2
         },
         config,
-        args,
         stats: ServerStats::new(start_time.timestamp()),
         migrate_tx: Mutex::new(Some(tx)),
         migrate: rx,
@@ -410,11 +407,12 @@ pub async fn listener(config: ServerSettings, args: ArgParse, migrate_op: Option
         info!("Server started on {}", local);
     }
     
-    if let Some(migrate_op) = migrate_op {
-        // In case we are doing migration we need to spawn
-        // slave server tasks while migrating
-        crate::migrate::handle_successor(serv, migrate_op).await;
-    } else if !serv.config.master.is_empty() {
+    // Doing migration if there is an active instance
+    if serv.config.migrate.enabled {
+        crate::migrate::handle_successor(serv.clone()).await;
+    }
+
+    if !serv.config.master.is_empty() {
         for i in 0..serv.config.master.len() {
             let serv_clone = serv.clone();
             tokio::spawn(async move {

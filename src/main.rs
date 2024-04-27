@@ -1,56 +1,23 @@
-use castmedia::{
-    ArgParse,
-    config, server
-};
+use castmedia::{config, server};
 
-use arg::{Args, ParseError, ParseKind};
+use tracing::error;
 
-use tracing::{error, warn};
+fn parse_conf_path() -> String {
+    let mut args: Vec<String> = std::env::args().collect();
 
-async fn parse_args() -> ArgParse {
-    let args                = Vec::from_iter(std::env::args());
-    let mut args: Vec<&str> = args.iter().map(AsRef::as_ref).collect::<Vec<_>>();
-    args.remove(0);
-    let args = match ArgParse::from_args(args) {
-        Ok(v) => v,
-        Err(e) => {
-            if let ParseKind::Top(ParseError::HelpRequested(help)) = e {
-                eprintln!("{}", help);
-                std::process::exit(1);
-            }
-            eprintln!("Error parsing cmd line args: {}", e);
-            std::process::exit(1);
-        }
-    };
+    if args.len() < 2 {
+        eprintln!("Help: {} <config path>", args[0]);
+        std::process::exit(1);
+    }
 
-    args
+    args.remove(1)
 }
 
 #[tokio::main]
 async fn main() {
-    let args = parse_args().await;
-
     tracing_subscriber::fmt().with_thread_names(true).with_max_level(tracing::Level::DEBUG).init();
 
-    if std::env::args()
-        .next()
-        .and_then(|path| if path.starts_with('/') { None } else { Some(()) })
-        .is_some() {
-        warn!("Executed with a relative path, restarting may fail if we can't resolve path");
-    }
-
-    if args.gen {
-        config::ServerSettings::create_default(&args.config_file);
-        std::process::exit(0);
-    }
-    if args.verify {
-        let config = config::ServerSettings::load(&args.config_file);
-        config::ServerSettings::verify(&config, config.misc.unsafe_pass);
-        std::process::exit(0);
-    }
-    let migrate = args.migrate.clone();
-    
-    let mut config = config::ServerSettings::load(&args.config_file);
+    let mut config = config::ServerSettings::load(&parse_conf_path());
     {
         let e = config::ServerSettings::verify(&config, config.misc.unsafe_pass);
         if e > 0 {
@@ -60,5 +27,5 @@ async fn main() {
     }
     config::ServerSettings::hash_passwords(&mut config);
 
-    server::listener(config, args, migrate).await;
+    server::listener(config).await;
 }
