@@ -3,7 +3,7 @@ use std::{
     os::unix::net::{UnixListener, UnixStream}, io::{Write, Read}, time::Duration, num::NonZeroUsize
 };
 use anyhow::Result;
-use qanat::broadcast::{Sender, restore_channel_from_snapshot, self};
+use qanat::broadcast::{restore_channel_from_snapshot, self};
 use tokio::runtime::Handle;
 use qanat::mpsc::{self, UnboundedSender, UnboundedReceiver};
 use serde::{Serialize, Deserialize};
@@ -150,29 +150,47 @@ pub struct MigrateCommand {
     pub slave_mountupdates: mpsc::UnboundedSender<Option<MigrateSlaveMountUpdatesInfo>>,
 }
 
-pub async fn handle(server: Arc<Server>, migrate: Sender<Arc<MigrateCommand>>) {
+pub async fn spawn_listener(server: Arc<Server>) {
     // Spawning another task that will handle migration
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = migrate_operation(server, migrate) {
+        if let Err(e) = migrate_predecessor(server) {
             error!("Migration failed: {}", e);
-            error!("No recovery, exiting now...");
             std::process::exit(2);
         }
     });
 }
 
-pub async fn handle_successor(server: Arc<Server>, migrate: String) {
+pub async fn handle_successor(server: Arc<Server>) {
     // For us to spawn all client tasks we must also pass runtime handle to blocking task
     let runtime_handle = Handle::current();
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = migrate_operation_successor(server, migrate, runtime_handle) {
+    _ = tokio::task::spawn_blocking(move || {
+        if let Err(e) = migrate_successor(server, runtime_handle) {
             error!("Migration failed: {}", e);
-            std::process::exit(2);
         }
-    });
+    }).await;
 }
 
-fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand>>) -> Result<()> {
+fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
+    // Start listening and wait for a successor connection
+    let bind = server.config.migrate.bind.as_ref().unwrap();
+    _ = std::fs::remove_file(bind);
+    let migrate_sock = UnixListener::bind(bind)
+        .map_err(|_| anyhow::Error::msg("We should be able to create a unix socket"))?;
+    info!("Listening on {} (Migration socket)", bind);
+    // Our job pretty much done
+    // Our child will take care of the rest :')
+    // It was a good life afterall
+    let (mut successor, _) = migrate_sock.accept()
+        .map_err(|_| anyhow::Error::msg("Can't accept connection from spawned child"))?;
+
+    info!("New instance asking for migration, beginning migration...");
+
+    let mut migrate = server
+        .migrate_tx
+        .blocking_lock()
+        .take()
+        .ok_or(anyhow::Error::msg("Migration tx taken already"))?;
+
     let (tx, mut rx)   = mpsc::unbounded_channel();
     let (tx1, mut rx1) = mpsc::unbounded_channel();
     let (tx2, mut rx2) = mpsc::unbounded_channel();
@@ -183,29 +201,6 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
         master_mountupdates: tx2,
         slave_mountupdates: tx3
     }));
-
-    info!("Preparing launch of new instance");
-
-    let migrate_file = format!("/tmp/castmedia_{}.migrate", std::process::id());
-    let migrate_sock = UnixListener::bind(&migrate_file)
-        .map_err(|_| anyhow::Error::msg("We should be able to create a unix socket"))?;
-
-    // Now we actually spawn successor
-    let name = std::env::args()
-        .next()
-        .ok_or(anyhow::Error::msg("Should be able to get current process name"))?;
-    let mut successor_fh = std::process::Command::new(name);
-    successor_fh.args(["-m", &migrate_file]);
-    successor_fh.arg(&server.args.config_file);
-    let successor_fh = successor_fh.spawn()
-        .map_err(|_| anyhow::Error::msg("Should be able to spawn successor in migration"))?;
-
-    // Our job pretty much done
-    // Our child will take care of the rest :')
-    // It was a good life afterall
-    let (mut successor, _) = migrate_sock.accept()
-        .map_err(|_| anyhow::Error::msg("Can't accept connection from spawned child"))?;
-
 
     // The migration is done in the following way because we don't have any efficied way to
     // broadcast migration to all tasks, so we end not knewing when all senders are dropped
@@ -233,6 +228,7 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
             if count >= total {
                 break;
             }
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -246,6 +242,7 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
             // We got all sources and now exiting
             break;
         }
+        std::thread::sleep(Duration::from_millis(10));
     }
     successor.write_all(&0u64.to_be_bytes())?;
 
@@ -268,6 +265,7 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
         if lock.len() == 0 {
             break;
         }
+        std::thread::sleep(Duration::from_millis(10));
     }
 
     // Doing best effort here as there is no way to knew if
@@ -284,7 +282,7 @@ fn migrate_operation(server: Arc<Server>, mut migrate: Sender<Arc<MigrateCommand
     successor.write_all(&0u64.to_be_bytes())?;
 
     // Next to you son :'') ...
-    info!("Control now passed to new instance with pid {}, exiting.", successor_fh.id());
+    info!("Control now passed to new instance, exiting.");
     std::process::exit(0);
 }
 
@@ -312,10 +310,12 @@ fn write_sources(successor: &mut UnixStream,
     Ok(())
 }
 
-fn migrate_operation_successor(server: Arc<Server>, migrate: String, runtime_handle: Handle) -> Result<()> {
-    info!("Starting migration from old instance.");
-    let mut predeseccor = UnixStream::connect(migrate)?;
+fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> {
+    let bind = server.config.migrate.bind.as_ref().unwrap();
+    let mut predeseccor = UnixStream::connect(bind)
+        .map_err(|_| anyhow::Error::msg("No instance currently running found on migration socket"))?;
 
+    info!("Starting migration from old instance.");
     let mut slave_id = match server.config.master.is_empty() {
         true => Vec::new(),
         false => (0..server.config.master.len()).collect::<Vec<_>>()

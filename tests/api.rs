@@ -29,6 +29,9 @@ admin_access:
   enabled: true
   address:
     bind: 127.0.0.1:9100
+migrate:
+  enabled: true
+  bind: /tmp/config_admin_api.sock
 misc:
   unsafe_pass: true
 ";
@@ -147,8 +150,6 @@ async fn admin_api() {
         assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/stats", AUTH_INVALID, BASE)).await;
         assert_eq!(r, 401);
-        r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_ADMIN, BASE)).await;
-        assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_SOURCE, BASE)).await;
         assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_INVALID, BASE)).await;
@@ -170,12 +171,6 @@ async fn admin_api() {
         r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_SLAVE, ADMIN)).await;
         assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/listmounts", AUTH_INVALID, ADMIN)).await;
-        assert_eq!(r, 401);
-        r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_SOURCE, ADMIN)).await;
-        assert_eq!(r, 401);
-        r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_SLAVE, ADMIN)).await;
-        assert_eq!(r, 401);
-        r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_INVALID, ADMIN)).await;
         assert_eq!(r, 401);
         r = get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_SOURCE, ADMIN)).await;
         assert_eq!(r, 401);
@@ -293,14 +288,14 @@ async fn admin_api() {
         let status = source1.try_wait();
         assert!(matches!(status, Ok(Some(_))));
 
-        // Testing restarting server
-        r = get_status_code(&format!("http://{}@{}/admin/restart", AUTH_ADMIN, ADMIN)).await;
-        assert_eq!(r, 200);
+        // Testing restarting server by creating a new instance that takes
+        let server1 = spawn_server(TEST_DIR, CONFIG_ADMIN_API, "admin_api.yaml").await;
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         let status = server.child.try_wait();
         assert!(matches!(status, Ok(Some(_))));
+        server = server1;
 
         let mounts = get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN)).await
             .json::<serde_json::Value>()

@@ -7,7 +7,7 @@ use std::{time::Duration, io::{Read, Write}};
 
 use castmedia::broadcast::metadata_decode;
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, probe::Hint, formats::FormatOptions, meta::MetadataOptions};
-use test_utils::{spawn_server, spawn_source_manual};
+use test_utils::{spawn_source_manual, spawn_server_blocking};
 
 const CONFIG: &str = "
 address:
@@ -28,6 +28,9 @@ admin_access:
   enabled: true
   address:
     bind: 127.0.0.1:9102
+migrate:
+  enabled: true
+  bind: /tmp/stream_config.sock
 misc:
   unsafe_pass: true
 ";
@@ -41,13 +44,7 @@ const MOUNT_SOURCE: &str  = "/stream.mp3";
 
 #[test]
 fn stream_general() {
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async move {
-            let mut server = spawn_server(TEST_DIR, CONFIG, "stream.yaml").await;
-            server.child.wait().await.ok();
-        });
-    });
+    let mut server = spawn_server_blocking(TEST_DIR, CONFIG, "stream.yaml");
 
     std::thread::sleep(Duration::from_secs(4));
 
@@ -123,12 +120,12 @@ fn stream_general() {
 
         drop(r);
         if i != 5 {
-            let r = test_utils::reqwest::blocking::get(format!("http://{}@{}/admin/restart", AUTH_ADMIN, ADMIN))
-                .unwrap()
-                .status()
-                .as_u16();
-            assert_eq!(r, 200);
-            std::thread::sleep(Duration::from_secs(1));
+            let server1 = spawn_server_blocking(TEST_DIR, CONFIG, "stream.yaml");
+            std::thread::sleep(Duration::from_secs(2));
+
+            let status = server.child.try_wait();
+            assert!(matches!(status, Ok(Some(_))));
+            server = server1;
         }
     }
 
