@@ -7,7 +7,7 @@ edition = "2021"
 qanat = { git = "https://codeberg.org/zesty/qanat" }
 
 tokio = { version = "1.29.0", features = [ "net", "fs", "io-util", "time", "sync", "rt-multi-thread", "macros" ] }
-tokio-native-tls = "0.3.1"
+tokio-native-tls = { version = "0.3.1", features = [ "vendored" ] }
 
 inotify = "0.10"
 
@@ -49,3 +49,8 @@ diatomic-waker = "0.1.0"
 [dev-dependencies]
 tokio = { version = "1.29.0", features = [ "full" ] }
 test-utils = { path = "test-utils" }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
