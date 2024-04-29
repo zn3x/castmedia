@@ -187,9 +187,7 @@ fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
 
     let mut migrate = server
         .migrate_tx
-        .blocking_lock()
-        .take()
-        .ok_or(anyhow::Error::msg("Migration tx taken already"))?;
+        .clone();
 
     let (tx, mut rx)   = mpsc::unbounded_channel();
     let (tx1, mut rx1) = mpsc::unbounded_channel();

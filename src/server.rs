@@ -7,7 +7,7 @@ use qanat::{
 };
 use tokio::{
     net::{TcpListener, TcpStream},
-    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock, Mutex}
+    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock}
 };
 use tokio_native_tls::{native_tls, TlsStream, TlsAcceptor};
 use tracing::{info, error, warn};
@@ -59,7 +59,7 @@ pub struct Server {
     /// Server general stats (this excludes calls on /api and /admin)
     pub stats: ServerStats,
     /// Trigger to notify all tasks when live migration is done
-    pub migrate_tx: Mutex<Option<Sender<Arc<MigrateCommand>>>>,
+    pub migrate_tx: Sender<Arc<MigrateCommand>>,
     /// Receiver to listener when migration happens
     pub migrate: Receiver<Arc<MigrateCommand>>,
     /// In order not to block async tasks, we have dedicated thread to calculate hashes
@@ -355,7 +355,7 @@ pub async fn listener(config: ServerSettings) {
         },
         config,
         stats: ServerStats::new(start_time.timestamp()),
-        migrate_tx: Mutex::new(Some(tx)),
+        migrate_tx: tx,
         migrate: rx,
         hash_calculator: tx1
     });
