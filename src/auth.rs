@@ -6,7 +6,7 @@ use hashbrown::HashMap;
 use scrypt::password_hash::PasswordVerifier;
 use qanat::{mpsc, oneshot};
 
-use crate::{server::{ClientSession, Server}, response, config::Account};
+use crate::{server::{ClientSession, Server, AddrType}, response, config::Account};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AllowedAuthType {
@@ -51,19 +51,11 @@ pub fn password_hasher_thread(server: Arc<Server>, mut rx: mpsc::UnboundedReceiv
 }
 
 pub async fn verify_auth_enabled(session: &mut ClientSession) -> Result<()> {
-    let mut enabled = false;
-    if let Ok(v) = session.stream.local_addr() {
-        if session.server.config.admin_access.address.bind.eq(&v) {
-            enabled = session.server.config.admin_access.address.allow_auth;
-        } else {
-            for addr in &session.server.config.address {
-                if addr.bind.eq(&v) {
-                    enabled = addr.allow_auth;
-                    break;
-                }
-            }
-        }
-    }
+    let enabled = match session.addr_type {
+        AddrType::Admin => session.server.config.admin_access.address.allow_auth,
+        AddrType::AuthAllowed => true,
+        AddrType::Simple => false
+    };
 
     if !enabled {
         response::forbidden(&mut session.stream, &session.server.config.info.id, "Access not allowed").await?;
@@ -118,7 +110,7 @@ pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType,
                     }
                 },
                 Account::Admin { .. } => {
-                    if session.admin_addr {
+                    if session.addr_type == AddrType::Admin {
                         has_permission = true;
                     }
                 },
@@ -149,7 +141,7 @@ pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType,
 
 pub async fn admin_auth(session: &mut ClientSession, auth: Option<(String, String)>) -> Result<()> {
     // Making sure we are receiving this through admin interface
-    if session.admin_addr {
+    if session.addr_type == AddrType::Admin {
         if !session.server.config.admin_access.address.allow_auth {
             response::forbidden(&mut session.stream, &session.server.config.info.id, "Access not allowed").await?;
             return Err(anyhow::Error::msg("Attempt to access admin interface with disabled auth"));

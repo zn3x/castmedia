@@ -135,8 +135,8 @@ pub struct RelayParams {
 
 /// A client session
 pub struct ClientSession {
-    /// Is this an admin address
-    pub admin_addr: bool,
+    /// Type of address: Is this an admin address or where auth is allowed
+    pub addr_type: AddrType,
     /// Server info
     pub server: Arc<Server>,
     /// Socket of this client session
@@ -145,6 +145,13 @@ pub struct ClientSession {
     pub addr: SocketAddr,
     /// Assign account when user authentifies
     pub user: Option<UserRef>
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum AddrType {
+    Admin,
+    AuthAllowed,
+    Simple
 }
 
 impl std::fmt::Display for ClientSession {
@@ -166,7 +173,7 @@ pub struct Session {
     pub addr: SocketAddr
 }
 
-async fn accept_connections(serv: Arc<Server>, listener: TcpListener, admin_addr: bool) {
+async fn accept_connections(serv: Arc<Server>, listener: TcpListener, addr_type: AddrType) {
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
@@ -180,7 +187,7 @@ async fn accept_connections(serv: Arc<Server>, listener: TcpListener, admin_addr
                     let aq  = sem.try_acquire();
                     if let Ok(_guard) = aq {
                         client::handle(ClientSession {
-                            admin_addr,
+                            addr_type,
                             server: serv_clone,
                             // Use bufferer for socket to reduce syscalls we make
                             stream: Box::new(BufStream::new(stream)),
@@ -197,20 +204,8 @@ async fn accept_connections(serv: Arc<Server>, listener: TcpListener, admin_addr
     }
 }
 
-async fn tls_accept_connections(serv: Arc<Server>, listener: TcpListener, admin_addr: bool) {
+async fn tls_accept_connections(serv: Arc<Server>, listener: TcpListener, addr_type: AddrType, tls_identity: Option<TlsIdentity>) {
     // First we retrieve tls identity
-    let mut tls_identity = None;
-    if admin_addr {
-        tls_identity = Some(serv.config.admin_access.address.tls.as_ref().unwrap());
-    } else {
-        let local_addr = listener.local_addr().expect("Should be able to get local address");
-        for addr in &serv.config.address {
-            if addr.bind.eq(&local_addr) {
-                tls_identity = Some(addr.tls.as_ref().unwrap());
-                break;
-            }
-        }
-    }
     let tls_identity = tls_identity.expect("Should be able to find Tls identity");
     
     let inotify = Inotify::init()
@@ -222,13 +217,13 @@ async fn tls_accept_connections(serv: Arc<Server>, listener: TcpListener, admin_
 
     let mut tls_acceptor;
     let mut tls_id_hash         = 0u64;
-    (tls_id_hash, tls_acceptor) = load_cert(tls_identity, tls_id_hash).await
+    (tls_id_hash, tls_acceptor) = load_cert(&tls_identity, tls_id_hash).await
         .expect("Failed loading Tls identity")
         .unwrap();
 
     loop {
         tokio::select! {
-            _ = tls_connection_acceptor(&serv, &listener, admin_addr, &tls_acceptor) => {
+            _ = tls_connection_acceptor(&serv, &listener, addr_type, &tls_acceptor) => {
                 continue;
             },
             u = tls_update_stream.next() => {
@@ -241,7 +236,7 @@ async fn tls_accept_connections(serv: Arc<Server>, listener: TcpListener, admin_
             }
         }
 
-        match load_cert(tls_identity, tls_id_hash).await {
+        match load_cert(&tls_identity, tls_id_hash).await {
             Ok(Some(v)) => {
                 tls_id_hash  = v.0;
                 tls_acceptor = v.1;
@@ -271,7 +266,7 @@ async fn load_cert(tls_identity: &TlsIdentity, old_hash: u64) -> Result<Option<(
 }
 
 #[inline]
-async fn tls_connection_acceptor(serv: &Arc<Server>, listener: &TcpListener, admin_addr: bool, tls_acceptor: &TlsAcceptor) {
+async fn tls_connection_acceptor(serv: &Arc<Server>, listener: &TcpListener, addr_type: AddrType, tls_acceptor: &TlsAcceptor) {
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
@@ -293,7 +288,7 @@ async fn tls_connection_acceptor(serv: &Arc<Server>, listener: &TcpListener, adm
                             }
                         };
                         client::handle(ClientSession {
-                            admin_addr,
+                            addr_type,
                             server: serv_clone,
                             // Use bufferer for socket to reduce syscalls we make
                             stream: Box::new(BufStream::new(tls_stream)),
@@ -380,9 +375,16 @@ pub async fn listener(config: ServerSettings) {
         let tls = serv.config.admin_access.address.tls.as_ref().is_some_and(|x| x.enabled);
         info!("Listening on {}:{} (Admin interface) (Tls:{tls})", bind_addr.ip(), bind_addr.port());
         if tls {
-            set.spawn(tls_accept_connections(serv.clone(), listener, true));
+            set.spawn(
+                tls_accept_connections(
+                    serv.clone(),
+                    listener,
+                    AddrType::Admin,
+                    serv.config.admin_access.address.tls.clone()
+                )
+            );
         } else {
-            set.spawn(accept_connections(serv.clone(), listener, true));
+            set.spawn(accept_connections(serv.clone(), listener, AddrType::Admin));
         }
     }
     
@@ -395,10 +397,18 @@ pub async fn listener(config: ServerSettings) {
         let listener = bind(addr.bind).await;
         let tls = addr.tls.as_ref().is_some_and(|x| x.enabled);
         info!("Listening on {}:{} (Tls:{tls})", addr.bind.ip(), addr.bind.port());
+        let is_auth = if addr.allow_auth { AddrType::AuthAllowed } else { AddrType::Simple };
         if tls {
-            set.spawn(tls_accept_connections(serv.clone(), listener, false));
+            set.spawn(
+                tls_accept_connections(
+                    serv.clone(),
+                    listener,
+                    is_auth,
+                    serv.config.admin_access.address.tls.clone()
+                )
+            );
         } else {
-            set.spawn(accept_connections(serv.clone(), listener, false));
+            set.spawn(accept_connections(serv.clone(), listener, is_auth));
         }
     }
 

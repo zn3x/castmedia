@@ -159,7 +159,7 @@ pub struct ServerAddress {
     pub allow_auth: bool
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TlsIdentity {
     pub enabled: bool, 
     pub cert: String,

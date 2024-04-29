@@ -18,7 +18,7 @@ use tracing::{info, error};
 use uuid::Uuid;
 
 use crate::{
-    server::{ClientSession, Stream, Server, Session},
+    server::{ClientSession, Stream, Server, Session, AddrType},
     request::{read_request, Request, RequestType, ListenRequest},
     source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast, SourceAccessType},
     response, utils, admin, api,
@@ -496,7 +496,7 @@ pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: Clien
         },
         ClientInfo::Listener(info) => {
             let session = ClientSession {
-                admin_addr: false,
+                addr_type: AddrType::Simple,
                 server,
                 stream,
                 addr,
@@ -525,7 +525,8 @@ pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: Clien
 
             _ = crate::relay::master_mount_updates(
                 ClientSession {
-                    admin_addr: true,
+                    // Should be fine as we route directly this connection to mount updates
+                    addr_type: AddrType::Admin,
                     server,
                     stream,
                     addr,
