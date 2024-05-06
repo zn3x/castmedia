@@ -102,30 +102,22 @@ pub async fn read_media_broadcast(stream: &mut Receiver<Arc<Vec<u8>>>,
                                   metadata: &mut Arc<(u64, Vec<u8>)>,
                                   temp_metadata: &mut Option<Arc<(u64, Vec<u8>)>>)
     -> Result<Arc<Vec<u8>>, RecvError> {
-    tokio::select! {
-        r = meta_stream.recv() => match r {
-            Ok(v) => {
-                let r = stream.recv().await;
-
-                if stream.read_position() >= v.0 {
-                    *metadata = v;
-                } else {
-                    *temp_metadata = Some(v);
-                }
-
-                r
-            },
-            Err(e) => Err(e)
+    let ret = stream.recv().await;
+    
+    match meta_stream.try_recv() {
+        Ok(v) => {
+            temp_metadata.replace(v);
         },
-        r = stream.recv() => {
-            if let Some(m) = temp_metadata.take() {
-                if stream.read_position() >= m.0 {
-                    *metadata = m;
-                } else {
-                    *temp_metadata = Some(m);
-                }
-            }
-            r
-        }
+        Err(qanat::broadcast::TryRecvError::Empty) => (),
+        Err(qanat::broadcast::TryRecvError::Closed) => return Err(qanat::broadcast::RecvError::Closed),
+        Err(qanat::broadcast::TryRecvError::Lagged(v)) => return Err(qanat::broadcast::RecvError::Lagged(v)),
     }
+
+    if temp_metadata.as_ref().is_some_and(|x| stream.read_position() >= x.0) {
+        *metadata = temp_metadata
+            .take()
+            .unwrap();
+    }
+
+    ret
 }
