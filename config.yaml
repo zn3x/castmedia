@@ -79,4 +79,6 @@ misc:
   unsafe_pass: false
   # Check if `X-Forwarded-For` header is present and set it as default IP address for client
   # Usefull when castmedia is sitting behind a reverse proxy like haproxy
-  check_forwardedfor: true
+  # WARNING!! This must only be enabled when a reverse proxy is configured
+  # otherwise any user will be able to alter it's own IP address
+  check_forwardedfor: false
