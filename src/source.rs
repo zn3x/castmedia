@@ -228,7 +228,7 @@ pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a
     }
 
     // Instanciating stream properties
-    let mut properties = IcyProperties::new(match utils::get_header("Content-Type", &request.headers) {
+    let mut properties = IcyProperties::new(match utils::get_header("content-type", &request.headers) {
         Some(v) => std::str::from_utf8(v)?.to_owned(),
         None => {
             response::forbidden(&mut session.stream, sid, "Missing content type").await?;
@@ -248,7 +248,7 @@ pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a
         chunked = false;
     } else {
         // PUT METHOD
-        chunked = match utils::get_header("Transger-Encoding", &request.headers) {
+        chunked = match utils::get_header("transger-encoding", &request.headers) {
             Some(b"identity") | None => false,
             Some(b"chunked") => true,
             _ => {
@@ -257,7 +257,7 @@ pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a
             }
         };
 
-        match utils::get_header("Expect", &request.headers) {
+        match utils::get_header("expect", &request.headers) {
             Some(b"100-continue") => {},
             Some(_) => {
                 response::bad_request(&mut session.stream, sid, "Expecting 100-continue in header expect").await?;

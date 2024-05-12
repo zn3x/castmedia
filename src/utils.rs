@@ -105,8 +105,9 @@ pub fn get_queries_val_for_keys<'a>(keys: &[&str], queries: &'a [Query]) -> Vec<
     vals
 }
 
+/// Get header from headers list if it exits
+/// Key given to this function *must be lowercase*
 pub fn get_header< 'a >(key: &str, headers: &[httparse::Header< 'a >]) -> Option<&'a [ u8 ]> {
-    let key = key.to_lowercase();
     for header in headers {
         if header.name.to_lowercase() == key {
             return Some(header.value)
@@ -116,7 +117,7 @@ pub fn get_header< 'a >(key: &str, headers: &[httparse::Header< 'a >]) -> Option
 }
 
 pub fn get_basic_auth( headers: &[httparse::Header] ) -> Result<Option<(String, String)>> {
-    if let Some(auth) = get_header("Authorization", headers) {
+    if let Some(auth) = get_header("authorization", headers) {
         let basic_auth = std::str::from_utf8(auth)?.replace("Basic ", "");
         let bs64       = base64::engine::general_purpose::STANDARD;
         if let Some((name, pass)) = std::str::from_utf8(&bs64.decode(basic_auth)?)?.split_once(':') {

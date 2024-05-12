@@ -303,7 +303,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
         return Err(anyhow::Error::msg("not an icecast server"));
     }
 
-    let chunked = match get_header("Transfer-Encoding", resp.headers) {
+    let chunked = match get_header("transfer-encoding", resp.headers) {
         // If nothing is set then it's identity
         Some(b"identity") | None => false,
         Some(b"chunked") => true,
@@ -314,7 +314,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     let metaint = if on_demand {
         None
     } else {
-        Some(match get_header("Icy-Metaint", resp.headers) {
+        Some(match get_header("icy-metaint", resp.headers) {
             Some(metaint) => std::str::from_utf8(metaint)?.parse::<usize>()?,
             None => {
                 return Err(anyhow::Error::msg("missing icy-metaint header"));
@@ -322,7 +322,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
         })
     };
 
-    let properties = IcyProperties::new(match get_header("Content-Type", resp.headers) {
+    let properties = IcyProperties::new(match get_header("content-type", resp.headers) {
         Some(v) => std::str::from_utf8(v)?.to_owned(),
         None => {
             return Err(anyhow::Error::msg("missing content-type header"));
