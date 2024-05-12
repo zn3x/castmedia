@@ -2,7 +2,6 @@ use std::{
     sync::{Arc, atomic::{Ordering, AtomicU64, AtomicI64}},
     time::Duration
 };
-use serde::{Serialize, Deserialize};
 use anyhow::Result;
 use hashbrown::{HashMap, hash_map::Entry};
 use qanat::{
@@ -22,23 +21,15 @@ use crate::{
     request::{read_request, Request, RequestType, ListenRequest},
     source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast, SourceAccessType},
     response, utils, admin, api,
-    migrate::{MigrateClientInfo, MigrateClient, MigrateConnection, VersionedMigrateConnection, MigrateCommand},
-    broadcast::read_media_broadcast
+    migrate::{MigrateClientInfo, MigrateCommand},
+    broadcast::read_media_broadcast,
+    internal_api::v1::{RelayedInfo, ClientProperties, MigrateClient, MigrateConnection}
 };
 
 pub struct Client {
     pub properties: ClientProperties,
     pub kill: Option<oneshot::Sender<()>>,
     pub stats: Arc<ClientStats>
-}
-
-#[obake::versioned]
-#[obake(version("0.1.0"))]
-#[obake(derive(Serialize, Deserialize))]
-#[derive(Serialize, Deserialize)]
-pub struct ClientProperties {
-    pub user_agent: Option<String>,
-    pub metadata: bool
 }
 
 pub struct ClientStats {
@@ -362,7 +353,6 @@ async fn migrate_listener(session: ClientSession,
             metaint: b.metaint as u64
         }
     };
-    let info: VersionedMigrateConnection = info.into();
     // Well, can't do nothing if we ran out of memory here
     if let Ok(info) = serde_json::to_vec(&info) {
         _ = migrate.listener.send(MigrateClientInfo {
@@ -474,18 +464,6 @@ pub struct StreamOnDemand {
     pub broadcast: SourceBroadcast,
     pub kill_notifier: oneshot::Receiver<()>,
     pub on_demand_notify: diatomic_waker::WakeSink
-}
-
-#[obake::versioned]
-#[obake(version("0.1.0"))]
-#[obake(derive(Debug, Serialize, Deserialize))]
-#[derive(Default, Debug, Serialize, Deserialize)]
-pub struct RelayedInfo {
-    pub metaint: usize,
-    pub metaint_position: usize,
-    pub metadata_reading: bool,
-    pub metadata_remaining: usize,
-    pub metadata_buffer: Vec<u8>
 }
 
 pub struct ListenerInfo {

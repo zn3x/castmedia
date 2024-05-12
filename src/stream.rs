@@ -18,12 +18,12 @@ use crate::{
     server::{Stream, Session, Server},
     source::{SourceBroadcast, SourceStats, MoveClientsCommand, MoveClientsType, SourceAccessType},
     migrate::{
-        MigrateConnection, VersionedMigrateConnection,
-        MigrateSource, MigrateSourceInfo, MigrateCommand, MigrateSourceConnectionType, ActiveSourceInfo
+        MigrateSourceInfo, MigrateCommand, ActiveSourceInfo
     },
-    client::{RelayedInfo, StreamOnDemand},
+    client::StreamOnDemand,
     http::ChunkedResponseReader,
-    broadcast::{metadata_encode, relay_broadcast_metadata}
+    broadcast::{metadata_encode, relay_broadcast_metadata},
+    internal_api::v1::{MigrateConnection, MigrateSource, MigrateSourceConnectionType, RelayedInfo}
 };
 
 #[inline(always)]
@@ -368,7 +368,6 @@ async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>,
             },
         }
     };
-    let info: VersionedMigrateConnection = info.into();
     if let Ok(info) = serde_json::to_vec(&info) {
         _ = migrate.source.send(MigrateSourceInfo {
             info,

@@ -13,3 +13,4 @@ pub mod migrate;
 pub mod relay;
 pub mod http;
 pub mod broadcast;
+pub mod internal_api;

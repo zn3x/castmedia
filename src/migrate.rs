@@ -6,109 +6,22 @@ use anyhow::Result;
 use qanat::broadcast::{restore_channel_from_snapshot, self};
 use tokio::runtime::Handle;
 use qanat::mpsc::{self, UnboundedSender, UnboundedReceiver};
-use serde::{Serialize, Deserialize};
 use passfd::FdPassingExt;
 use tracing::{error, info};
 use url::Url;
 
 use crate::{
-    source::{IcyProperties_v0_1_0, SourceAccessType},
+    source::SourceAccessType,
     client::{
-        ClientProperties_v0_1_0, handle_migrated,
+        handle_migrated,
         ListenerRestoreInfo, SourceInfo,
-        ListenerInfo, RelayedInfo_v0_1_0, RelayStream, MasterMountUpdatesInfo
+        ListenerInfo, RelayStream, MasterMountUpdatesInfo
     },
     server::{Socket, Server, Stream}, stream::StreamReader,
     config::MasterServerRelayScheme,
-    utils::{read_socket_from_unix_socket, read_stream_from_unix_socket}, relay::RelaySourceMigrate
+    utils::{read_socket_from_unix_socket, read_stream_from_unix_socket}, relay::RelaySourceMigrate,
+    internal_api::v1::*
 };
-
-#[obake::versioned]
-#[obake(version("0.1.0"))]
-#[obake(derive(Serialize, Deserialize))]
-#[derive(Serialize, Deserialize)]
-pub struct MigrateSource {
-    pub mountpoint: String,
-    #[obake(inherit)]
-    pub properties: IcyProperties,
-    /// Contains (number of frames in channel, channel size, last index)
-    pub broadcast_snapshot: (u64, u64, u64),
-    pub fallback: Option<String>,
-    pub metadata: Vec<u8>,
-    pub chunked: bool,
-    pub queue_size: u64,
-    #[obake(inherit)]
-    pub is_relay: MigrateSourceConnectionType,
-}
-
-#[obake::versioned]
-#[obake(version("0.1.0"))]
-#[obake(derive(Serialize, Deserialize))]
-#[derive(Serialize, Deserialize)]
-pub enum MigrateSourceConnectionType {
-    SourceClient {
-        username: String
-    },
-    RelayedSource {
-        relayed_stream: String,
-        #[obake(inherit)]
-        relay_info: RelayedInfo,
-        on_demand: bool
-    },
-}
-
-#[obake::versioned]
-#[obake(version("0.1.0"))]
-#[obake(derive(Serialize, Deserialize))]
-#[derive(Serialize, Deserialize)]
-pub struct MigrateInactiveOnDemandSource {
-    pub mountpoint: String,
-    #[obake(inherit)]
-    pub properties: IcyProperties,
-    pub master_url: String
-}
-
-#[obake::versioned]
-#[obake(version("0.1.0"))]
-#[obake(derive(Serialize, Deserialize))]
-#[derive(Serialize, Deserialize)]
-pub struct MigrateClient {
-    pub mountpoint: String,
-    #[obake(inherit)]
-    pub properties: ClientProperties,
-    pub resume_point: u64,
-    pub metaint: u64,
-}
-
-#[obake::versioned]
-#[obake(version("0.1.0"))]
-#[obake(derive(Serialize, Deserialize))]
-#[derive(Serialize, Deserialize)]
-pub struct MigrateMasterMountUpdates {
-    pub mounts: Vec<String>,
-    pub user_id: String
-}
-
-#[obake::versioned]
-#[obake(version("0.1.0"))]
-#[obake(derive(Serialize, Deserialize))]
-#[derive(Serialize, Deserialize)]
-pub struct MigrateSlaveMountUpdates {
-    pub master_url: String
-}
-
-#[obake::versioned]
-#[obake(version("0.1.0"))]
-#[obake(derive(Serialize, Deserialize))]
-#[derive(Serialize, Deserialize)]
-pub enum MigrateConnection {
-    // Can't have unnamed fields here for obake to work correctly
-    Source { info: MigrateSource },
-    Client { info: MigrateClient },
-    MasterMountUpdates { info: MigrateMasterMountUpdates },
-    SlaveMountUpdates { info: MigrateSlaveMountUpdates },
-    SlaveInactiveOnDemandSource { info: MigrateInactiveOnDemandSource }
-}
 
 pub struct MigrateClientInfo {
     /// Serialized MigrateConnection::Client
@@ -200,6 +113,8 @@ fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
         slave_mountupdates: tx3
     }));
 
+    // Sending current version
+    successor.write(&INTERNAL_API_VERSION.to_be_bytes())?;
     // The migration is done in the following way because we don't have any efficied way to
     // broadcast migration to all tasks, so we end not knewing when all senders are dropped
     // because a Sender is kept in broadcast channel.
@@ -327,6 +242,14 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
     // A broadcast to signal when migration is finished
     let (mut tx, rx) = broadcast::channel(NonZeroUsize::MIN);
 
+    // Reading current version
+    let mut version_buf = [0u8; 8];
+    predeseccor.read_exact(&mut version_buf)?;
+    let version = u64::from_be_bytes(version_buf);
+    if version != INTERNAL_API_VERSION {
+        return Err(anyhow::Error::msg("We have incompatible version with predeseccor instance, skipping migration"));
+    }
+
     // Reading all sources first
     // Then followed by listeners, master mountupdates
     let mut sources = true;
@@ -347,8 +270,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
             buf.reserve(len - buf.len());
         }
         predeseccor.read_exact(&mut buf[..len])?;
-        let source_any: VersionedMigrateConnection = serde_json::from_slice(&buf[..len])?;
-        let source: MigrateConnection = source_any.into();
+        let source: MigrateConnection = serde_json::from_slice(&buf[..len])?;
         let cl_info = match source {
             MigrateConnection::Source { info } => {
                 // We now read media

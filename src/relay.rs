@@ -23,11 +23,16 @@ use crate::{
     server::{Server, Stream, Socket, Session, ClientSession},
     utils::{get_header, basic_auth, concat_path}, config::MasterServerRelayScheme,
     http::{ResponseReader, ChunkedResponseReader},
-    client::{SourceInfo, RelayedInfo, RelayStream, StreamOnDemand},
-    source::{IcyProperties, Source, SourceAccessType},
+    client::{SourceInfo, RelayStream, StreamOnDemand},
+    source::{Source, SourceAccessType},
     response::ChunkedResponse,
     broadcast::relay_broadcast_metadata,
-    migrate::{MigrateCommand, MigrateConnection, MigrateMasterMountUpdates, MigrateMasterMountUpdatesInfo, VersionedMigrateConnection, MigrateSlaveMountUpdates, MigrateInactiveOnDemandSource}, stream::RelayBroadcastStatus
+    migrate::{MigrateCommand, MigrateMasterMountUpdatesInfo}, stream::RelayBroadcastStatus,
+    internal_api::v1::{
+        RelayedInfo, IcyProperties, MigrateConnection,
+        MigrateSlaveMountUpdates, MigrateInactiveOnDemandSource,
+        MigrateMasterMountUpdates
+    }
 };
 
 #[derive(Debug, Deserialize)]
@@ -206,7 +211,6 @@ async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat
         }
     };
 
-    let info: VersionedMigrateConnection = info.into();
     if let Ok(info) = serde_json::to_vec(&info) {
         _ = migrate.master_mountupdates.send(MigrateMasterMountUpdatesInfo {
             info,
@@ -556,11 +560,11 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
             let migrate = migrate
                 .expect("Got migrate notice with closed mpsc");
 
-            let info: VersionedMigrateConnection = MigrateConnection::SlaveMountUpdates {
+            let info = MigrateConnection::SlaveMountUpdates {
                 info: MigrateSlaveMountUpdates {
                     master_url: master.url.to_string()
                 }
-            }.into();
+            };
             if let Ok(info) = serde_json::to_vec(&info) {
                 _ = migrate.slave_mountupdates.send(Some(
                         crate::migrate::MigrateSlaveMountUpdatesInfo { info, sock: stream }
@@ -793,13 +797,13 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
 
                 let master = &serv.config.master[master_ind];
                 if let Some(properties) = serv.sources.read().await.get(&mount).map(|x| (*x.properties).to_owned()) {
-                    let info: VersionedMigrateConnection = MigrateConnection::SlaveInactiveOnDemandSource {
+                    let info = MigrateConnection::SlaveInactiveOnDemandSource {
                         info: MigrateInactiveOnDemandSource {
                             master_url: master.url.to_string(),
                             mountpoint: mount,
                             properties
                         }
-                    }.into();
+                    };
                     if let Ok(info) = serde_json::to_vec(&info) {
                         _ = migrate
                             .source
