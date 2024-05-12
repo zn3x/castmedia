@@ -77,3 +77,6 @@ migrate:
 misc:
   # allow unsafe password for accounts
   unsafe_pass: false
+  # Check if `X-Forwarded-For` header is present and set it as default IP address for client
+  # Usefull when castmedia is sitting behind a reverse proxy like haproxy
+  check_forwardedfor: true

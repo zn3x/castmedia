@@ -1,11 +1,11 @@
-use std::time::Duration;
+use std::{time::Duration, net::SocketAddr};
 use anyhow::Result;
 use httparse::Status;
 use tokio::io::AsyncReadExt;
 
 use crate::{
     server::{ClientSession, Stream},
-    utils::{self, get_basic_auth, Query}
+    utils::{self, get_basic_auth, Query, get_header}
 };
 
 pub struct Request<'a> {
@@ -108,6 +108,14 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
         Some(v) => v,
         None => return Err(anyhow::Error::msg("Request header has no path"))
     };
+
+    if session.server.config.misc.check_forwardedfor {
+        if let Some(addr) = get_header("x-forwarded-for", &request.headers)
+            .and_then(|header| std::str::from_utf8(header).ok())
+            .and_then(|addr_str| addr_str.parse::<SocketAddr>().ok()) {
+            session.addr = addr;
+        }
+    }
 
     let queries = utils::get_queries(path);
     let path    = utils::clean_path(path);

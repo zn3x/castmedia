@@ -45,6 +45,7 @@ const ADMINACC_BIND: &str                = "127.0.0.1:9100";
 const MIGRATE_ENABLED: bool              = false;
 
 const MISC_UNSAFE_PASS: bool             = false;
+const MISC_CHECK_FORWARDEDFOR: bool      = false;
 
 /// Server configuration
 #[derive(Serialize, Deserialize)]
@@ -92,6 +93,10 @@ pub struct MiscSettings {
     #[serde(default = "default_val_misc_unsafe_pass")]
     /// Allow unsafe passwords, this is highly discouraged and should only be used for testing!!
     pub unsafe_pass: bool,
+    #[serde(default = "default_val_misc_check_forwardedfor")]
+    /// Check if `X-Forwarded-For` header is present and set it as default IP address for client
+    /// Usefull when castmedia is sitting behind a reverse proxy like haproxy
+    pub check_forwardedfor: bool
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -245,7 +250,8 @@ impl Default for ServerSettings {
 impl Default for MiscSettings {
     fn default() -> Self {
         Self {
-            unsafe_pass: default_val_misc_unsafe_pass()
+            unsafe_pass: default_val_misc_unsafe_pass(),
+            check_forwardedfor: default_val_misc_check_forwardedfor()
         }
     }
 }
@@ -341,6 +347,7 @@ fn default_val_migrate_enabled() -> bool { MIGRATE_ENABLED }
 
 fn default_val_misc() -> MiscSettings { MiscSettings::default() }
 fn default_val_misc_unsafe_pass() -> bool { MISC_UNSAFE_PASS }
+fn default_val_misc_check_forwardedfor() -> bool { MISC_CHECK_FORWARDEDFOR }
 
 impl ServerSettings {
     pub fn load(config_path: &str) -> Self {
