@@ -571,6 +571,10 @@ impl ServerSettings {
             }
         }
 
+        if config.misc.check_forwardedfor {
+            warn!("check_forwardedfor is enabled!! make sure only reverse proxy can access listeners");
+        }
+
         errors
     }
 }
