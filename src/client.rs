@@ -22,7 +22,8 @@ use crate::{
     request::{read_request, Request, RequestType, ListenRequest},
     source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast, SourceAccessType},
     response, utils, admin, api,
-    migrate::{MigrateClientInfo, MigrateClient, MigrateConnection, VersionedMigrateConnection}, broadcast::read_media_broadcast
+    migrate::{MigrateClientInfo, MigrateClient, MigrateConnection, VersionedMigrateConnection, MigrateCommand},
+    broadcast::read_media_broadcast
 };
 
 pub struct Client {
@@ -85,7 +86,7 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
         ));
 
     let (props, mut stream, meta_stream,
-         mover, stats, mut clients, on_demand_notify) = match source_info {
+         mover, stats, clients, on_demand_notify) = match source_info {
         Some(v) => v,
         None => {
             if info.migrated.is_none() {
@@ -167,7 +168,7 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
     }
     drop(props);
 
-    let mut metaint = match info.migrated {
+    let metaint = match info.migrated {
         Some(v) => {
             stream.restore(v.resume_point);
             v.metaint
@@ -175,11 +176,22 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
         None => 0
     };
 
+    let mut broadcast = BroadcastInfo {
+        stream,
+        meta_stream,
+        mover,
+        stats,
+        with_metadata: metadata,
+        metaint,
+        id,
+        clients,
+        client_stats,
+        mountpoint: info.mountpoint
+    };
+
     let server = session.server.clone();
     let ret    = tokio::select! {
-        r = listener_broadcast(session, &mut stream, meta_stream, mover, 
-                             &stats, metadata, &mut metaint,
-                             &mut id, &mut clients, &client_stats, info.mountpoint) => {
+        r = listener_broadcast(&mut session, &mut broadcast) => {
             r
         },
         _ = kill_rx.recv() => {
@@ -189,15 +201,16 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
 
     // Checking whether it's a normal exit or migration
     match ret {
-        Ok(false) => {
+        Ok(BroadcastStatus::Migrate(m)) => {
             // We got migration
+            migrate_listener(session, &mut broadcast, m).await;
             // We don't need to update stats
             Ok(())
         },
-        Ok(true) | Err(_) => {
+        Ok(BroadcastStatus::EndofStream) | Err(_) => {
             // End of stream
             server.stats.active_listeners.fetch_sub(1, Ordering::Release);
-            let new_count = stats.active_listeners.fetch_sub(1, Ordering::Release);
+            let new_count = broadcast.stats.active_listeners.fetch_sub(1, Ordering::Release);
 
             // Notify source reader if stream pull is on on_demand
             if new_count <= 1 {
@@ -209,7 +222,8 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
             // If it's a client error we must remove client from list of active clients
             // Otherwise that means source disconnected and we reached end
             if let Err(e) = ret {
-                clients.write().await.remove(&id);
+                info!("{session} no longer listening on {}: {e}", broadcast.mountpoint);
+                broadcast.clients.write().await.remove(&id);
                 return Err(e);
             }
 
@@ -218,21 +232,34 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
     }
 }
 
+struct BroadcastInfo {
+    stream: Receiver<Arc<Vec<u8>>>,
+    meta_stream: Receiver<Arc<(u64, Vec<u8>)>>,
+    mover: Receiver<Arc<MoveClientsCommand>>,
+    stats: Arc<SourceStats>,
+    with_metadata: bool,
+    metaint: usize,
+    id: Uuid,
+    clients: Arc<RwLock<HashMap<Uuid, Client>>>,
+    client_stats: Arc<ClientStats>,
+    mountpoint: String
+}
+
+enum BroadcastStatus {
+    Migrate(Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>),
+    EndofStream
+}
+
 #[inline(always)]
-pub async fn listener_broadcast<'a>(mut session: ClientSession,
-                                  stream: &mut Receiver<Arc<Vec<u8>>>,
-                                  mut meta_stream: Receiver<Arc<(u64, Vec<u8>)>>,
-                                  mut mover: Receiver<Arc<MoveClientsCommand>>,
-                                  stats: &SourceStats, with_metadata: bool,
-                                  metaint: &mut usize, id: &mut Uuid,
-                                  clients: &mut Arc<RwLock<HashMap<Uuid, Client>>>,
-                                  client_stats: &ClientStats, mountpoint: String) -> Result<bool> {
+async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastInfo)
+    -> Result<BroadcastStatus> {
+    info!("{session} listening on {}", b.mountpoint);
     let mut fallback   = None;
     // We must have an initial metadata to work with
-    let mut metadata   = if let Ok(v) = meta_stream.recv().await {
+    let mut metadata   = if let Ok(v) = b.meta_stream.recv().await {
         v
     } else {
-        return Ok(true);
+        return Ok(BroadcastStatus::EndofStream);
     };
     let mut temp_metadata = None;
     let mut bytes_sent    = 0;
@@ -243,14 +270,14 @@ pub async fn listener_broadcast<'a>(mut session: ClientSession,
     loop {
         loop {
             tokio::select! {
-                r = read_media_broadcast(stream, &mut meta_stream, &mut metadata, &mut temp_metadata) => match r {
+                r = read_media_broadcast(&mut b.stream, &mut b.meta_stream, &mut metadata, &mut temp_metadata) => match r {
                     Ok(buf) => {
                         // We are checking here if we need to broadcast metadata
                         // Metadata needs to be sent inbetween ever metaint interval
-                        if with_metadata {
-                            if *metaint + buf.len() >= session.server.config.metaint {
-                                let diff          = (*metaint + buf.len()) - session.server.config.metaint;
-                                let first_buf_len = session.server.config.metaint - *metaint;
+                        if b.with_metadata {
+                            if b.metaint + buf.len() >= session.server.config.metaint {
+                                let diff          = (b.metaint + buf.len()) - session.server.config.metaint;
+                                let first_buf_len = session.server.config.metaint - b.metaint;
                                 
                                 if first_buf_len > 0 {
                                     session.stream.write_all(&buf[..first_buf_len]).await?;
@@ -261,11 +288,11 @@ pub async fn listener_broadcast<'a>(mut session: ClientSession,
                                 if diff > 0 {
                                     session.stream.write_all(&buf[first_buf_len..]).await?;
                                 }
-                                *metaint    = diff;
+                                b.metaint   = diff;
                                 bytes_sent += metadata.1.len() + buf.len();
                             } else {
                                 session.stream.write_all(&buf).await?;
-                                *metaint   += buf.len();
+                                b.metaint  += buf.len();
                                 bytes_sent += buf.len();
                             }
                         } else {
@@ -281,12 +308,12 @@ pub async fn listener_broadcast<'a>(mut session: ClientSession,
                 // under contention if any
                 _ = stat_int.tick() => {
                     let bytes = bytes_sent as u64;
-                    stats.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
-                    client_stats.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
+                    b.stats.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
+                    b.client_stats.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
                     bytes_sent = 0;
                 }
                 // Listening for move requests (ie. fallback or admin move clients)
-                r = mover.recv() => match r {
+                r = b.mover.recv() => match r {
                     Ok(v) => match &v.move_type {
                         MoveClientsType::Fallback => {
                             // If it is a fallback, we put it here until we reach closed state of
@@ -295,44 +322,18 @@ pub async fn listener_broadcast<'a>(mut session: ClientSession,
                         },
                         MoveClientsType::Move => {
                             // Otherwise we move right away
-                            change_mount(stream, &mut meta_stream, &mut mover, client_stats, &v, id, clients).await;
+                            change_mount(b, &v).await;
                         }
                     },
                     Err(RecvError::Lagged(_)) => (),
                     Err(RecvError::Closed) => break
                 },
-                migrate = migrate_comm.recv() => {
-                    // Safety only task of client will ever remove itself
-                    let client = clients.write().await
-                        .remove(id)
-                        .expect("Should be able to get Client");
-                    // Safety: migrate sender half is NEVER dropped until process exits
-                    let migrate = migrate
-                        .expect("Got migrate notice with closed mpsc");
-                    let info = MigrateConnection::Client {
-                        info: MigrateClient {
-                            mountpoint: mountpoint.clone(),
-                            properties: client.properties,
-                            resume_point: stream.read_position(),
-                            metaint: *metaint as u64
-                        }
-                    };
-                    let info: VersionedMigrateConnection = info.into();
-                    // Well, can't do nothing if we ran out of memory here
-                    if let Ok(info) = serde_json::to_vec(&info) {
-                        _ = migrate.listener.send(MigrateClientInfo {
-                            info,
-                            mountpoint,
-                            sock: session.stream
-                        });
-                    }
-                    return Ok(false);
-                }
+                migrate = migrate_comm.recv() => return Ok(BroadcastStatus::Migrate(migrate))
             }
         };
 
         if let Some(v) = fallback.take() {
-            change_mount(stream, &mut meta_stream, &mut mover, client_stats, &v, id, clients).await;
+            change_mount(b, &v).await;
             continue;
         }
         // If we don't have any fallback, it is fine to keep this client in list of active clients
@@ -340,40 +341,66 @@ pub async fn listener_broadcast<'a>(mut session: ClientSession,
         break;
     };
 
-    Ok(true)
+    Ok(BroadcastStatus::EndofStream)
 }
 
-async fn change_mount(stream: &mut Receiver<Arc<Vec<u8>>>, meta_stream: &mut Receiver<Arc<(u64, Vec<u8>)>>,
-                      mover: &mut Receiver<Arc<MoveClientsCommand>>,
-                      client_stats: &ClientStats,
-                      new: &MoveClientsCommand, id: &mut Uuid,
-                      clients: &mut Arc<RwLock<HashMap<Uuid, Client>>>) {
+async fn migrate_listener(session: ClientSession,
+                          b: &mut BroadcastInfo,
+                          migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>) {
+    // Safety only task of client will ever remove itself
+    let client = b.clients.write().await
+        .remove(&b.id)
+        .expect("Should be able to get Client");
+    // Safety: migrate sender half is NEVER dropped until process exits
+    let migrate = migrate
+        .expect("Got migrate notice with closed mpsc");
+    let info = MigrateConnection::Client {
+        info: MigrateClient {
+            mountpoint: b.mountpoint.clone(),
+            properties: client.properties,
+            resume_point: b.stream.read_position(),
+            metaint: b.metaint as u64
+        }
+    };
+    let info: VersionedMigrateConnection = info.into();
+    // Well, can't do nothing if we ran out of memory here
+    if let Ok(info) = serde_json::to_vec(&info) {
+        _ = migrate.listener.send(MigrateClientInfo {
+            info,
+            mountpoint: b.mountpoint.clone(),
+            sock: session.stream
+        });
+    }
+}
+
+async fn change_mount(b: &mut BroadcastInfo,
+                      new: &MoveClientsCommand) {
     // changing streams that we actually listen to
-    *stream      = new.broadcast.clone();
-    *meta_stream = new.meta_broadcast.clone();
-    *mover       = new.move_listeners_receiver.clone();
+    b.stream      = new.broadcast.clone();
+    b.meta_stream = new.meta_broadcast.clone();
+    b.mover       = new.move_listeners_receiver.clone();
 
     // We also need to remove ourselves from clients list of old mountpoint
     // And add ourselves to new one
-    let client = clients.write().await.remove(id)
+    let client = b.clients.write().await.remove(&b.id)
         .expect("Client should still by in mountpoint clients hashmap");
     
     // Now we move to new clients list
-    *clients         = new.clients.clone();
+    b.clients        = new.clients.clone();
     {
-        let mut lock = clients.write().await;
+        let mut lock = b.clients.write().await;
         loop {
-            if let Entry::Vacant(v) = lock.entry(*id) {
+            if let Entry::Vacant(v) = lock.entry(b.id) {
                 v.insert(client);
                 break;
             }
-            *id = uuid::Uuid::new_v4();
+            b.id = uuid::Uuid::new_v4();
         };
     }
 
     // We need to also update client stats
-    client_stats.start_time.store(chrono::offset::Utc::now().timestamp(), Ordering::Relaxed);
-    client_stats.bytes_sent.store(0, Ordering::Relaxed);
+    b.client_stats.start_time.store(chrono::offset::Utc::now().timestamp(), Ordering::Relaxed);
+    b.client_stats.bytes_sent.store(0, Ordering::Relaxed);
 }
 
 pub async fn handle(mut session: ClientSession) {

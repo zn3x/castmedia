@@ -2,11 +2,14 @@ use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use serde_json::json;
+use tracing::info;
 
 use crate::{server::ClientSession, response, request::ApiRequest, utils};
 
 async fn server_info(session: &mut ClientSession) -> Result<()> {
     let sid = &session.server.config.info.id;    
+
+    info!("Get server info request by {session}");
         
     let resp = json!({
         "mounts": session.server.sources.read().await.keys().cloned().collect::<Vec<String>>(),
@@ -26,6 +29,8 @@ async fn server_info(session: &mut ClientSession) -> Result<()> {
 
 async fn mount_info(session: &mut ClientSession, req: ApiRequest) -> Result<()> {
     let sid = &session.server.config.info.id;
+
+    info!("Get mount info request by {session}");
 
     let mount = match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
         [Some(mount)] => *mount,

@@ -301,6 +301,7 @@ pub async fn unmount_source(server: &Server, mountpoint: &str) {
     if let Some(mut mount) = mount {
         if let Some(fallback) = mount.fallback {
             if let Some(fallback_mount) = server.sources.read().await.get(&fallback) {
+                info!("Moving all listeners on {mountpoint} to {fallback}");
                 mount.move_listeners_sender.send(Arc::new(MoveClientsCommand {
                     broadcast: fallback_mount.broadcast.clone(),
                     meta_broadcast: fallback_mount.meta_broadcast.clone(),
@@ -403,21 +404,12 @@ async fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReade
             Err(_) => return
         };
 
-        //broadcast_metadata(&mut broadcast, probed.metadata.get());
-
         let mut format = probed.format;
-
         loop {
-            match format.next_packet() {
-                Ok(packet) => {
-                    if tx.send(packet).is_err() {
-                        break;
-                    }
-                },
-                Err(e) => {
-                    error!("Broadcast failed: {}", e);
-                    break
-                }
+            let ret = format.next_packet();
+            let err = ret.is_err();
+            if tx.send(ret).is_err() || err {
+                break;
             }
         }
     });
@@ -425,11 +417,17 @@ async fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReade
     let mut chunk_size = VecDeque::new();
 
     // Get the next packet from the media format.
-    while let Ok(packet) = rx.recv().await {
+    while let Ok(ret) = rx.recv().await {
+        let packet = match ret {
+            Ok(packet) => packet,
+            Err(e) => {
+                error!("Failed to read media stream for {mountpoint}: {e}");
+                break;
+            }
+        };
         let slice = packet.data.into_vec();
-
         if let Err(e) = push_to_queue(&mut broadcast, mountpoint, queue_size, &mut chunk_size, server, slice) {
-            error!("Broadcast failed: {}", e);
+            error!("Failed pushing media block to queue for {mountpoint}: {e}");
             break;
         }
     }
