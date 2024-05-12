@@ -54,12 +54,13 @@ pub async fn handle_listener_request(session: ClientSession, request: Request<'_
 
     drop(request);
 
+    let addr = session.addr.to_string();
     prepare_listener(
         session,
         ListenerInfo {
             mountpoint: req.mountpoint,
             migrated: None,
-            properties: ClientProperties { user_agent, metadata }
+            properties: ClientProperties { user_agent, metadata, addr }
         }
     ).await
 }
@@ -350,8 +351,7 @@ async fn migrate_listener(session: ClientSession,
             mountpoint: b.mountpoint.clone(),
             properties: client.properties,
             resume_point: b.stream.read_position(),
-            metaint: b.metaint as u64,
-            client_addr: session.addr.to_string()
+            metaint: b.metaint as u64
         }
     };
     // Well, can't do nothing if we ran out of memory here

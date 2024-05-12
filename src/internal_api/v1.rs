@@ -40,8 +40,7 @@ pub struct MigrateClient {
     pub mountpoint: String,
     pub properties: ClientProperties,
     pub resume_point: u64,
-    pub metaint: u64,
-    pub client_addr: String
+    pub metaint: u64
 }
 
 #[derive(Serialize, Deserialize)]
@@ -118,7 +117,8 @@ impl IcyProperties {
 #[derive(Serialize, Deserialize)]
 pub struct ClientProperties {
     pub user_agent: Option<String>,
-    pub metadata: bool
+    pub metadata: bool,
+    pub addr: String
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]

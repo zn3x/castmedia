@@ -360,7 +360,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
                 crate::client::ClientInfo::Source(ret)
             },
             MigrateConnection::Client { info } => {
-                client_addr = info.client_addr;
+                client_addr = info.properties.addr.clone();
                 crate::client::ClientInfo::Listener(ListenerInfo {
                     mountpoint: info.mountpoint,
                     migrated: Some(ListenerRestoreInfo {
