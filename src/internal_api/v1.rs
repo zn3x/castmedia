@@ -13,6 +13,7 @@ pub struct MigrateSource {
     pub chunked: bool,
     pub queue_size: u64,
     pub is_relay: MigrateSourceConnectionType,
+    pub client_addr: String
 }
 
 #[derive(Serialize, Deserialize)]
@@ -40,12 +41,14 @@ pub struct MigrateClient {
     pub properties: ClientProperties,
     pub resume_point: u64,
     pub metaint: u64,
+    pub client_addr: String
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct MigrateMasterMountUpdates {
     pub mounts: Vec<String>,
-    pub user_id: String
+    pub user_id: String,
+    pub client_addr: String
 }
 
 #[derive(Serialize, Deserialize)]

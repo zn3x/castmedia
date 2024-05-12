@@ -1,6 +1,6 @@
 use std::{
     sync::Arc,
-    os::unix::net::{UnixListener, UnixStream}, io::{Write, Read}, time::Duration, num::NonZeroUsize
+    os::unix::net::{UnixListener, UnixStream}, io::{Write, Read}, time::Duration, num::NonZeroUsize, net::SocketAddr
 };
 use anyhow::Result;
 use qanat::broadcast::{restore_channel_from_snapshot, self};
@@ -270,6 +270,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
             buf.reserve(len - buf.len());
         }
         predeseccor.read_exact(&mut buf[..len])?;
+        let client_addr;
         let source: MigrateConnection = serde_json::from_slice(&buf[..len])?;
         let cl_info = match source {
             MigrateConnection::Source { info } => {
@@ -320,7 +321,14 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
                 
                 if let Some((r, on_demand)) = is_relay {
                     let (stream, addr) = match read_stream_from_unix_socket(&mut predeseccor) {
-                        Ok(v) => v,
+                        Ok(v) => (
+                            v.0,
+                            // Making sure we are getting real address if check_forwardedfor is
+                            // enabled
+                            info.client_addr.parse::<SocketAddr>()
+                                .inspect_err(|e| error!("Failed parsing socket addr: {e}"))
+                                .unwrap_or(v.1)
+                        ),
                         Err(e) => {
                             error!("Failed to fetch migrated connection: {}", e);
                             continue 'OUTER;
@@ -344,11 +352,15 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
                     }
                     // If we can't find a master server for this relay source
                     // we will drop it here
+                    continue 'OUTER;
+                } else {
+                    client_addr = info.client_addr;
                 }
 
                 crate::client::ClientInfo::Source(ret)
             },
             MigrateConnection::Client { info } => {
+                client_addr = info.client_addr;
                 crate::client::ClientInfo::Listener(ListenerInfo {
                     mountpoint: info.mountpoint,
                     migrated: Some(ListenerRestoreInfo {
@@ -359,6 +371,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
                 })
             },
             MigrateConnection::MasterMountUpdates { info } => {
+                client_addr = info.client_addr;
                 crate::client::ClientInfo::MasterMountUpdates(MasterMountUpdatesInfo {
                     mounts: info.mounts,
                     user_id: info.user_id
@@ -435,7 +448,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
             let sem = server_cl.max_clients.clone();
             let aq  = sem.try_acquire();
             if let Ok(_guard) = aq {
-                handle_migrated(sock, server_cl, cl_info, rx_cl).await;
+                handle_migrated(sock, client_addr, server_cl, cl_info, rx_cl).await;
             }
         });
     };

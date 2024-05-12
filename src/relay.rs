@@ -86,7 +86,7 @@ pub async fn master_mount_updates(mut session: ClientSession,
             migrate_master_mount_updates(
                 m,
                 user_id,
-                session.stream,
+                session,
                 mounts
             ).await;
         }
@@ -199,7 +199,7 @@ pub async fn master_mount_updates(mut session: ClientSession,
 }
 
 async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>,
-                                      user_id: String, stream: Stream, 
+                                      user_id: String, session: ClientSession, 
                                       mounts: HashMap<String, Receiver<Arc<(u64, Vec<u8>)>>>) -> ! {
     let migrate = migrate
         .expect("Got migrate notice with closed mpsc");
@@ -207,14 +207,15 @@ async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat
     let info = MigrateConnection::MasterMountUpdates {
         info: MigrateMasterMountUpdates {
             mounts: mounts.into_keys().collect::<Vec<String>>(),
-            user_id
+            user_id,
+            client_addr: session.addr.to_string()
         }
     };
 
     if let Ok(info) = serde_json::to_vec(&info) {
         _ = migrate.master_mountupdates.send(MigrateMasterMountUpdatesInfo {
             info,
-            sock: stream
+            sock: session.stream
         });
     }
 

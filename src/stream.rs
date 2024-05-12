@@ -197,7 +197,8 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
                     media_broadcast: s.broadcast.audio,
                     chunked: s.chunked,
                     queue_size: s.queue_size,
-                    stream: reader
+                    stream: reader,
+                    client_addr: s.session.addr.to_string()
                 },
                 Some(relay),
                 s.on_demand
@@ -279,7 +280,8 @@ pub async fn broadcast(mut s: BroadcastInfo<'_>) {
                     media_broadcast,
                     chunked: s.chunked,
                     queue_size: s.queue_size,
-                    stream: rguard
+                    stream: rguard,
+                    client_addr: s.session.addr.to_string()
                 },
                 None,
                 false
@@ -321,7 +323,8 @@ struct MigrateStreamInfo<'a> {
     media_broadcast: Sender<Arc<Vec<u8>>>,
     chunked: bool,
     queue_size: usize,
-    stream: Box<dyn StreamReader>
+    stream: Box<dyn StreamReader>,
+    client_addr: String
 }
 
 async fn migrate_stream(s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
@@ -366,6 +369,7 @@ async fn migrate_stream(s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
                     on_demand
                 }
             },
+            client_addr: s.client_addr
         }
     };
     if let Ok(info) = serde_json::to_vec(&info) {

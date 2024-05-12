@@ -1,6 +1,6 @@
 use std::{
     sync::{Arc, atomic::{Ordering, AtomicU64, AtomicI64}},
-    time::Duration
+    time::Duration, net::SocketAddr
 };
 use anyhow::Result;
 use hashbrown::{HashMap, hash_map::Entry};
@@ -350,7 +350,8 @@ async fn migrate_listener(session: ClientSession,
             mountpoint: b.mountpoint.clone(),
             properties: client.properties,
             resume_point: b.stream.read_position(),
-            metaint: b.metaint as u64
+            metaint: b.metaint as u64,
+            client_addr: session.addr.to_string()
         }
     };
     // Well, can't do nothing if we ran out of memory here
@@ -472,13 +473,19 @@ pub struct ListenerInfo {
     pub properties: ClientProperties
 }
 
-pub async fn handle_migrated(sock: TcpStream, server: Arc<Server>, client: ClientInfo,
+pub async fn handle_migrated(sock: TcpStream, addr: String,
+                             server: Arc<Server>, client: ClientInfo,
                              mut migrate_finished: Receiver<()>) {
-    let addr = match sock.peer_addr() {
-        Ok(v) => v,
-        Err(e) => {
-            error!("Failed to fetch migrated connection address: {}", e);
-            return;
+    let addr = match addr.parse::<SocketAddr>()
+            .inspect_err(|e| error!("Failed to parse client addr in migration: {e}"))
+            .ok() {
+        Some(v) => v,
+        None => match sock.peer_addr() {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to fetch migrated connection address: {}", e);
+                return;
+            }
         }
     };
     let stream: Stream = Box::new(BufStream::new(sock));
