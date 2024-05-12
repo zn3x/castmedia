@@ -190,7 +190,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
             }
 
             migrate_stream(
-                MigrateStreamProps {
+                MigrateStreamInfo {
                     server: &s.session.server,
                     migrate,
                     mountpoint: s.mountpoint,
@@ -272,7 +272,7 @@ pub async fn broadcast(mut s: BroadcastInfo<'_>) {
         _ = s.kill_notifier.recv() => (),
         migrate = migrate_comm.recv() => {
             migrate_stream(
-                MigrateStreamProps {
+                MigrateStreamInfo {
                     server: &server,
                     migrate,
                     mountpoint: s.mountpoint,
@@ -314,7 +314,7 @@ pub async fn unmount_source(server: &Server, mountpoint: &str) {
     }
 }
 
-struct MigrateStreamProps<'a> {
+struct MigrateStreamInfo<'a> {
     server: &'a Server,
     migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>,
     mountpoint: &'a str,
@@ -324,7 +324,7 @@ struct MigrateStreamProps<'a> {
     stream: Box<dyn StreamReader>
 }
 
-async fn migrate_stream(s: MigrateStreamProps<'_>, relay: Option<RelayedInfo>,
+async fn migrate_stream(s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
                         on_demand: bool) -> ! {
     // Safety: migrate sender half is NEVER dropped until process exits
     let migrate = s.migrate
