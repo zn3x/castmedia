@@ -114,7 +114,7 @@ fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
     }));
 
     // Sending current version
-    successor.write(&INTERNAL_API_VERSION.to_be_bytes())?;
+    successor.write_all(&INTERNAL_API_VERSION.to_be_bytes())?;
     // The migration is done in the following way because we don't have any efficied way to
     // broadcast migration to all tasks, so we end not knewing when all senders are dropped
     // because a Sender is kept in broadcast channel.
