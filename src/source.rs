@@ -196,7 +196,7 @@ pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a
         chunked = false;
     } else {
         // PUT METHOD
-        chunked = match utils::get_header("transger-encoding", &request.headers) {
+        chunked = match utils::get_header("transfer-encoding", &request.headers) {
             Some(b"identity") | None => false,
             Some(b"chunked") => true,
             _ => {
