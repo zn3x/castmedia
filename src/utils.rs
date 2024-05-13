@@ -161,3 +161,89 @@ pub fn read_stream_from_unix_socket(unixsock: &mut UnixStream) -> Result<(Stream
 
     Ok((stream, addr))
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn clean_path() {
+        assert_eq!(super::clean_path("././file"), "file");
+        assert_eq!(super::clean_path("./../file"), "../file");
+        assert_eq!(super::clean_path("./../"), "..");
+        assert_eq!(super::clean_path("/file.mp3"), "/file.mp3");
+        assert_eq!(super::clean_path("/a/b/"), "/a/b");
+        assert_eq!(super::clean_path("/a/../b/"), "/b");
+    }
+
+    #[test]
+    fn queries() {
+        let q = super::get_queries("/a?a=b&b=c");
+        assert_eq!(q[0].key, "a".to_string());
+        assert_eq!(q[0].val, "b".to_string());
+        assert_eq!(q[1].key, "b".to_string());
+        assert_eq!(q[1].val, "c".to_string());
+        let q = super::get_queries("/a?a=b&b=c&a=d");
+        assert_eq!(q[0].key, "a".to_string());
+        assert_eq!(q[0].val, "b".to_string());
+        assert_eq!(q[1].key, "b".to_string());
+        assert_eq!(q[1].val, "c".to_string());
+        assert_eq!(q[2].key, "a".to_string());
+        assert_eq!(q[2].val, "d".to_string());
+        let mut path = String::new();
+        path.push('/');
+        path.push_str(&urlencoding::encode(r#"'4"4ef$%GH?"#).to_string());
+        path.push('?');
+        path.push_str(&urlencoding::encode(r#"$O9r0#4="#).to_string());
+        path.push('=');
+        path.push_str(&urlencoding::encode(r#"#T343op"#).to_string());
+        let q = super::get_queries(&path);
+        assert_eq!(q[0].key, r#"$O9r0#4="#.to_string());
+        assert_eq!(q[0].val, r#"#T343op"#.to_string());
+
+        let q = super::get_queries("/a?a=b&b=c&a=v");
+        let r = super::get_queries_val_for_keys(&["a", "b", "d"], &q);
+        assert_eq!(r[0], Some("b"));
+        assert_eq!(r[1], Some("c"));
+        assert_eq!(r[2], None);
+    }
+
+    #[test]
+    fn basic_auth() {
+        let mut headers = [httparse::EMPTY_HEADER; 32];
+        let (_, heads)  = match httparse::parse_headers(
+            b"Host: 127.0.0.1\r\nAuthorization: Basic YWRtaW46cGFzcw==\r\n\r\n",
+            &mut headers)
+            .unwrap() {
+            httparse::Status::Complete(v) => v,
+            _ => unreachable!()
+        };
+
+        let auth = super::get_basic_auth(heads)
+            .unwrap();
+        assert_eq!(auth, Some(("admin".to_string(), "pass".to_string())));
+
+        let mut headers = [httparse::EMPTY_HEADER; 32];
+        let (_, heads)  = match httparse::parse_headers(
+            b"Host: 127.0.0.1\r\nAuthorization: Basic garbage\r\n\r\n",
+            &mut headers)
+            .unwrap() {
+            httparse::Status::Complete(v) => v,
+            _ => unreachable!()
+        };
+
+        let auth = super::get_basic_auth(heads);
+        assert!(auth.is_err());
+
+        let mut headers = [httparse::EMPTY_HEADER; 32];
+        let (_, heads)  = match httparse::parse_headers(
+            b"Host: 127.0.0.1\r\nAuthorization: Basic YWRtaW5wYXNz\r\n\r\n",
+            &mut headers)
+            .unwrap() {
+            httparse::Status::Complete(v) => v,
+            _ => unreachable!()
+        };
+
+        let auth = super::get_basic_auth(heads)
+            .unwrap();
+        assert_eq!(auth, None);
+    }
+}
