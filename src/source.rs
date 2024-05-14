@@ -151,7 +151,7 @@ impl Source {
     }
 }
 
-pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a>, req: SourceRequest) -> Result<()> {
+pub async fn handle_request(mut session: ClientSession, request: Request<'_>, req: SourceRequest) -> Result<()> {
     if let Err(e) = auth::auth(&mut session, auth::AllowedAuthType::SourceMount, req.auth, &req.mountpoint).await {
         response::internal_error(&mut session.stream, &session.server.config.info.id).await?;
         return Err(anyhow::Error::msg(format!("Source authentication failed, cause: {}", e)));
@@ -222,6 +222,9 @@ pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a
 
     properties.populate_from_http_headers(&request.headers);
 
+    let initial_bytes_read = request.headers_buf.len();
+    drop(request);
+
     let user_id = session.user
         .as_ref()
         .expect("Should be identified at this point")
@@ -253,7 +256,7 @@ pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a
         SourceInfo {
             mountpoint: req.mountpoint,
             properties,
-            initial_bytes_read: request.headers_buf.len(),
+            initial_bytes_read,
             chunked,
             fallback,
             queue_size: 0,

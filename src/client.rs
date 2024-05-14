@@ -419,9 +419,9 @@ pub async fn handle(mut session: ClientSession) {
     }
 
     _ = match _type {
-        RequestType::Admin(v)  => admin::handle_request(session, v).await,
-        RequestType::Api(v)    => api::handle_request(session, v).await,
-        RequestType::Source(v) => source::handle_request(session, &request, v).await,
+        RequestType::Admin(v)  => { drop(request); admin::handle_request(session, v).await },
+        RequestType::Api(v)    => { drop(request); api::handle_request(session, v).await },
+        RequestType::Source(v) => source::handle_request(session, request, v).await,
         RequestType::Listen(v) => handle_listener_request(session, request, v).await,
     };
 }
