@@ -23,7 +23,7 @@ impl<'a> ResponseReader<'a> {
 				Ok(_) => {
 					buf.extend_from_slice(&byte);
 					// checking if double crlf is in header
-					if buf.windows(4).any(|window| window == b"\r\n\r\n") { // end of header
+                    if buf.len() >= 4 && buf[buf.len()-4..].eq(b"\r\n\r\n") {
 						break;
 					} else if buf.len() > self.http_max_len {
 						// Stop any potential attack
