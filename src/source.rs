@@ -9,7 +9,7 @@ use qanat::{
     oneshot
 };
 use anyhow::Result;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tracing::info;
 use uuid::Uuid;
 
@@ -84,7 +84,7 @@ pub struct Source {
     /// Sender stream for metadata broadcast
     /// Needed so we don't create a new sender every time
     /// we get metadata update
-    pub meta_broadcast_sender: Mutex<Sender<Arc<(u64, Vec<u8>)>>>,
+    pub meta_broadcast_sender: Sender<Arc<(u64, Vec<u8>)>>,
     /// Broadcast to move all clients in mountpoint to another one
     pub move_listeners_receiver: Receiver<Arc<MoveClientsCommand>>,
     pub move_listeners_sender: Sender<Arc<MoveClientsCommand>>,
@@ -137,7 +137,7 @@ impl Source {
             access,
             on_demand_notify_reader: None,
             broadcast: rx,
-            meta_broadcast_sender: Mutex::new(tx1.clone()),
+            meta_broadcast_sender: tx1.clone(),
             meta_broadcast: rx1,
             move_listeners_receiver: rx2,
             move_listeners_sender: tx2,
