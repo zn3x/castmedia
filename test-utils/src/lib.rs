@@ -8,6 +8,12 @@ pub struct BlockingServer {
     pub child: std::process::Child
 }
 
+impl Drop for BlockingServer {
+    fn drop(&mut self) {
+        _ = self.child.kill();
+    }
+}
+
 pub struct Server {
     pub child: tokio::process::Child
 }
