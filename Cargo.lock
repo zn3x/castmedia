@@ -1696,6 +1696,7 @@ dependencies = [
 name = "test-utils"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64 0.21.7",
  "reqwest",
  "tokio",
