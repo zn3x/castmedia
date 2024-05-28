@@ -1,4 +1,3 @@
-use core::panic;
 use std::{net::TcpStream, io::{Write, Read}, process::Stdio};
 use anyhow::Result;
 
