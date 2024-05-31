@@ -485,7 +485,7 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
                     };
 
                     relay.metadata_remaining -= buf[pos+1..last_pos].len();
-                    relay.metadata_buffer.extend_from_slice(&buf[pos+1..last_pos]);
+                    relay.metadata_buffer.extend_from_slice(&buf[pos..last_pos]);
                     if relay.metadata_remaining == 0 {
                         let metadatabuf = std::mem::take(&mut relay.metadata_buffer);
                         if metadatabuf.ne(&old_metadata) {
