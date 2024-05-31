@@ -192,7 +192,6 @@ pub async fn handle_request(mut session: ClientSession, request: Request<'_>, re
 
     let chunked;
     if request.method == "SOURCE" {
-        response::ok_200(&mut session.stream, sid).await?;
         chunked = false;
     } else {
         // PUT METHOD
@@ -216,8 +215,6 @@ pub async fn handle_request(mut session: ClientSession, request: Request<'_>, re
                 return Ok(());
             }
         }
-
-        response::ok_200(&mut session.stream, sid).await?;
     }
 
     properties.populate_from_http_headers(&request.headers);
@@ -293,7 +290,8 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
         kill_notifier    = on_demand.kill_notifier;
         on_demand_notify = Some(on_demand.on_demand_notify);
     } else {
-        on_demand_flag = false;
+        on_demand_flag   = false;
+        let not_migrated = info.broadcast.is_none();
         let source;
         (source, broadcast, kill_notifier) = Source::new(info.properties, info.fallback,
                                                          info.access, info.broadcast);
@@ -338,6 +336,13 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
                     return Err(anyhow::Error::msg(format!("Mountpoint {} already exists", info.mountpoint)));
                 }
             }
+        }
+
+        // Notify source that everything is okay
+        if not_migrated && relayed.is_none() {
+            // We accept errors here because source needs to be cleaned up
+            // We are passing responsibility to stream::(relay_)broadcast to do so
+            _ = response::ok_200(&mut session.stream, &session.server.config.info.id).await;
         }
 
         // In case we are defined as a master server
