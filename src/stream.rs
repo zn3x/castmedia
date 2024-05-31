@@ -448,7 +448,8 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
     let mut buf  = [0u8; 2048];
     let mut ret  = 0;
 
-    let src_metadata = server.sources.read().await
+    let mut old_metadata = Vec::new();
+    let src_metadata     = server.sources.read().await
         .get(mountpoint)
         .expect("Mount should be on sources")
         .metadata
@@ -487,10 +488,13 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
                     relay.metadata_buffer.extend_from_slice(&buf[pos+1..last_pos]);
                     if relay.metadata_remaining == 0 {
                         let metadatabuf = std::mem::take(&mut relay.metadata_buffer);
-                        relay_broadcast_metadata(
-                            &src_metadata, &mut broadcast.metadata,
-                            broadcast.audio.last_index(), metadatabuf
-                        ).await;
+                        if metadatabuf.ne(&old_metadata) {
+                            old_metadata = metadatabuf.clone();
+                            relay_broadcast_metadata(
+                                &src_metadata, &mut broadcast.metadata,
+                                broadcast.audio.last_index(), metadatabuf
+                            ).await;
+                        }
                         relay.metadata_reading = false;
                     }
                 }
@@ -521,10 +525,13 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
                 relay.metadata_buffer.extend_from_slice(&buf[start..last_pos]);
                 if relay.metadata_remaining == 0 {
                     let metadatabuf = std::mem::take(&mut relay.metadata_buffer);
-                    relay_broadcast_metadata(
-                        &src_metadata, &mut broadcast.metadata,
-                        broadcast.audio.last_index(), metadatabuf
-                    ).await;
+                    if metadatabuf.ne(&old_metadata) {
+                        old_metadata = metadatabuf.clone();
+                        relay_broadcast_metadata(
+                            &src_metadata, &mut broadcast.metadata,
+                            broadcast.audio.last_index(), metadatabuf
+                        ).await;
+                    }
                     relay.metadata_reading = false;
                 }
             }
