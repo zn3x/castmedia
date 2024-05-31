@@ -275,6 +275,7 @@ async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastIn
                                     session.stream.write_all(&buf[..first_buf_len]).await?;
                                 }
                                 // Now we write metadata
+                                info!("weeeeeeeee {}", metadata.0);
                                 session.stream.write_all(&metadata.1).await?;
                                 // Followed by what left in buffer if there is any
                                 if diff > 0 {
