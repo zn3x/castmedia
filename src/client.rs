@@ -411,7 +411,6 @@ pub async fn handle(mut session: ClientSession) {
         _type = match read_request(&mut session, refm).await {
             Ok(v) => v,
             Err(e) => {
-                response::method_not_allowed(&mut session.stream, &session.server.config.info.id).await.ok();
                 info!("Request coming from {} couldn't be handled: {}", session, e);
                 return;
             }

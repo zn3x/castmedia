@@ -5,7 +5,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::{
     server::{ClientSession, Stream},
-    utils::{self, get_basic_auth, Query, get_header}
+    utils::{self, get_basic_auth, Query, get_header}, response
 };
 
 pub struct Request<'a> {
@@ -124,7 +124,13 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
     match request.method {
         // ICECAST protocol info: https://gist.github.com/ePirat/adc3b8ba00d85b7e3870
         "PUT" | "SOURCE" => {
-            let auth = get_basic_auth(&request.headers)?;
+            let auth = match get_basic_auth(&request.headers) {
+                Ok(v) => v,
+                Err(e) => {
+                    _ = response::authentication_needed(&mut session.stream, &session.server.config.info.id).await;
+                    return Err(e);
+                }
+            };
 
             Ok(RequestType::Source(SourceRequest {
                 mountpoint: path,
@@ -133,7 +139,13 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
         },
         "GET" => {
             if path.starts_with("/admin/") {
-                let auth = get_basic_auth(&request.headers)?;
+                let auth = match get_basic_auth(&request.headers) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        _ = response::authentication_needed(&mut session.stream, &session.server.config.info.id).await;
+                        return Err(e);
+                    }
+                };
                 // Warning!! Don't forget to check user && pass are empty
                 if let Some((u, p)) = auth.as_ref() {
                     if u.is_empty() || p.is_empty() {
@@ -149,11 +161,15 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
             }
 
             if !session.server.sources.read().await.contains_key(&path) {
+                _ = response::not_found(&mut session.stream, &session.server.config.info.id).await;
                 return Err(anyhow::Error::msg("Unknewn path wanted by client"));
             }
 
             Ok(RequestType::Listen(ListenRequest { mountpoint: path }))
         },
-        _ => Err(anyhow::Error::msg("Unknewn method sent by user"))
+        _ => {
+            _ = response::method_not_allowed(&mut session.stream, &session.server.config.info.id).await;
+            Err(anyhow::Error::msg("Unknewn method sent by user"))
+        }
     }
 }
