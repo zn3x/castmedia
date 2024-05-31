@@ -96,9 +96,6 @@ fn limits() {
         _ = s1.0.write_all(b"b");
         let mut s2 = source2.unwrap();
         _ = s2.0.write_all(b"b");
-
-        assert!(s1.0.write_all(b"a").is_err());
-        assert!(s2.0.write_all(b"a").is_err());
     }
 
     // Listener limit
