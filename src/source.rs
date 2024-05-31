@@ -9,7 +9,7 @@ use qanat::{
     oneshot
 };
 use anyhow::Result;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tracing::info;
 use uuid::Uuid;
 
@@ -84,7 +84,7 @@ pub struct Source {
     /// Sender stream for metadata broadcast
     /// Needed so we don't create a new sender every time
     /// we get metadata update
-    pub meta_broadcast_sender: Mutex<Sender<Arc<(u64, Vec<u8>)>>>,
+    pub meta_broadcast_sender: Sender<Arc<(u64, Vec<u8>)>>,
     /// Broadcast to move all clients in mountpoint to another one
     pub move_listeners_receiver: Receiver<Arc<MoveClientsCommand>>,
     pub move_listeners_sender: Sender<Arc<MoveClientsCommand>>,
@@ -137,7 +137,7 @@ impl Source {
             access,
             on_demand_notify_reader: None,
             broadcast: rx,
-            meta_broadcast_sender: Mutex::new(tx1.clone()),
+            meta_broadcast_sender: tx1.clone(),
             meta_broadcast: rx1,
             move_listeners_receiver: rx2,
             move_listeners_sender: tx2,
@@ -151,7 +151,7 @@ impl Source {
     }
 }
 
-pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a>, req: SourceRequest) -> Result<()> {
+pub async fn handle_request(mut session: ClientSession, request: Request<'_>, req: SourceRequest) -> Result<()> {
     if let Err(e) = auth::auth(&mut session, auth::AllowedAuthType::SourceMount, req.auth, &req.mountpoint).await {
         response::internal_error(&mut session.stream, &session.server.config.info.id).await?;
         return Err(anyhow::Error::msg(format!("Source authentication failed, cause: {}", e)));
@@ -222,6 +222,9 @@ pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a
 
     properties.populate_from_http_headers(&request.headers);
 
+    let initial_bytes_read = request.headers_buf.len();
+    drop(request);
+
     let user_id = session.user
         .as_ref()
         .expect("Should be identified at this point")
@@ -253,7 +256,7 @@ pub async fn handle_request<'a>(mut session: ClientSession, request: &Request<'a
         SourceInfo {
             mountpoint: req.mountpoint,
             properties,
-            initial_bytes_read: request.headers_buf.len(),
+            initial_bytes_read,
             chunked,
             fallback,
             queue_size: 0,

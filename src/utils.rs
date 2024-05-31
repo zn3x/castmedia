@@ -190,11 +190,11 @@ mod tests {
         assert_eq!(q[2].val, "d".to_string());
         let mut path = String::new();
         path.push('/');
-        path.push_str(&urlencoding::encode(r#"'4"4ef$%GH?"#).to_string());
+        path.push_str(urlencoding::encode(r#"'4"4ef$%GH?"#).as_ref());
         path.push('?');
-        path.push_str(&urlencoding::encode(r#"$O9r0#4="#).to_string());
+        path.push_str(urlencoding::encode(r#"$O9r0#4="#).as_ref());
         path.push('=');
-        path.push_str(&urlencoding::encode(r#"#T343op"#).to_string());
+        path.push_str(urlencoding::encode(r#"#T343op"#).as_ref());
         let q = super::get_queries(&path);
         assert_eq!(q[0].key, r#"$O9r0#4="#.to_string());
         assert_eq!(q[0].val, r#"#T343op"#.to_string());

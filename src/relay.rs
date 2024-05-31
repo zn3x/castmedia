@@ -711,19 +711,24 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                 return;
             }
 
-            // TODO: can we do this without keeping rlock while broadcasting
-            if let Some(source) = serv.sources.read().await.get(&mount) {
-                if on_demand && source.stats.active_listeners.load(Ordering::Acquire) != 0 {
+            let (icymeta, mut metadata_broadcast, last) = match serv.sources.read().await.get(&mount) {
+                Some(source) => if on_demand && source.stats.active_listeners.load(Ordering::Acquire) != 0 {
                     return;
+                } else {
+                    (
+                        source.metadata.clone(),
+                        source.meta_broadcast_sender.clone(),
+                        source.broadcast.last_index()
+                    )
                 }
-                let mut lock = source.meta_broadcast_sender.lock().await;
-                relay_broadcast_metadata(
-                    &source.metadata,
-                    &mut lock,
-                    source.broadcast.last_index(),
-                    metadata
-                ).await;
-            }
+                None => return
+            };
+            relay_broadcast_metadata(
+                &icymeta,
+                &mut metadata_broadcast,
+                last,
+                metadata
+            ).await;
         },
         MountUpdate::Unmounted { mount } => {
             // If source disconnects from master then we should do the same

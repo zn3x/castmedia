@@ -48,7 +48,7 @@ pub struct ApiRequest {
 
 async fn read_request_header(stream: &mut Stream, buf: &mut Vec<u8>, max_len: usize) -> Result<()> {
     let mut byte = [ 0; 1 ];
-    while buf.windows(4).last() != Some(b"\r\n\r\n") {
+    while buf.len() < 4 || buf[buf.len()-4..].ne(b"\r\n\r\n") {
         match stream.read(&mut byte).await {
             Ok(read) => if read > 0 {
                 buf.push(byte[0]);

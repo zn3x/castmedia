@@ -481,7 +481,7 @@ impl ServerSettings {
                     for mount in mounts {
                         for rmount in rmounts {
                             if mount.path.eq(&rmount.path) && mount.path.ne("*") {
-                                warn!("Sources {} and {} have access to same mountpoint {}", user, ruser, mount.path);
+                                warn!("Source users {} and {} have access to same mountpoint {}", user, ruser, mount.path);
                             }
                         }
                     }

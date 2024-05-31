@@ -64,12 +64,9 @@ pub async fn broadcast_metadata<'a>(source: &Source, title: &Option<&str>, url: 
         title: title.unwrap_or("").to_string(),
         url: url.unwrap_or("").to_string()
     });
-
-
     
     source.meta_broadcast_sender
-        .lock()
-        .await
+        .clone()
         .send(Arc::new((
             source.broadcast.last_index(),
             metadata_encode(title, url))
