@@ -17,7 +17,7 @@ An already running instance with migration disabled won't be migrated. If you ru
 
 It is also worth noting that having listeners with TLS is not supported with migration.
 
-To migrate to new instance, you simply run another castmedia instance with same `migrate.bind` unix socket file location. It can even be the same configuration of old instance with updates to it.
+To migrate to new instance, you simply run another castmedia instance with same `migrate.bind` unix socket file location. It can even be the same configuration file of old instance with updates to it.
 
 
 ## Migration in relaying
