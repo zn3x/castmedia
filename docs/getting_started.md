@@ -1,8 +1,8 @@
-## What is CastMedia?
+## What is castmedia?
 
-CastMedia is an icecast media server that let's you broadcast media stream over internet. CastMedia currently supports MP3 media streams.
+castmedia is an icecast media server that lets you broadcast media stream over internet. castmedia currently supports MP3 media streams.
 
-While CastMedia is a server that let's you broadcast media stream to clients. You still need an icecast source that provide media for the server. You can make your own client using [libshout](https://gitlab.xiph.org/xiph/icecast-libshout/) or use tools such as ffmpeg.
+While castmedia is a server that lets you broadcast media stream to clients. You still need an icecast source that provide media for the server. You can make your own client using [libshout](https://gitlab.xiph.org/xiph/icecast-libshout/) or use tools such as ffmpeg.
 
 ## Platforms
 
@@ -25,8 +25,7 @@ cargo build --release
 
 ## Pages
 
-- [Introduction](./intro.md)
-- [Configuration file](./config.md)
+- [Configuration file](./configuration.md)
 - [API](./api.md)
 - [Relaying](./relaying.md)
 - [Migration and zero-downtime](./migration.md)

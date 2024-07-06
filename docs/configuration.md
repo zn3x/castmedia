@@ -1,0 +1,94 @@
+
+# Configuration
+
+The configuration file uses YAML syntax and is the only way to change the behavior of castmedia.
+
+A configuration file looks like the following:
+```yaml
+# Specify listening addresses where we will accept clients incoming connections
+address:
+# First interface wil be reserved for listener clients
+- bind: 127.0.0.1:9000
+  allow_auth: false
+# This on the other hand will be used for source clients
+- bind: 127.0.0.1:39203
+  allow_auth: true
+# In icecast, regularly broadcast metadata update to clients, this indicates bytes interval between
+# metadata broadcasts.
+metadata_interval: 32000
+# General server info
+info:
+  id: CastMedia 0.1.0
+  admin: admin@localhost
+  location: '1.064646'
+  description: Internet radio!
+# Defining server general limits
+limits:
+  # Max clients server will ever accept, this includes admin connections
+  # This should account for listeners + sources + access to api + admin api access
+  clients: 400
+  # Max number of listeners that may concurrently access server
+  listeners: 370
+  # Max number of sources ever accepted supported by the server, this includes active relays and source clients
+  sources: 4
+  # The most important part
+  # How much audio we want to keep in queue for new users
+  # This depends on bitrate of the stream
+  # So for a stream with bitrate of 320kbps and we want to leave 10 seconds burst
+  # 320 kilobits = 40_000 bytes
+  # 40_000 bytes * 10 seconds = 400_000
+  queue_size: 400000
+  # Timeout when reading http request header in milliseconds
+  header_timeout: 15000
+  # Timeout awaiting for source steam in milliseconds
+  source_timeout: 10000
+  # To avoid large requests from clients that may cause denial of service, we limit request size in bytes
+  http_max_len: 8192
+# Accounts credentials
+account:
+  # WARNING! Avoid using default credentials like these
+  # Account can either be a source or admin
+  admin:
+    # A password can either be either plaintext or hashed by specifying a prefix:
+    # - 0$: Plaintext
+    # - 1$: A hashed scrypt password digest
+    # In case a plaintext is specified, it is hashed by default at start-time, however it should be considired
+    # if an attacker can get read access to this configuration file
+    pass: 0$pass
+    role: admin
+  source:
+    pass: 0$pass
+    role: source
+    # Mount must be specified, if mounting to any path is needed, wildcard (*) can be used.
+    # If user tries to mount to any other location, access won't be granted.
+    # If two sources accounts have same mount, access will only be given to first one mounting.
+    # A fallback mount can also be specified that all clients will be moved to if source disconnects
+    mount:
+      - path: '/stream'
+        fallback: '/stream1'
+      - path: '/stream1'
+  slave:
+    pass: 0$pass
+    role: slave
+# This is a specific bind address for admin access only
+admin_access:
+  enabled: true
+  address:
+    bind: 127.0.0.1:9100
+# Migration related configuration
+migrate:
+  # This must be enabled in both current instance and successor instance for migration to be successfully done
+  enabled: true
+  # The unix socket address where an instance waits for a successor instance to pass it's state to
+  bind: /tmp/migrate.sock
+misc:
+  # allow unsafe password for accounts
+  unsafe_pass: false
+  # Check if `X-Forwarded-For` header is present and set it as default IP address for client
+  # Usefull when castmedia is sitting behind a reverse proxy like haproxy
+  # WARNING!! This must only be enabled when a reverse proxy is configured
+  # otherwise any user will be able to alter it's own IP address
+  check_forwardedfor: false
+```
+
+castmedia does not auto-detect configuration changes and will need a restart for the new configuration to be applied, we discuss more about this in [migration](./migration.md).
