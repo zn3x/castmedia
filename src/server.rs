@@ -431,8 +431,6 @@ pub async fn listener(config: ServerSettings) {
         } else {
             crate::migrate::spawn_listener(serv.clone()).await;
         }
-    } else {
-        warn!("Migration is disabled, zero downtimes won't be possible");
     }
 
     if !serv.config.master.is_empty() {
