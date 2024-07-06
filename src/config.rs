@@ -569,6 +569,8 @@ impl ServerSettings {
                     errors += 1;
                 }
             }
+        } else {
+            warn!("Migration is disabled, zero downtimes won't be possible");
         }
 
         if config.misc.check_forwardedfor {
