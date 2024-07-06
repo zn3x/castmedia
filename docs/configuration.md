@@ -1,4 +1,3 @@
-
 # Configuration
 
 The configuration file uses YAML syntax and is the only way to change the behavior of castmedia.
@@ -91,4 +90,9 @@ misc:
   check_forwardedfor: false
 ```
 
-castmedia does not auto-detect configuration changes and will need a restart for the new configuration to be applied, we discuss more about this in [migration](./migration.md).
+castmedia does not auto-detect configuration changes and will need a restart for the new configuration to be applied, we discuss more about this in [migration and zero-downtime](./migration.md).
+
+It is also recommended to check if your configuration file is valid before starting:
+```
+castmedia --check config.yaml
+```
