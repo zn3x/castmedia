@@ -23,6 +23,9 @@ admin_access:
     bind: 127.0.0.1:9104
 misc:
   unsafe_pass: true
+migrate:
+  enabled: true
+  bind: /tmp/relay_transparent_master.sock
 limits:
   source_timeout: 30000
 metadata_interval: 3000
@@ -41,11 +44,70 @@ admin_access:
     bind: 127.0.0.1:9105
 misc:
   unsafe_pass: true
+migrate:
+  enabled: true
+  bind: /tmp/relay_transparent_slave.sock
 master:
   - url: http://127.0.0.1:9004
     relay_scheme:
       type: transparent
       update_interval: 10000
+metadata_interval: 3000
+";
+
+const CONFIG_MASTER1: &str = "
+address:
+  - bind: 127.0.0.1:9004
+account:
+  admin:
+    pass: 0$pass
+    role: admin
+  source:
+    pass: 0$pass
+    role: source
+    mount:
+      - path: '*'
+  slave:
+    pass: 0$pass
+    role: slave
+admin_access:
+  enabled: true
+  address:
+    bind: 127.0.0.1:9104
+misc:
+  unsafe_pass: true
+migrate:
+  enabled: true
+  bind: /tmp/relay_transparent_master.sock
+limits:
+  source_timeout: 30000
+metadata_interval: 3000
+";
+
+const CONFIG_SLAVE1: &str = "
+address:
+  - bind: 127.0.0.1:9005
+account:
+  admin:
+    pass: 0$pass
+    role: admin
+admin_access:
+  enabled: true
+  address:
+    bind: 127.0.0.1:9105
+misc:
+  unsafe_pass: true
+migrate:
+  enabled: true
+  bind: /tmp/relay_transparent_slave.sock
+master:
+  - url: http://127.0.0.1:9004
+    relay_scheme:
+      type: authenticated
+      user: slave
+      pass: pass
+      reconnect_timeout: 5000
+      stream_on_demand: false
 metadata_interval: 3000
 ";
 
@@ -61,8 +123,8 @@ const MOUNT_SOURCE: &str = "/stream.mp3";
 
 #[test]
 fn transparent() {
-    let master_server = spawn_server_blocking(TEST_DIR, CONFIG_MASTER, "master_transparent.yaml");
-    let slave_server  = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE, "slave_transparent.yaml");
+    let mut master_server = spawn_server_blocking(TEST_DIR, CONFIG_MASTER, "master_transparent.yaml");
+    let mut slave_server  = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE, "slave_transparent.yaml");
 
     std::thread::sleep(Duration::from_secs(4));
 
@@ -146,6 +208,54 @@ fn transparent() {
     r.read_exact(&mut metadata_buf).unwrap();
     let metadata = std::str::from_utf8(&metadata_buf).unwrap();
     assert_eq!((Some("1".to_owned()), Some("1".to_owned())), metadata_decode(metadata).unwrap());
+
+    // Restarting master, but we also add a slave user
+    let master_server1 = spawn_server_blocking(TEST_DIR, CONFIG_MASTER1, "master_transparent.yaml");
+    std::thread::sleep(Duration::from_secs(2));
+    master_server = master_server1;
+
+    let ret = test_utils::reqwest::blocking::Client::new()
+        .get(format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=2&song=2", AUTH_SOURCE, ADMIN_MASTER, MOUNT_SOURCE))
+        .send()
+        .unwrap()
+        .status();
+    assert_eq!(ret, 200);
+
+    let packet4 = format.next_packet().unwrap();
+    assert!(source_sock.write_all(packet4.buf()).is_ok());
+
+    let packet5 = format.next_packet().unwrap();
+    assert!(source_sock.write_all(packet5.buf()).is_ok());
+
+    let packet6 = format.next_packet().unwrap();
+    assert!(source_sock.write_all(packet6.buf()).is_ok());
+
+    let mut buf = [0u8; 3000];
+    let mut len = [0u8; 1];
+    assert!(r.read_exact(&mut buf).is_ok());
+    r.read_exact(&mut len).unwrap();
+    let mut metadata_buf = vec![0u8; metadata_len];
+    r.read_exact(&mut metadata_buf).unwrap();
+    let metadata = std::str::from_utf8(&metadata_buf).unwrap();
+    assert_eq!((Some("2".to_owned()), Some("2".to_owned())), metadata_decode(metadata).unwrap());
+
+    // Now we want slave to run in authenticated mode
+    
+    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE1, "slave_transparent.yaml");
+    std::thread::sleep(Duration::from_secs(2));
+    slave_server = slave_server1;
+
+    let packet7 = format.next_packet().unwrap();
+    assert!(source_sock.write_all(packet7.buf()).is_ok());
+
+    let packet8 = format.next_packet().unwrap();
+    assert!(source_sock.write_all(packet8.buf()).is_ok());
+
+    let packet9 = format.next_packet().unwrap();
+    assert!(source_sock.write_all(packet9.buf()).is_ok());
+
+    let mut buf = [0u8; 3000];
+    assert!(r.read_exact(&mut buf).is_ok());
 
     drop(master_server);
     drop(slave_server);
