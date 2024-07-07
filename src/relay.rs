@@ -153,6 +153,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
                         (m.0.clone(), m.1.recv().await)
                     }.boxed());
                 }
+                // TODO: Can we eliminate the need to transmit metadata for source if slave
+                // already listening to that source
                 tokio::select! {
                     ((mount, metadata), _, _) = select_all(reads) => {
                         let ser = match metadata {
@@ -272,13 +274,11 @@ async fn fetch_available_mounts(server: &Server, url: &Url) -> Result<MasterMoun
 }
 
 async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
-                    on_demand: bool, auth: Option<&str>)
-    -> Result<(Box<dyn Socket>, SocketAddr, Option<usize>, usize, IcyProperties, bool)> {
+                    auth: Option<&str>)
+    -> Result<(Box<dyn Socket>, SocketAddr, usize, usize, IcyProperties, bool)> {
     // Fetching media stream from master
     let mut headers = String::new();
-    if !on_demand {
-        headers.push_str("Icy-Metadata: 1\r\n");
-    }
+    headers.push_str("Icy-Metadata: 1\r\n");
     if let Some(auth) = auth {
         headers.push_str(auth);
     }
@@ -304,7 +304,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     }
 
     // We should check if this is an icecast server
-    if !on_demand && get_header("icy-name", resp.headers).is_none() {
+    if get_header("icy-name", resp.headers).is_none() {
         return Err(anyhow::Error::msg("not an icecast server"));
     }
 
@@ -316,15 +316,11 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     };
 
     // Getting metaint
-    let metaint = if on_demand {
-        None
-    } else {
-        Some(match get_header("icy-metaint", resp.headers) {
-            Some(metaint) => std::str::from_utf8(metaint)?.parse::<usize>()?,
-            None => {
-                return Err(anyhow::Error::msg("missing icy-metaint header"));
-            }
-        })
+    let metaint = match get_header("icy-metaint", resp.headers) {
+        Some(metaint) => std::str::from_utf8(metaint)?.parse::<usize>()?,
+        None => {
+            return Err(anyhow::Error::msg("missing icy-metaint header"));
+        }
     };
 
     let properties = IcyProperties::new(match get_header("content-type", resp.headers) {
@@ -882,7 +878,7 @@ async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: 
     -> RelayBroadcastStatus {
     let url = &serv.config.master[master_ind].url;
 
-    match get_stream(serv, url, &mount, on_demand.is_some(), auth).await {
+    match get_stream(serv, url, &mount, auth).await {
         Ok((stream, addr, metaint, initial_bytes_read, properties, chunked)) => {
             let url = concat_path(url.as_str(), &mount);
             let ret = crate::source::handle_source(
@@ -903,7 +899,7 @@ async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: 
                     access: SourceAccessType::RelayedSource { relayed_source: url.clone() },
                     relayed: Some(RelayStream {
                         info: RelayedInfo {
-                            metaint: metaint.unwrap_or(0),
+                            metaint,
                             metaint_position: 0,
                             metadata_reading: false,
                             metadata_remaining: 0,
