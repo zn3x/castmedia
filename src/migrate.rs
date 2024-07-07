@@ -77,8 +77,21 @@ pub async fn handle_successor(server: Arc<Server>) {
     // For us to spawn all client tasks we must also pass runtime handle to blocking task
     let runtime_handle = Handle::current();
     _ = tokio::task::spawn_blocking(move || {
-        if let Err(e) = migrate_successor(server, runtime_handle) {
+        let mut slave_id = match server.config.master.is_empty() {
+            true => Vec::new(),
+            false => (0..server.config.master.len()).collect::<Vec<_>>()
+        };
+
+        if let Err(e) = migrate_successor(server.clone(), runtime_handle, &mut slave_id) {
             error!("Migration failed: {}", e);
+        }
+
+        // Loading tasks for all new master relays
+        for id in slave_id {
+            let serv = server.clone();
+            tokio::spawn(async move {
+                crate::relay::slave_instance(serv, id).await;
+            });
         }
     }).await;
 }
@@ -223,18 +236,13 @@ fn write_sources(successor: &mut UnixStream,
     Ok(())
 }
 
-fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> {
+fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut Vec<usize>) -> Result<()> {
     let bind = server.config.migrate.bind.as_ref().unwrap();
     let mut predeseccor = UnixStream::connect(bind)
         .map_err(|_| anyhow::Error::msg("No instance currently running found on migration socket"))?;
 
     info!("Starting migration from old instance.");
-    let mut slave_id = match server.config.master.is_empty() {
-        true => Vec::new(),
-        false => (0..server.config.master.len()).collect::<Vec<_>>()
-    };
-    // TODO FIX ME: Master mounts are dropped when slave mountupdates
-    // is not received in migration
+
     let mut slave_tx: Vec<(&Url, UnboundedSender<_>)> = Vec::new();
 
     let mut buf = vec![0u8; 4092];
@@ -338,18 +346,39 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
                         Ok(v) => v,
                         Err(_) => continue
                     };
-                    for master in &slave_tx {
-                        if master.0.host_str().eq(&url.host_str())
-                            && master.0.port().eq(&url.port()) {
-                            // When config is switched from on_demand mode or vice-versa
-                            // we should comply
-                            _ = match on_demand {
-                                true  => master.1.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret }),
-                                false => master.1.send(RelaySourceMigrate::Normal { stream, addr, info: ret })
-                            };
-                            continue 'OUTER;
+                    'FIND_MASTER: loop {
+                        for master in &slave_tx {
+                            if master.0.host_str().eq(&url.host_str())
+                                && master.0.port().eq(&url.port()) {
+                                // When config is switched from on_demand mode or vice-versa
+                                // we should comply
+                                _ = match on_demand {
+                                    true  => master.1.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret }),
+                                    false => master.1.send(RelaySourceMigrate::Normal { stream, addr, info: ret })
+                                };
+                                continue 'OUTER;
+                            }
                         }
-                    }
+                        // We can't find master, we should check if we did switch from transparent
+                        for (i, master) in server.config.master.iter().enumerate() {
+                            if master.url.host_str().eq(&url.host_str())
+                                && master.url.port().eq(&url.port()) {
+                                slave_id.retain(|x| x.ne(&i));
+                                let (tx, rx) = mpsc::unbounded_channel();
+                                slave_tx.push((&master.url, tx));
+                                let serv = server.clone();
+                                runtime_handle.spawn(async move {
+                                    crate::relay::authenticated_mode(
+                                        serv.clone(), i,
+                                        Some((None, rx))
+                                    ).await;
+                                });
+                                continue 'FIND_MASTER;
+                            }
+                        }
+                        // Meh it doesn't exist, it must have been removed
+                        break;
+                    };
                     // If we can't find a master server for this relay source
                     // we will drop it here
                     continue 'OUTER;
@@ -407,7 +436,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
                                     runtime_handle.spawn(async move {
                                         crate::relay::authenticated_mode(
                                             serv.clone(), i,
-                                            Some((stream, rx))
+                                            Some((Some(stream), rx))
                                         ).await;
                                     });
                                     continue 'OUTER;
@@ -452,14 +481,6 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
             }
         });
     };
-
-    // Loading tasks for all new master relays
-    for id in slave_id {
-        let serv = server.clone();
-        tokio::spawn(async move {
-            crate::relay::slave_instance(serv, id).await;
-        });
-    }
 
     tx.send(());
     info!("Migration from old instance completed.");
