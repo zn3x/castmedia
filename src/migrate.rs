@@ -236,6 +236,12 @@ fn write_sources(successor: &mut UnixStream,
     Ok(())
 }
 
+struct MasterServerTask<'a> {
+    url: &'a Url,
+    tx: UnboundedSender<RelaySourceMigrate>,
+    on_demand: bool
+}
+
 fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut Vec<usize>) -> Result<()> {
     let bind = server.config.migrate.bind.as_ref().unwrap();
     let mut predeseccor = UnixStream::connect(bind)
@@ -243,7 +249,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
 
     info!("Starting migration from old instance.");
 
-    let mut slave_tx: Vec<(&Url, UnboundedSender<_>)> = Vec::new();
+    let mut slave_tx: Vec<MasterServerTask> = Vec::new();
 
     let mut buf = vec![0u8; 4092];
 
@@ -299,8 +305,8 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                 let snapshot = restore_channel_from_snapshot((snapshot_msgs, info.broadcast_snapshot.1, info.broadcast_snapshot.2));
                 let mut is_relay = None;
                 let (access, relayed) = match info.is_relay {
-                    MigrateSourceConnectionType::RelayedSource { relayed_stream, on_demand, relay_info } => {
-                        is_relay = Some((relayed_stream.clone(), on_demand));
+                    MigrateSourceConnectionType::RelayedSource { relayed_stream, relay_info, .. } => {
+                        is_relay = Some(relayed_stream.clone());
                         (
                             SourceAccessType::RelayedSource { relayed_source: relayed_stream },
                             Some(RelayStream {
@@ -327,7 +333,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                     relayed
                 };
                 
-                if let Some((r, on_demand)) = is_relay {
+                if let Some(r) = is_relay {
                     let (stream, addr) = match read_stream_from_unix_socket(&mut predeseccor) {
                         Ok(v) => (
                             v.0,
@@ -348,13 +354,13 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                     };
                     'FIND_MASTER: loop {
                         for master in &slave_tx {
-                            if master.0.host_str().eq(&url.host_str())
-                                && master.0.port().eq(&url.port()) {
+                            if master.url.host_str().eq(&url.host_str())
+                                && master.url.port().eq(&url.port()) {
                                 // When config is switched from on_demand mode or vice-versa
                                 // we should comply
-                                _ = match on_demand {
-                                    true  => master.1.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret }),
-                                    false => master.1.send(RelaySourceMigrate::Normal { stream, addr, info: ret })
+                                _ = match master.on_demand {
+                                    true  => master.tx.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret }),
+                                    false => master.tx.send(RelaySourceMigrate::Normal { stream, addr, info: ret })
                                 };
                                 continue 'OUTER;
                             }
@@ -363,17 +369,24 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                         for (i, master) in server.config.master.iter().enumerate() {
                             if master.url.host_str().eq(&url.host_str())
                                 && master.url.port().eq(&url.port()) {
-                                slave_id.retain(|x| x.ne(&i));
-                                let (tx, rx) = mpsc::unbounded_channel();
-                                slave_tx.push((&master.url, tx));
-                                let serv = server.clone();
-                                runtime_handle.spawn(async move {
-                                    crate::relay::authenticated_mode(
-                                        serv.clone(), i,
-                                        Some((None, rx))
-                                    ).await;
-                                });
-                                continue 'FIND_MASTER;
+                                match &master.relay_scheme {
+                                    MasterServerRelayScheme::Authenticated { stream_on_demand, .. } => {
+                                        slave_id.retain(|x| x.ne(&i));
+                                        let (tx, rx) = mpsc::unbounded_channel();
+                                        slave_tx.push(MasterServerTask { url: &master.url, tx, on_demand: *stream_on_demand });
+                                        let serv = server.clone();
+                                        runtime_handle.spawn(async move {
+                                            crate::relay::authenticated_mode(
+                                                serv.clone(), i,
+                                                Some((None, rx))
+                                            ).await;
+                                        });
+                                        continue 'FIND_MASTER;
+                                    },
+                                    _ => {
+                                        continue 'OUTER;
+                                    }
+                                }
                             }
                         }
                         // Meh it doesn't exist, it must have been removed
@@ -428,10 +441,10 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                                     // in this case we drop mountupdates connection
                                     continue 'OUTER;
                                 },
-                                MasterServerRelayScheme::Authenticated { .. } => {
+                                MasterServerRelayScheme::Authenticated { stream_on_demand, .. } => {
                                     slave_id.retain(|x| x.ne(&i));
                                     let (tx, rx) = mpsc::unbounded_channel();
-                                    slave_tx.push((&master.url, tx));
+                                    slave_tx.push(MasterServerTask { url: &master.url, tx, on_demand: stream_on_demand });
                                     let serv = server.clone();
                                     runtime_handle.spawn(async move {
                                         crate::relay::authenticated_mode(
@@ -453,9 +466,9 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                 // but with ondemand flag true
                 if let Ok(url) = info.master_url.parse::<Url>() {
                     for master in &mut slave_tx {
-                        if master.0.host_str().eq(&url.host_str())
-                            && master.0.port().eq(&url.port()) {
-                            _ = master.1.send(RelaySourceMigrate::OnDemandIdle { mount: info.mountpoint, properties: info.properties });
+                        if master.url.host_str().eq(&url.host_str())
+                            && master.url.port().eq(&url.port()) {
+                            _ = master.tx.send(RelaySourceMigrate::OnDemandIdle { mount: info.mountpoint, properties: info.properties });
                             continue 'OUTER;
                         }
                     }
