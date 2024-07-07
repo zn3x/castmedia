@@ -111,6 +111,33 @@ master:
 metadata_interval: 3000
 ";
 
+const CONFIG_SLAVE2: &str = "
+address:
+  - bind: 127.0.0.1:9005
+account:
+  admin:
+    pass: 0$pass
+    role: admin
+admin_access:
+  enabled: true
+  address:
+    bind: 127.0.0.1:9105
+misc:
+  unsafe_pass: true
+migrate:
+  enabled: true
+  bind: /tmp/relay_transparent_slave.sock
+master:
+  - url: http://127.0.0.1:9004
+    relay_scheme:
+      type: authenticated
+      user: slave
+      pass: pass
+      reconnect_timeout: 5000
+      stream_on_demand: true
+metadata_interval: 3000
+";
+
 static TEST_DIR: &str    = env!("CARGO_TARGET_TMPDIR");
 const BASE_MASTER: &str  = "127.0.0.1:9004";
 const ADMIN_MASTER: &str = "127.0.0.1:9104";
@@ -245,17 +272,50 @@ fn transparent() {
     std::thread::sleep(Duration::from_secs(2));
     slave_server = slave_server1;
 
-    let packet7 = format.next_packet().unwrap();
-    assert!(source_sock.write_all(packet7.buf()).is_ok());
-
-    let packet8 = format.next_packet().unwrap();
-    assert!(source_sock.write_all(packet8.buf()).is_ok());
-
-    let packet9 = format.next_packet().unwrap();
-    assert!(source_sock.write_all(packet9.buf()).is_ok());
+    for _ in 0..3 {
+        let packet = format.next_packet().unwrap();
+        assert!(source_sock.write_all(packet.buf()).is_ok());
+    }
 
     let mut buf = [0u8; 3000];
     assert!(r.read_exact(&mut buf).is_ok());
+
+    // Now enabling on_demand mode
+    drop(r);
+
+    for _ in 0..3 {
+        let packet = format.next_packet().unwrap();
+        assert!(source_sock.write_all(packet.buf()).is_ok());
+    }
+
+    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE2, "slave_transparent.yaml");
+
+    std::thread::sleep(Duration::from_secs(2));
+    slave_server = slave_server1;
+
+    for _ in 0..3 {
+        let packet = format.next_packet().unwrap();
+        assert!(source_sock.write_all(packet.buf()).is_ok());
+    }
+
+    // Waiting until source becomes inactive
+    std::thread::sleep(Duration::from_secs(2));
+
+    let mut r = test_utils::reqwest::blocking::Client::new()
+        .get(format!("http://{}{}", BASE_SLAVE, MOUNT_SOURCE))
+        .header("Icy-Metadata", "1")
+        .send()
+        .unwrap();
+
+    // We should be able to read from start
+    let mut buf = [0u8; 3000];
+    let mut len = [0u8; 1];
+    assert!(r.read_exact(&mut buf).is_ok());
+    r.read_exact(&mut len).unwrap();
+    assert_eq!(&buf[0..packet1.buf().len()], packet1.buf());
+
+    drop(r);
+
 
     drop(master_server);
     drop(slave_server);
