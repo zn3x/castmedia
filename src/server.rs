@@ -431,9 +431,7 @@ pub async fn listener(config: ServerSettings) {
         } else {
             crate::migrate::spawn_listener(serv.clone()).await;
         }
-    }
-
-    if !serv.config.master.is_empty() {
+    } else if !serv.config.master.is_empty() {
         for i in 0..serv.config.master.len() {
             let serv_clone = serv.clone();
             tokio::spawn(async move {

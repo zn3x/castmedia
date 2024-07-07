@@ -338,7 +338,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
 }
 
 pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
-                                mut migrate_successor: Option<(Stream, mpsc::UnboundedReceiver<RelaySourceMigrate>)>) {
+                                mut migrate_successor: Option<(Option<Stream>, mpsc::UnboundedReceiver<RelaySourceMigrate>)>) {
     let master_server     = &serv.config.master[master_ind];
     let reconnect_timeout = match &master_server.relay_scheme {
         MasterServerRelayScheme::Authenticated { reconnect_timeout, .. } => *reconnect_timeout,
@@ -347,8 +347,12 @@ pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
     let timeout = Duration::from_millis(reconnect_timeout);
     loop {
         match migrate_successor.take() {
-            Some((stream, m)) => authenticated_mode_event_listener(&serv, stream, master_ind, Some(m)).await,
-            None => {
+            Some((Some(stream), m)) => authenticated_mode_event_listener(&serv, stream, master_ind, Some(m)).await,
+            v => {
+                let m = match v {
+                    Some((None, m)) => Some(m),
+                    _ => None
+                };
                 let fut = async {
                     loop {
                         match authenticated_mode_fetch_updates_stream(&serv, master_ind).await {
@@ -370,7 +374,7 @@ pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
                         }
                     }
                 };
-                authenticated_mode_event_listener(&serv, stream, master_ind, None).await;
+                authenticated_mode_event_listener(&serv, stream, master_ind, m).await;
             }
         }
     }
@@ -428,6 +432,11 @@ pub enum RelaySourceMigrate {
     }
 }
 
+struct RelaySourceTask {
+    handle: JoinHandle<()>,
+    just_migrated: bool
+}
+
 async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Stream,
                                            master_ind: usize,
                                            migrate_successor: Option<mpsc::UnboundedReceiver<RelaySourceMigrate>>) {
@@ -470,7 +479,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                             _ => ()
                         }
                     });
-                    sources.insert(mount, task);
+                    sources.insert(mount, RelaySourceTask { handle: task, just_migrated: true });
                 },
                 RelaySourceMigrate::OnDemandIdle { mount, properties } => {
                     handle_mount_update(
@@ -528,7 +537,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                         }
                     });
 
-                    sources.insert(mount, task);
+                    sources.insert(mount, RelaySourceTask { handle: task, just_migrated: true });
                 }
             }
         }
@@ -597,7 +606,7 @@ async fn authenticated_mode_reader(stream: &mut Stream, len_enc: &mut [u8; 4],
     Ok(event)
 }
 
-async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
+async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
                              serv: &Arc<Server>, master_ind: usize,
                              on_demand: bool, event: MountUpdate, auth: &str) {
     let master = &serv.config.master[master_ind].url;
@@ -605,7 +614,12 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
     // Now handling events for every source
     match event {
         MountUpdate::New { mount, properties } => {
-            if let Some(task_handle) = sources.remove(&mount) {
+            if let Some(mut task) = sources.remove(&mount) {
+                if task.just_migrated {
+                    task.just_migrated = false;
+                    sources.insert(mount, task);
+                    return;
+                }
                 // When we have a new source by same name, that means source in master
                 // disconnected and reconnected again.
             
@@ -627,7 +641,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                             drop(lock);
                             if let Some(kill) = kill {
                                 _ = kill.send(());
-                                _ = task_handle.await;
+                                _ = task.handle.await;
                             }
                         } else {
                             // 💀 what can we do...
@@ -648,7 +662,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                 let task     = tokio::task::spawn(async move {
                     relay_source(&serv_cl, master_ind, &mount_cl, Some(&auth_cl)).await;
                 });
-                sources.insert(mount, task);
+                sources.insert(mount, RelaySourceTask { handle: task, just_migrated: false });
                 return;
             }
 
@@ -700,7 +714,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
 
             drop(lock);
 
-            sources.insert(mount, task);
+            sources.insert(mount, RelaySourceTask { handle: task, just_migrated: false });
         },
         MountUpdate::Metadata { mount, metadata } => {
             // we skip updating metadata here if either:
@@ -733,7 +747,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
         MountUpdate::Unmounted { mount } => {
             // If source disconnects from master then we should do the same
             // Send a kill notification to task
-            if let Some(task_handle) = sources.remove(&mount) {
+            if let Some(task) = sources.remove(&mount) {
                 let mut lock = serv.sources.write().await;
                 if let Some(source) = lock.get_mut(&mount) {
                     if let Some(kill) = source.kill.take() {
@@ -743,7 +757,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                             // We might need to cancel task in case there was
                             // already an exception and relay_source didn't receive
                             // Kill signal properly
-                            task_handle.abort();
+                            task.handle.abort();
                         }
                     }
                 }
