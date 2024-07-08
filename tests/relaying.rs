@@ -25,7 +25,7 @@ misc:
   unsafe_pass: true
 migrate:
   enabled: true
-  bind: /tmp/relay_transparent_master.sock
+  bind: /tmp/relay_master.sock
 limits:
   source_timeout: 30000
 metadata_interval: 3000
@@ -46,7 +46,7 @@ misc:
   unsafe_pass: true
 migrate:
   enabled: true
-  bind: /tmp/relay_transparent_slave.sock
+  bind: /tmp/relay_slave.sock
 master:
   - url: http://127.0.0.1:9004
     relay_scheme:
@@ -78,7 +78,7 @@ misc:
   unsafe_pass: true
 migrate:
   enabled: true
-  bind: /tmp/relay_transparent_master.sock
+  bind: /tmp/relay_master.sock
 limits:
   source_timeout: 30000
 metadata_interval: 3000
@@ -99,7 +99,7 @@ misc:
   unsafe_pass: true
 migrate:
   enabled: true
-  bind: /tmp/relay_transparent_slave.sock
+  bind: /tmp/relay_slave.sock
 master:
   - url: http://127.0.0.1:9004
     relay_scheme:
@@ -150,9 +150,9 @@ const MOUNT_SOURCE: &str = "/stream.mp3";
 
 #[test]
 #[allow(unused_assignments)]
-fn transparent() {
-    let mut master_server = spawn_server_blocking(TEST_DIR, CONFIG_MASTER, "master_transparent.yaml");
-    let mut slave_server  = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE, "slave_transparent.yaml");
+fn relaying() {
+    let mut master_server = spawn_server_blocking(TEST_DIR, CONFIG_MASTER, "relay_master.yaml");
+    let mut slave_server  = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE, "relay_slave.yaml");
 
     std::thread::sleep(Duration::from_secs(4));
 
@@ -238,7 +238,7 @@ fn transparent() {
     assert_eq!((Some("1".to_owned()), Some("1".to_owned())), metadata_decode(metadata).unwrap());
 
     // Restarting master, but we also add a slave user
-    let master_server1 = spawn_server_blocking(TEST_DIR, CONFIG_MASTER1, "master_transparent.yaml");
+    let master_server1 = spawn_server_blocking(TEST_DIR, CONFIG_MASTER1, "relay_master.yaml");
     std::thread::sleep(Duration::from_secs(2));
     master_server = master_server1;
 
@@ -269,7 +269,7 @@ fn transparent() {
 
     // Now we want slave to run in authenticated mode
     
-    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE1, "slave_transparent.yaml");
+    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE1, "relay_slave.yaml");
     std::thread::sleep(Duration::from_secs(2));
     slave_server = slave_server1;
 
@@ -289,7 +289,7 @@ fn transparent() {
         assert!(source_sock.write_all(packet.buf()).is_ok());
     }
 
-    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE2, "slave_transparent.yaml");
+    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE2, "relay_slave.yaml");
     std::thread::sleep(Duration::from_secs(2));
     slave_server = slave_server1;
 
@@ -316,7 +316,7 @@ fn transparent() {
     assert_eq!(&buf[0..packet1.buf().len()], packet1.buf());
 
     // Now we want to return back from authenticated to transparent
-    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE, "slave_transparent.yaml");
+    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE, "relay_slave.yaml");
     std::thread::sleep(Duration::from_secs(2));
     slave_server = slave_server1;
 
@@ -327,7 +327,7 @@ fn transparent() {
 
     // Removing slave user from master, it's safe to do so because we no longer use authenticated
     // mode in slave
-    let master_server1 = spawn_server_blocking(TEST_DIR, CONFIG_MASTER, "master_transparent.yaml");
+    let master_server1 = spawn_server_blocking(TEST_DIR, CONFIG_MASTER, "relay_master.yaml");
     std::thread::sleep(Duration::from_secs(2));
     master_server = master_server1;
 
