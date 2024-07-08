@@ -139,7 +139,7 @@ metadata_interval: 3000
 ";
 
 static TEST_DIR: &str    = env!("CARGO_TARGET_TMPDIR");
-const BASE_MASTER: &str  = "127.0.0.1:9004";
+//const BASE_MASTER: &str  = "127.0.0.1:9004";
 const ADMIN_MASTER: &str = "127.0.0.1:9104";
 const BASE_SLAVE: &str   = "127.0.0.1:9005";
 const ADMIN_SLAVE: &str  = "127.0.0.1:9105";
@@ -289,7 +289,6 @@ fn transparent() {
     }
 
     let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE2, "slave_transparent.yaml");
-
     std::thread::sleep(Duration::from_secs(2));
     slave_server = slave_server1;
 
@@ -314,8 +313,17 @@ fn transparent() {
     r.read_exact(&mut len).unwrap();
     assert_eq!(&buf[0..packet1.buf().len()], packet1.buf());
 
-    drop(r);
 
+    // Now we want to return back from authenticated to transparent
+    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE, "slave_transparent.yaml");
+    std::thread::sleep(Duration::from_secs(2));
+    slave_server = slave_server1;
+
+    let mut buf = [0u8; 3000];
+    assert!(r.read_exact(&mut buf).is_ok());
+
+    // Removing slave user from master, it's safe to do so because we no longer use authenticated
+    // mode in slave
 
     drop(master_server);
     drop(slave_server);
