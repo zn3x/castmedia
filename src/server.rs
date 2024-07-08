@@ -1,13 +1,17 @@
-use std::{sync::{Arc, atomic::{AtomicUsize, Ordering}}, net::SocketAddr, hash::BuildHasher, os::fd::AsRawFd, time::Duration};
+use std::{
+    sync::{Arc, atomic::{AtomicUsize, Ordering}},
+    net::SocketAddr, hash::BuildHasher, os::fd::AsRawFd, time::Duration,
+    ops::{Deref, DerefMut}
+};
 use chrono::{DateTime, Local};
-use futures::StreamExt;
+use futures::{StreamExt, executor::block_on};
 use qanat::{
     broadcast::{channel, Receiver, Sender},
     mpsc
 };
 use tokio::{
     net::{TcpListener, TcpStream},
-    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock}
+    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream, AsyncWriteExt}, sync::{Semaphore, RwLock}
 };
 use tokio_native_tls::{native_tls, TlsStream, TlsAcceptor};
 use tracing::{info, error, warn};
@@ -25,6 +29,7 @@ use crate::{
 pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {
     fn fd(&self) -> i32;
     fn local_addr(&self) -> Result<SocketAddr>;
+    fn close(&mut self);
 }
 
 impl Socket for BufStream<TcpStream> {
@@ -34,6 +39,10 @@ impl Socket for BufStream<TcpStream> {
 
     fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.get_ref().local_addr()?)
+    }
+    
+    fn close(&mut self) {
+        _ = block_on(self.get_mut().shutdown());
     }
 }
 
@@ -45,9 +54,27 @@ impl Socket for BufStream<TlsStream<TcpStream>> {
     fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.get_ref().get_ref().get_ref().get_ref().local_addr()?)
     }
+
+    fn close(&mut self) {
+        _ = block_on(self.get_mut().shutdown());
+    }
 }
 
-pub type Stream = Box<dyn Socket>;
+pub struct Stream(pub Box<dyn Socket>);
+
+impl Deref for Stream {
+    type Target = Box<dyn Socket>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Stream {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// Struct holding all info related to server
 pub struct Server {
@@ -140,7 +167,7 @@ pub struct ClientSession {
     /// Server info
     pub server: Arc<Server>,
     /// Socket of this client session
-    pub stream: Box<dyn Socket>,
+    pub stream: Stream,
     /// Address of our peer
     pub addr: SocketAddr,
     /// Assign account when user authentifies
@@ -168,7 +195,7 @@ pub struct Session {
     /// Server info
     pub server: Arc<Server>,
     /// Socket of this client session
-    pub stream: Box<dyn Socket>,
+    pub stream: Stream,
     /// Address of our peer
     pub addr: SocketAddr
 }
@@ -190,7 +217,7 @@ async fn accept_connections(serv: Arc<Server>, listener: TcpListener, addr_type:
                             addr_type,
                             server: serv_clone,
                             // Use bufferer for socket to reduce syscalls we make
-                            stream: Box::new(BufStream::new(stream)),
+                            stream: Stream(Box::new(BufStream::new(stream))),
                             addr,
                             user: None
                         }).await;
@@ -291,7 +318,7 @@ async fn tls_connection_acceptor(serv: &Arc<Server>, listener: &TcpListener, add
                             addr_type,
                             server: serv_clone,
                             // Use bufferer for socket to reduce syscalls we make
-                            stream: Box::new(BufStream::new(tls_stream)),
+                            stream: Stream(Box::new(BufStream::new(tls_stream))),
                             addr,
                             user: None
                         }).await;

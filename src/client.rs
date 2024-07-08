@@ -487,7 +487,7 @@ pub async fn handle_migrated(sock: TcpStream, addr: String,
             }
         }
     };
-    let stream: Stream = Box::new(BufStream::new(sock));
+    let stream = Stream(Box::new(BufStream::new(sock)));
 
     match client {
         ClientInfo::Source(info) => {

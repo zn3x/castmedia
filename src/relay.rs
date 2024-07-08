@@ -20,7 +20,7 @@ use url::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    server::{Server, Stream, Socket, Session, ClientSession},
+    server::{Server, Stream, Session, ClientSession},
     utils::{get_header, basic_auth, concat_path}, config::MasterServerRelayScheme,
     http::{ResponseReader, ChunkedResponseReader},
     client::{SourceInfo, RelayStream, StreamOnDemand},
@@ -237,9 +237,9 @@ async fn http_get_request(url: &Url, path: &str, headers: &str) -> Result<(Strea
     let addr       = stream.peer_addr()?;
     let mut stream = if url.scheme().eq("https") {
         let cx     = tokio_native_tls::TlsConnector::from(TlsConnector::builder().build()?);
-        Box::new(BufStream::new(cx.connect(&host, stream).await?))
+        Stream(Box::new(BufStream::new(cx.connect(&host, stream).await?)))
     } else {
-        Box::new(BufStream::new(stream)) as Stream
+        Stream(Box::new(BufStream::new(stream)))
     };
 
     stream.write_all(format!("GET {} HTTP/1.1\r\n\
@@ -275,7 +275,7 @@ async fn fetch_available_mounts(server: &Server, url: &Url) -> Result<MasterMoun
 
 async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
                     auth: Option<&str>)
-    -> Result<(Box<dyn Socket>, SocketAddr, usize, usize, IcyProperties, bool)> {
+    -> Result<(Stream, SocketAddr, usize, usize, IcyProperties, bool)> {
     // Fetching media stream from master
     let mut headers = String::new();
     headers.push_str("Icy-Metadata: 1\r\n");

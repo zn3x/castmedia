@@ -17,7 +17,7 @@ use crate::{
         ListenerRestoreInfo, SourceInfo,
         ListenerInfo, RelayStream, MasterMountUpdatesInfo
     },
-    server::{Socket, Server, Stream}, stream::StreamReader,
+    server::{Server, Stream}, stream::StreamReader,
     config::MasterServerRelayScheme,
     utils::{read_socket_from_unix_socket, read_stream_from_unix_socket}, relay::RelaySourceMigrate,
     internal_api::v1::*
@@ -27,7 +27,7 @@ pub struct MigrateClientInfo {
     /// Serialized MigrateConnection::Client
     pub info: Vec<u8>,
     pub mountpoint: String,
-    pub sock: Box<dyn Socket>
+    pub sock: Stream
 }
 
 pub struct MigrateSourceInfo {

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tokio::io::{AsyncReadExt, AsyncRead};
+use tokio::io::AsyncReadExt;
 
 use crate::{server::Stream, utils::get_header};
 
@@ -103,7 +103,7 @@ impl ChunkedResponseReader {
         Self::default()
     }
 
-    pub async fn read_exact<T: AsyncRead + Unpin>(&mut self, stream: &mut T, buf: &mut [u8]) -> std::io::Result<usize> {
+    pub async fn read_exact(&mut self, stream: &mut Stream, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut r = 0;
         loop {
             r += self.read(stream, buf).await?;
@@ -113,7 +113,7 @@ impl ChunkedResponseReader {
         }
     }
 
-    pub async fn read<T: AsyncRead + Unpin>(&mut self, stream: &mut T, buf: &mut [u8]) -> std::io::Result<usize> {
+    pub async fn read(&mut self, stream: &mut Stream, buf: &mut [u8]) -> std::io::Result<usize> {
         // We first need to read chunk length that is encoded as hex followed by \r\n
         if self.bytes_left == 0 {
             let mut hex_len = Vec::new();
