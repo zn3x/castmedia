@@ -149,6 +149,7 @@ const MOUNT_SOURCE: &str = "/stream.mp3";
 
 
 #[test]
+#[allow(unused_assignments)]
 fn transparent() {
     let mut master_server = spawn_server_blocking(TEST_DIR, CONFIG_MASTER, "master_transparent.yaml");
     let mut slave_server  = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE, "slave_transparent.yaml");
@@ -280,8 +281,8 @@ fn transparent() {
     let mut buf = [0u8; 3000];
     assert!(r.read_exact(&mut buf).is_ok());
 
-    // Now enabling on_demand mode
     drop(r);
+    // Now enabling on_demand mode
 
     for _ in 0..3 {
         let packet = format.next_packet().unwrap();
@@ -292,13 +293,14 @@ fn transparent() {
     std::thread::sleep(Duration::from_secs(2));
     slave_server = slave_server1;
 
-    for _ in 0..3 {
-        let packet = format.next_packet().unwrap();
-        assert!(source_sock.write_all(packet.buf()).is_ok());
-    }
+    let packet = format.next_packet().unwrap();
+    assert!(source_sock.write_all(packet.buf()).is_ok());
 
     // Waiting until source becomes inactive
     std::thread::sleep(Duration::from_secs(2));
+
+    let packet = format.next_packet().unwrap();
+    assert!(source_sock.write_all(packet.buf()).is_ok());
 
     let mut r = test_utils::reqwest::blocking::Client::new()
         .get(format!("http://{}{}", BASE_SLAVE, MOUNT_SOURCE))
@@ -313,7 +315,6 @@ fn transparent() {
     r.read_exact(&mut len).unwrap();
     assert_eq!(&buf[0..packet1.buf().len()], packet1.buf());
 
-
     // Now we want to return back from authenticated to transparent
     let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE, "slave_transparent.yaml");
     std::thread::sleep(Duration::from_secs(2));
@@ -322,8 +323,25 @@ fn transparent() {
     let mut buf = [0u8; 3000];
     assert!(r.read_exact(&mut buf).is_ok());
 
+    drop(r);
+
     // Removing slave user from master, it's safe to do so because we no longer use authenticated
     // mode in slave
+    let master_server1 = spawn_server_blocking(TEST_DIR, CONFIG_MASTER, "master_transparent.yaml");
+    std::thread::sleep(Duration::from_secs(2));
+    master_server = master_server1;
+
+    for _ in 0..3 {
+        let packet = format.next_packet().unwrap();
+        assert!(source_sock.write_all(packet.buf()).is_ok());
+    }
+    
+    let r = test_utils::reqwest::blocking::Client::new()
+        .get(format!("http://{}{}", BASE_SLAVE, MOUNT_SOURCE))
+        .header("Icy-Metadata", "1")
+        .send()
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
 
     drop(master_server);
     drop(slave_server);
