@@ -157,7 +157,7 @@ pub fn read_socket_from_unix_socket(unixsock: &mut UnixStream) -> Result<TcpStre
 pub fn read_stream_from_unix_socket(unixsock: &mut UnixStream) -> Result<(Stream, SocketAddr)> {
     let sock = read_socket_from_unix_socket(unixsock)?;
     let addr = sock.peer_addr()?;
-    let stream: Stream = Box::new(BufStream::new(sock));
+    let stream = Stream(Box::new(BufStream::new(sock)));
 
     Ok((stream, addr))
 }
