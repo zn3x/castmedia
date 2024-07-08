@@ -384,6 +384,21 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                                         continue 'FIND_MASTER;
                                     },
                                     _ => {
+                                        // Switching from authenticated to transparent
+                                        let serv = server.clone();
+                                        runtime_handle.spawn(async move {
+                                            crate::source::handle_source(
+                                                crate::server::Session {
+                                                    server: serv,
+                                                    stream,
+                                                    addr
+                                                },
+                                                ret
+                                            ).await
+                                                .expect("Error shouldn't be returned on relay stream")
+                                                .expect("RelayBroadcastStatus should be returned on relay stream");
+                                        });
+
                                         continue 'OUTER;
                                     }
                                 }
