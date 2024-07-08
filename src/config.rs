@@ -448,8 +448,9 @@ impl ServerSettings {
             }
         }
 
-        if with_tls {
-            warn!("Migration not supported with tls, a tls termination proxy must be set if needed");
+        if with_tls && config.migrate.enabled {
+            error!("Migration not supported with tls, a tls termination proxy must be set if needed");
+            errors += 1;
         }
 
         // Verifying accounts credentials
@@ -569,6 +570,8 @@ impl ServerSettings {
                     errors += 1;
                 }
             }
+        } else {
+            warn!("Migration is disabled, zero downtimes won't be possible");
         }
 
         if config.misc.check_forwardedfor {

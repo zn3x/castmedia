@@ -77,7 +77,7 @@ pub async fn relay_broadcast_metadata<'a>(src_metadata: &RwLock<Option<IcyMetada
                                           broadcast: &mut Sender<Arc<(u64, Vec<u8>)>>,
                                           media_last_index: u64,
                                           metadatabuf: Vec<u8>) {
-    let metadata = match std::str::from_utf8(&metadatabuf) {
+    let metadata = match std::str::from_utf8(&metadatabuf[1..]) {
         Ok(v) => v,
         Err(_) => return
     };

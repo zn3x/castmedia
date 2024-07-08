@@ -1,11 +1,17 @@
-use core::panic;
 use std::{net::TcpStream, io::{Write, Read}, process::Stdio};
+use anyhow::Result;
 
 use base64::Engine;
 pub use reqwest;
 
 pub struct BlockingServer {
     pub child: std::process::Child
+}
+
+impl Drop for BlockingServer {
+    fn drop(&mut self) {
+        _ = self.child.kill();
+    }
 }
 
 pub struct Server {
@@ -89,7 +95,7 @@ pub async fn spawn_source(auth: &str, addr: &str, mount: &str) -> tokio::process
         .expect("ffmpeg missing")
 }
 
-pub fn spawn_source_manual(auth: &str, addr: &str, mount: &str) -> (TcpStream, std::process::Child) {
+pub fn spawn_source_manual(auth: &str, addr: &str, mount: &str) -> Result<(TcpStream, std::process::Child)> {
     let mut sock = TcpStream::connect(addr)
         .expect("Should be able to connect");
 
@@ -112,7 +118,7 @@ pub fn spawn_source_manual(auth: &str, addr: &str, mount: &str) -> (TcpStream, s
     };
 
     if !headers.starts_with(b"HTTP/1.1 200 OK") {
-        panic!("Source: got bad response");
+        return Err(anyhow::Error::msg("Source: got bad response"));
     }
 
     let media = std::process::Command::new("ffmpeg")
@@ -129,7 +135,7 @@ pub fn spawn_source_manual(auth: &str, addr: &str, mount: &str) -> (TcpStream, s
         .spawn()
         .expect("ffmpeg missing");
 
-    (sock, media)
+    Ok((sock, media))
 }
 
 pub async fn spawn_listener(addr: &str, mount: &str) -> tokio::process::Child {

@@ -20,7 +20,7 @@ use url::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    server::{Server, Stream, Socket, Session, ClientSession},
+    server::{Server, Stream, Session, ClientSession},
     utils::{get_header, basic_auth, concat_path}, config::MasterServerRelayScheme,
     http::{ResponseReader, ChunkedResponseReader},
     client::{SourceInfo, RelayStream, StreamOnDemand},
@@ -153,6 +153,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
                         (m.0.clone(), m.1.recv().await)
                     }.boxed());
                 }
+                // TODO: Can we eliminate the need to transmit metadata for source if slave
+                // already listening to that source
                 tokio::select! {
                     ((mount, metadata), _, _) = select_all(reads) => {
                         let ser = match metadata {
@@ -235,9 +237,9 @@ async fn http_get_request(url: &Url, path: &str, headers: &str) -> Result<(Strea
     let addr       = stream.peer_addr()?;
     let mut stream = if url.scheme().eq("https") {
         let cx     = tokio_native_tls::TlsConnector::from(TlsConnector::builder().build()?);
-        Box::new(BufStream::new(cx.connect(&host, stream).await?))
+        Stream(Box::new(BufStream::new(cx.connect(&host, stream).await?)))
     } else {
-        Box::new(BufStream::new(stream)) as Stream
+        Stream(Box::new(BufStream::new(stream)))
     };
 
     stream.write_all(format!("GET {} HTTP/1.1\r\n\
@@ -272,13 +274,11 @@ async fn fetch_available_mounts(server: &Server, url: &Url) -> Result<MasterMoun
 }
 
 async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
-                    on_demand: bool, auth: Option<&str>)
-    -> Result<(Box<dyn Socket>, SocketAddr, Option<usize>, usize, IcyProperties, bool)> {
+                    auth: Option<&str>)
+    -> Result<(Stream, SocketAddr, usize, usize, IcyProperties, bool)> {
     // Fetching media stream from master
     let mut headers = String::new();
-    if !on_demand {
-        headers.push_str("Icy-Metadata: 1\r\n");
-    }
+    headers.push_str("Icy-Metadata: 1\r\n");
     if let Some(auth) = auth {
         headers.push_str(auth);
     }
@@ -304,7 +304,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     }
 
     // We should check if this is an icecast server
-    if !on_demand && get_header("icy-name", resp.headers).is_none() {
+    if get_header("icy-name", resp.headers).is_none() {
         return Err(anyhow::Error::msg("not an icecast server"));
     }
 
@@ -316,15 +316,11 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     };
 
     // Getting metaint
-    let metaint = if on_demand {
-        None
-    } else {
-        Some(match get_header("icy-metaint", resp.headers) {
-            Some(metaint) => std::str::from_utf8(metaint)?.parse::<usize>()?,
-            None => {
-                return Err(anyhow::Error::msg("missing icy-metaint header"));
-            }
-        })
+    let metaint = match get_header("icy-metaint", resp.headers) {
+        Some(metaint) => std::str::from_utf8(metaint)?.parse::<usize>()?,
+        None => {
+            return Err(anyhow::Error::msg("missing icy-metaint header"));
+        }
     };
 
     let properties = IcyProperties::new(match get_header("content-type", resp.headers) {
@@ -338,7 +334,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
 }
 
 pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
-                                mut migrate_successor: Option<(Stream, mpsc::UnboundedReceiver<RelaySourceMigrate>)>) {
+                                mut migrate_successor: Option<(Option<Stream>, mpsc::UnboundedReceiver<RelaySourceMigrate>)>) {
     let master_server     = &serv.config.master[master_ind];
     let reconnect_timeout = match &master_server.relay_scheme {
         MasterServerRelayScheme::Authenticated { reconnect_timeout, .. } => *reconnect_timeout,
@@ -347,8 +343,12 @@ pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
     let timeout = Duration::from_millis(reconnect_timeout);
     loop {
         match migrate_successor.take() {
-            Some((stream, m)) => authenticated_mode_event_listener(&serv, stream, master_ind, Some(m)).await,
-            None => {
+            Some((Some(stream), m)) => authenticated_mode_event_listener(&serv, stream, master_ind, Some(m)).await,
+            v => {
+                let m = match v {
+                    Some((None, m)) => Some(m),
+                    _ => None
+                };
                 let fut = async {
                     loop {
                         match authenticated_mode_fetch_updates_stream(&serv, master_ind).await {
@@ -370,7 +370,7 @@ pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
                         }
                     }
                 };
-                authenticated_mode_event_listener(&serv, stream, master_ind, None).await;
+                authenticated_mode_event_listener(&serv, stream, master_ind, m).await;
             }
         }
     }
@@ -428,6 +428,11 @@ pub enum RelaySourceMigrate {
     }
 }
 
+struct RelaySourceTask {
+    handle: JoinHandle<()>,
+    just_migrated: bool
+}
+
 async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Stream,
                                            master_ind: usize,
                                            migrate_successor: Option<mpsc::UnboundedReceiver<RelaySourceMigrate>>) {
@@ -470,7 +475,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                             _ => ()
                         }
                     });
-                    sources.insert(mount, task);
+                    sources.insert(mount, RelaySourceTask { handle: task, just_migrated: true });
                 },
                 RelaySourceMigrate::OnDemandIdle { mount, properties } => {
                     handle_mount_update(
@@ -528,7 +533,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                         }
                     });
 
-                    sources.insert(mount, task);
+                    sources.insert(mount, RelaySourceTask { handle: task, just_migrated: true });
                 }
             }
         }
@@ -597,7 +602,7 @@ async fn authenticated_mode_reader(stream: &mut Stream, len_enc: &mut [u8; 4],
     Ok(event)
 }
 
-async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
+async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
                              serv: &Arc<Server>, master_ind: usize,
                              on_demand: bool, event: MountUpdate, auth: &str) {
     let master = &serv.config.master[master_ind].url;
@@ -605,7 +610,12 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
     // Now handling events for every source
     match event {
         MountUpdate::New { mount, properties } => {
-            if let Some(task_handle) = sources.remove(&mount) {
+            if let Some(mut task) = sources.remove(&mount) {
+                if task.just_migrated {
+                    task.just_migrated = false;
+                    sources.insert(mount, task);
+                    return;
+                }
                 // When we have a new source by same name, that means source in master
                 // disconnected and reconnected again.
             
@@ -627,7 +637,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                             drop(lock);
                             if let Some(kill) = kill {
                                 _ = kill.send(());
-                                _ = task_handle.await;
+                                _ = task.handle.await;
                             }
                         } else {
                             // 💀 what can we do...
@@ -648,7 +658,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                 let task     = tokio::task::spawn(async move {
                     relay_source(&serv_cl, master_ind, &mount_cl, Some(&auth_cl)).await;
                 });
-                sources.insert(mount, task);
+                sources.insert(mount, RelaySourceTask { handle: task, just_migrated: false });
                 return;
             }
 
@@ -700,7 +710,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
 
             drop(lock);
 
-            sources.insert(mount, task);
+            sources.insert(mount, RelaySourceTask { handle: task, just_migrated: false });
         },
         MountUpdate::Metadata { mount, metadata } => {
             // we skip updating metadata here if either:
@@ -733,7 +743,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
         MountUpdate::Unmounted { mount } => {
             // If source disconnects from master then we should do the same
             // Send a kill notification to task
-            if let Some(task_handle) = sources.remove(&mount) {
+            if let Some(task) = sources.remove(&mount) {
                 let mut lock = serv.sources.write().await;
                 if let Some(source) = lock.get_mut(&mount) {
                     if let Some(kill) = source.kill.take() {
@@ -743,7 +753,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, JoinHandle<()>>,
                             // We might need to cancel task in case there was
                             // already an exception and relay_source didn't receive
                             // Kill signal properly
-                            task_handle.abort();
+                            task.handle.abort();
                         }
                     }
                 }
@@ -868,7 +878,7 @@ async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: 
     -> RelayBroadcastStatus {
     let url = &serv.config.master[master_ind].url;
 
-    match get_stream(serv, url, &mount, on_demand.is_some(), auth).await {
+    match get_stream(serv, url, &mount, auth).await {
         Ok((stream, addr, metaint, initial_bytes_read, properties, chunked)) => {
             let url = concat_path(url.as_str(), &mount);
             let ret = crate::source::handle_source(
@@ -889,7 +899,7 @@ async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: 
                     access: SourceAccessType::RelayedSource { relayed_source: url.clone() },
                     relayed: Some(RelayStream {
                         info: RelayedInfo {
-                            metaint: metaint.unwrap_or(0),
+                            metaint,
                             metaint_position: 0,
                             metadata_reading: false,
                             metadata_remaining: 0,

@@ -51,7 +51,7 @@ fn stream_general() {
     let mut buf = [0u8; 100000];
     let mut len = [8u8; 1];
 
-    let (mut source_sock, media) = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE);
+    let (mut source_sock, media) = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE).unwrap();
     let stdout                   = media.stdout.unwrap();
 
     let mss  = MediaSourceStream::new(Box::new(ReadOnlySource::new(stdout)), Default::default());

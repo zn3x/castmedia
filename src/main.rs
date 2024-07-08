@@ -1,6 +1,6 @@
 use castmedia::{config, server};
 
-use tracing::error;
+use tracing::{error, info};
 
 const HELP_MESSAGE: &str = "\
 Usage: castmedia [-c] [configuration_file]\n\
@@ -51,7 +51,7 @@ async fn main() {
         }
     }
     if args.check {
-        println!("Configuration is valid");
+        info!("Configuration is valid");
         std::process::exit(0);
     }
     drop(args);

@@ -17,7 +17,7 @@ use crate::{
         ListenerRestoreInfo, SourceInfo,
         ListenerInfo, RelayStream, MasterMountUpdatesInfo
     },
-    server::{Socket, Server, Stream}, stream::StreamReader,
+    server::{Server, Stream}, stream::StreamReader,
     config::MasterServerRelayScheme,
     utils::{read_socket_from_unix_socket, read_stream_from_unix_socket}, relay::RelaySourceMigrate,
     internal_api::v1::*
@@ -27,7 +27,7 @@ pub struct MigrateClientInfo {
     /// Serialized MigrateConnection::Client
     pub info: Vec<u8>,
     pub mountpoint: String,
-    pub sock: Box<dyn Socket>
+    pub sock: Stream
 }
 
 pub struct MigrateSourceInfo {
@@ -77,8 +77,21 @@ pub async fn handle_successor(server: Arc<Server>) {
     // For us to spawn all client tasks we must also pass runtime handle to blocking task
     let runtime_handle = Handle::current();
     _ = tokio::task::spawn_blocking(move || {
-        if let Err(e) = migrate_successor(server, runtime_handle) {
+        let mut slave_id = match server.config.master.is_empty() {
+            true => Vec::new(),
+            false => (0..server.config.master.len()).collect::<Vec<_>>()
+        };
+
+        if let Err(e) = migrate_successor(server.clone(), runtime_handle, &mut slave_id) {
             error!("Migration failed: {}", e);
+        }
+
+        // Loading tasks for all new master relays
+        for id in slave_id {
+            let serv = server.clone();
+            tokio::spawn(async move {
+                crate::relay::slave_instance(serv, id).await;
+            });
         }
     }).await;
 }
@@ -223,19 +236,20 @@ fn write_sources(successor: &mut UnixStream,
     Ok(())
 }
 
-fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> {
+struct MasterServerTask<'a> {
+    url: &'a Url,
+    tx: UnboundedSender<RelaySourceMigrate>,
+    on_demand: bool
+}
+
+fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut Vec<usize>) -> Result<()> {
     let bind = server.config.migrate.bind.as_ref().unwrap();
     let mut predeseccor = UnixStream::connect(bind)
         .map_err(|_| anyhow::Error::msg("No instance currently running found on migration socket"))?;
 
     info!("Starting migration from old instance.");
-    let mut slave_id = match server.config.master.is_empty() {
-        true => Vec::new(),
-        false => (0..server.config.master.len()).collect::<Vec<_>>()
-    };
-    // TODO FIX ME: Master mounts are dropped when slave mountupdates
-    // is not received in migration
-    let mut slave_tx: Vec<(&Url, UnboundedSender<_>)> = Vec::new();
+
+    let mut slave_tx: Vec<MasterServerTask> = Vec::new();
 
     let mut buf = vec![0u8; 4092];
 
@@ -291,8 +305,8 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
                 let snapshot = restore_channel_from_snapshot((snapshot_msgs, info.broadcast_snapshot.1, info.broadcast_snapshot.2));
                 let mut is_relay = None;
                 let (access, relayed) = match info.is_relay {
-                    MigrateSourceConnectionType::RelayedSource { relayed_stream, on_demand, relay_info } => {
-                        is_relay = Some((relayed_stream.clone(), on_demand));
+                    MigrateSourceConnectionType::RelayedSource { relayed_stream, relay_info, .. } => {
+                        is_relay = Some(relayed_stream.clone());
                         (
                             SourceAccessType::RelayedSource { relayed_source: relayed_stream },
                             Some(RelayStream {
@@ -319,7 +333,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
                     relayed
                 };
                 
-                if let Some((r, on_demand)) = is_relay {
+                if let Some(r) = is_relay {
                     let (stream, addr) = match read_stream_from_unix_socket(&mut predeseccor) {
                         Ok(v) => (
                             v.0,
@@ -338,18 +352,61 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
                         Ok(v) => v,
                         Err(_) => continue
                     };
-                    for master in &slave_tx {
-                        if master.0.host_str().eq(&url.host_str())
-                            && master.0.port().eq(&url.port()) {
-                            // When config is switched from on_demand mode or vice-versa
-                            // we should comply
-                            _ = match on_demand {
-                                true  => master.1.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret }),
-                                false => master.1.send(RelaySourceMigrate::Normal { stream, addr, info: ret })
-                            };
-                            continue 'OUTER;
+                    'FIND_MASTER: loop {
+                        for master in &slave_tx {
+                            if master.url.host_str().eq(&url.host_str())
+                                && master.url.port().eq(&url.port()) {
+                                // When config is switched from on_demand mode or vice-versa
+                                // we should comply
+                                _ = match master.on_demand {
+                                    true  => master.tx.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret }),
+                                    false => master.tx.send(RelaySourceMigrate::Normal { stream, addr, info: ret })
+                                };
+                                continue 'OUTER;
+                            }
                         }
-                    }
+                        // We can't find master, we should check if we did switch from transparent
+                        for (i, master) in server.config.master.iter().enumerate() {
+                            if master.url.host_str().eq(&url.host_str())
+                                && master.url.port().eq(&url.port()) {
+                                match &master.relay_scheme {
+                                    MasterServerRelayScheme::Authenticated { stream_on_demand, .. } => {
+                                        slave_id.retain(|x| x.ne(&i));
+                                        let (tx, rx) = mpsc::unbounded_channel();
+                                        slave_tx.push(MasterServerTask { url: &master.url, tx, on_demand: *stream_on_demand });
+                                        let serv = server.clone();
+                                        runtime_handle.spawn(async move {
+                                            crate::relay::authenticated_mode(
+                                                serv.clone(), i,
+                                                Some((None, rx))
+                                            ).await;
+                                        });
+                                        continue 'FIND_MASTER;
+                                    },
+                                    _ => {
+                                        // Switching from authenticated to transparent
+                                        let serv = server.clone();
+                                        runtime_handle.spawn(async move {
+                                            crate::source::handle_source(
+                                                crate::server::Session {
+                                                    server: serv,
+                                                    stream,
+                                                    addr
+                                                },
+                                                ret
+                                            ).await
+                                                .expect("Error shouldn't be returned on relay stream")
+                                                .expect("RelayBroadcastStatus should be returned on relay stream");
+                                        });
+
+                                        continue 'OUTER;
+                                    }
+                                }
+                            }
+                        }
+                        // Meh it doesn't exist, it must have been removed
+                        break;
+                    };
                     // If we can't find a master server for this relay source
                     // we will drop it here
                     continue 'OUTER;
@@ -399,15 +456,15 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
                                     // in this case we drop mountupdates connection
                                     continue 'OUTER;
                                 },
-                                MasterServerRelayScheme::Authenticated { .. } => {
+                                MasterServerRelayScheme::Authenticated { stream_on_demand, .. } => {
                                     slave_id.retain(|x| x.ne(&i));
                                     let (tx, rx) = mpsc::unbounded_channel();
-                                    slave_tx.push((&master.url, tx));
+                                    slave_tx.push(MasterServerTask { url: &master.url, tx, on_demand: stream_on_demand });
                                     let serv = server.clone();
                                     runtime_handle.spawn(async move {
                                         crate::relay::authenticated_mode(
                                             serv.clone(), i,
-                                            Some((stream, rx))
+                                            Some((Some(stream), rx))
                                         ).await;
                                     });
                                     continue 'OUTER;
@@ -424,9 +481,9 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
                 // but with ondemand flag true
                 if let Ok(url) = info.master_url.parse::<Url>() {
                     for master in &mut slave_tx {
-                        if master.0.host_str().eq(&url.host_str())
-                            && master.0.port().eq(&url.port()) {
-                            _ = master.1.send(RelaySourceMigrate::OnDemandIdle { mount: info.mountpoint, properties: info.properties });
+                        if master.url.host_str().eq(&url.host_str())
+                            && master.url.port().eq(&url.port()) {
+                            _ = master.tx.send(RelaySourceMigrate::OnDemandIdle { mount: info.mountpoint, properties: info.properties });
                             continue 'OUTER;
                         }
                     }
@@ -452,14 +509,6 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle) -> Result<()> 
             }
         });
     };
-
-    // Loading tasks for all new master relays
-    for id in slave_id {
-        let serv = server.clone();
-        tokio::spawn(async move {
-            crate::relay::slave_instance(serv, id).await;
-        });
-    }
 
     tx.send(());
     info!("Migration from old instance completed.");
