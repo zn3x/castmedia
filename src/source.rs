@@ -30,13 +30,13 @@ pub struct IcyMetadata {
 pub struct SourceStats {
     /// Time when source last mounted mountpoint as utc timestamp
     pub start_time: i64,
-    /// Number of active listeners for mountpoint
+    /// Number of active listeners for source
     pub active_listeners: AtomicUsize,
-    /// Peak number of listeners for mountpoint
+    /// Peak number of listeners for source
     pub peak_listeners: AtomicUsize,
     /// Number of media bytes read from source client
     pub bytes_read: AtomicU64,
-    /// Number of media bytes sent to all listeners of mountpoint
+    /// Number of media bytes sent to all listeners of source
     pub bytes_sent: AtomicU64,
 }
 

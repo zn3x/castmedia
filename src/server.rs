@@ -105,13 +105,13 @@ pub struct ServerStats {
     //pub active_clients: AtomicUsize,
     /// Number of total active sources
     pub active_sources: AtomicUsize,
-    /// Number of total active listening clients to mountpoints
+    /// Number of total active listening clients to sources
     pub active_listeners: AtomicUsize,
     /// Number of total active outbound connections to master server
     pub active_relay: AtomicUsize,
-    /// Number of peak listeners to mountpoints
+    /// Number of peak listeners to sources
     pub peak_listeners: AtomicUsize,
-    /// Number of connections to mountpoints (accumulating counter)
+    /// Number of connections to sources (accumulating counter)
     pub listener_connections: AtomicUsize,
     /// Number of connections made by source clients (accumulating counter)
     pub source_client_connections: AtomicUsize,

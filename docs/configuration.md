@@ -1,3 +1,9 @@
+# Configuration
+
+The configuration file uses YAML syntax and is the only way to change the behavior of castmedia.
+
+A configuration file looks like the following:
+```yaml
 # Specify listening addresses where we will accept clients incoming connections
 address:
 # First interface wil be reserved for listener clients
@@ -6,7 +12,7 @@ address:
 # This on the other hand will be used for source clients
 - bind: 127.0.0.1:39203
   allow_auth: true
-# In icecast, regularly broadcast metadata update to clients, this indicates bytes interval between
+# Icecast protocol regularly broadcasts metadata (song, url) update to clients, this indicates bytes interval between
 # metadata broadcasts.
 metadata_interval: 32000
 # General server info
@@ -40,7 +46,7 @@ limits:
 # Accounts credentials
 account:
   # WARNING! Avoid using default credentials like these
-  # Account can either be a source or admin
+  # Account can either be a source, admin, or slave
   admin:
     # A password can either be either plaintext or hashed by specifying a prefix:
     # - 0$: Plaintext
@@ -82,3 +88,25 @@ misc:
   # WARNING!! This must only be enabled when a reverse proxy is configured
   # otherwise any user will be able to alter it's own IP address
   check_forwardedfor: false
+```
+
+Although castmedia supports TLS by default for listener addresses, it is not recommended as it is not compatible with migration.
+If you still want to configure TLS for a port, you can configure it like the following:
+```yaml
+tls:
+address:
+  bind: 127.0.0.1:9000
+  tls:
+    enabled: true
+    # Identity in pkcs12 format
+    cert: identity.p12
+    # Password of identity
+    pass: password
+```
+
+castmedia does not auto-detect configuration changes and will need a restart for the new configuration to be applied, we discuss more about this in [migration and zero-downtime](./migration.md).
+
+It is also recommended to check if your configuration file is valid before starting:
+```
+castmedia --check config.yaml
+```
