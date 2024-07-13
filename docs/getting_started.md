@@ -25,7 +25,7 @@ cargo build --release
 
 ## Pages
 
-- [Configuration file](./configuration.md)
+- [Configuration](./configuration.md)
 - [API](./api.md)
 - [Relaying](./relaying.md)
 - [Migration and zero-downtime](./migration.md)
