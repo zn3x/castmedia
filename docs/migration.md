@@ -22,4 +22,22 @@ To migrate to new instance, you simply run another castmedia instance with same 
 
 ## Migration in relaying
 
-TODO
+Migration for relaying has multiple scenarios in which migration will cause downtime:
+
+- Changing master configuration:
+    - Slave user removed:
+        - Slave server using authenticated mode with this user: Downtime
+    - Listening address removed or changed (even just the port):
+        - It's still used by slave server: Downtime
+- Changing slave configuration:
+    - Switching from transparent to authenticated mode:
+        - Master server is already configured with needed slave user: Downtime
+    - Enabling or disabling `on_demand` feature: No downtime
+    - Switching from authenticated to transparent mode: No downtime
+
+
+
+## Caveats
+
+- During migration, connections that do not respect new configuration constraints will be dropped even if they were allowed previously.
+- TLS migration is not supported and will probably never be supported due to challenges that comes with passing TLS connection to another process.
