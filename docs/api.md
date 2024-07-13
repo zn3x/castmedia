@@ -25,7 +25,7 @@ curl -u "source:pass" -v "http://127.0.0.1:9100/admin/metadata?mount=/stream&mod
 * Request completely sent off
 < HTTP/1.1 200 OK
 < Connection: close
-< Server: CastMedia 0.1.0
+< Server: castmedia 0.1.0
 < Date: Sat,  6 Jul 2024 15:41:13 GMT
 < Cache-Control: no-cache, no-store
 < Expires: Mon, 26 Jul 1997 05:00:00 GMT
@@ -51,7 +51,7 @@ curl -u "source:pass" -v "http://127.0.0.1:9100/admin/fallbacks?mount=/stream&fa
 * Request completely sent off
 < HTTP/1.1 200 OK
 < Connection: close
-< Server: CastMedia 0.1.0
+< Server: castmedia 0.1.0
 < Date: Sat,  6 Jul 2024 15:43:06 GMT
 < Cache-Control: no-cache, no-store
 < Expires: Mon, 26 Jul 1997 05:00:00 GMT
@@ -81,7 +81,7 @@ curl -u "admin:pass" -v "http://127.0.0.1:9100/admin/stats"
 < Connection: close
 < Content-Length: 327
 < Content-Type: application/json; charset=utf-8
-< Server: CastMedia 0.1.0
+< Server: castmedia 0.1.0
 < Date: Sat,  6 Jul 2024 15:45:58 GMT
 < Cache-Control: no-cache, no-store
 < Expires: Mon, 26 Jul 1997 05:00:00 GMT
@@ -125,7 +125,7 @@ curl -u "admin:pass" -v "http://127.0.0.1:9100/admin/listmounts"
 < Connection: close
 < Content-Length: 704
 < Content-Type: application/json; charset=utf-8
-< Server: CastMedia 0.1.0
+< Server: castmedia 0.1.0
 < Date: Sat,  6 Jul 2024 14:40:13 GMT
 < Cache-Control: no-cache, no-store
 < Expires: Mon, 26 Jul 1997 05:00:00 GMT
@@ -203,7 +203,7 @@ curl -u "admin:pass" -v "http://127.0.0.1:9100/admin/moveclients?mount=/stream&d
 * Request completely sent off
 < HTTP/1.1 200 OK
 < Connection: close
-< Server: CastMedia 0.1.0
+< Server: castmedia 0.1.0
 < Date: Sat,  6 Jul 2024 14:47:38 GMT
 < Cache-Control: no-cache, no-store
 < Expires: Mon, 26 Jul 1997 05:00:00 GMT
@@ -229,7 +229,7 @@ curl -u "admin:pass" -v "http://127.0.0.1:9100/admin/killsource?mount=/stream"
 * Request completely sent off
 < HTTP/1.1 200 OK
 < Connection: close
-< Server: CastMedia 0.1.0
+< Server: castmedia 0.1.0
 < Date: Sat,  6 Jul 2024 14:49:48 GMT
 < Cache-Control: no-cache, no-store
 < Expires: Mon, 26 Jul 1997 05:00:00 GMT
@@ -257,7 +257,7 @@ curl -u "admin:pass" -v "http://127.0.0.1:9100/admin/listclients?mount=/stream"
 < Connection: close
 < Transfer-Encoding: Chunked
 < Content-Type: application/json; charset=utf-8
-< Server: CastMedia 0.1.0
+< Server: castmedia 0.1.0
 < Date: Sat,  6 Jul 2024 14:52:24 GMT
 < Cache-Control: no-cache, no-store
 < Expires: Mon, 26 Jul 1997 05:00:00 GMT
@@ -296,7 +296,7 @@ curl -u "admin:pass" -v "http://127.0.0.1:9100/admin/killclient?mount=/stream&id
 * Request completely sent off
 < HTTP/1.1 200 OK
 < Connection: close
-< Server: CastMedia 0.1.0
+< Server: castmedia 0.1.0
 < Date: Sat,  6 Jul 2024 14:55:39 GMT
 < Cache-Control: no-cache, no-store
 < Expires: Mon, 26 Jul 1997 05:00:00 GMT
@@ -331,7 +331,7 @@ curl -v "http://127.0.0.1:9000/api/serverinfo"
 < Connection: close
 < Content-Length: 214
 < Content-Type: application/json; charset=utf-8
-< Server: CastMedia 0.1.0
+< Server: castmedia 0.1.0
 < Date: Sat,  6 Jul 2024 15:25:54 GMT
 < Cache-Control: no-cache, no-store
 < Expires: Mon, 26 Jul 1997 05:00:00 GMT
@@ -346,7 +346,7 @@ curl -v "http://127.0.0.1:9000/api/serverinfo"
   "properties": {
     "admin": "admin@localhost",
     "description": "Internet radio!",
-    "id": "CastMedia 0.1.0",
+    "id": "castmedia 0.1.0",
     "location": "1.064646"
   },
   "stats": {
@@ -373,7 +373,7 @@ curl -v "http://127.0.0.1:9000/api/mountinfo?mount=/stream"
 < Connection: close
 < Content-Length: 262
 < Content-Type: application/json; charset=utf-8
-< Server: CastMedia 0.1.0
+< Server: castmedia 0.1.0
 < Date: Sat,  6 Jul 2024 15:26:50 GMT
 < Cache-Control: no-cache, no-store
 < Expires: Mon, 26 Jul 1997 05:00:00 GMT
