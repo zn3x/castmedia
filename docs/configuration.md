@@ -12,12 +12,12 @@ address:
 # This on the other hand will be used for source clients
 - bind: 127.0.0.1:39203
   allow_auth: true
-# In icecast, regularly broadcast metadata update to clients, this indicates bytes interval between
+# Icecast protocol regularly broadcasts metadata (song, url) update to clients, this indicates bytes interval between
 # metadata broadcasts.
 metadata_interval: 32000
 # General server info
 info:
-  id: CastMedia 0.1.0
+  id: castmedia 0.1.0
   admin: admin@localhost
   location: '1.064646'
   description: Internet radio!
@@ -46,7 +46,7 @@ limits:
 # Accounts credentials
 account:
   # WARNING! Avoid using default credentials like these
-  # Account can either be a source or admin
+  # Account can either be a source, admin, or slave
   admin:
     # A password can either be either plaintext or hashed by specifying a prefix:
     # - 0$: Plaintext
