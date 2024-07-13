@@ -90,6 +90,20 @@ misc:
   check_forwardedfor: false
 ```
 
+Although castmedia supports TLS by default for listener addresses, it is not recommended as it is not compatible with migration.
+If you still want to configure TLS for a port, you can configure it like the following:
+```yaml
+tls:
+address:
+  bind: 127.0.0.1:9000
+  tls:
+    enabled: true
+    # Identity in pkcs12 format
+    cert: identity.p12
+    # Password of identity
+    pass: password
+```
+
 castmedia does not auto-detect configuration changes and will need a restart for the new configuration to be applied, we discuss more about this in [migration and zero-downtime](./migration.md).
 
 It is also recommended to check if your configuration file is valid before starting:
