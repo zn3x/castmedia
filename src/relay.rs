@@ -168,7 +168,7 @@ pub async fn master_mount_updates(mut session: ClientSession,
                                     "type": "metadata"
                                 }))?
                             },
-                            Err(RecvError::Lagged(_)) => continue,
+                            Err(RecvError::Lagged) => continue,
                             Err(RecvError::Closed) => {
                                 let ser = serde_json::to_vec(&json!({
                                     "mount": mount,

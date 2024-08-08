@@ -107,7 +107,7 @@ pub async fn read_media_broadcast(stream: &mut Receiver<Arc<Vec<u8>>>,
         },
         Err(qanat::broadcast::TryRecvError::Empty) => (),
         Err(qanat::broadcast::TryRecvError::Closed) => return Err(qanat::broadcast::RecvError::Closed),
-        Err(qanat::broadcast::TryRecvError::Lagged(v)) => return Err(qanat::broadcast::RecvError::Lagged(v)),
+        Err(qanat::broadcast::TryRecvError::Lagged) => return Err(qanat::broadcast::RecvError::Lagged),
     }
 
     if temp_metadata.as_ref().is_some_and(|x| stream.read_position() >= x.0) {

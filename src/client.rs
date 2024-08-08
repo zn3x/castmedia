@@ -293,7 +293,7 @@ async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastIn
                         }
                         session.stream.flush().await?;
                     },
-                    Err(RecvError::Lagged(_)) => (),
+                    Err(RecvError::Lagged) => (),
                     Err(RecvError::Closed) => break
                 },
                 // We increment sent bytes count with interval in order not to have degraded performance
@@ -317,7 +317,7 @@ async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastIn
                             change_mount(b, &v).await;
                         }
                     },
-                    Err(RecvError::Lagged(_)) => (),
+                    Err(RecvError::Lagged) => (),
                     Err(RecvError::Closed) => break
                 },
                 migrate = migrate_comm.recv() => return Ok(BroadcastStatus::Migrate(migrate))
