@@ -73,11 +73,12 @@ checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
 
 [[package]]
 name = "async-event"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4172595da7ffb68640606be5723e35a353555f2829e9209437627a003725bbdb"
+checksum = "c1222afd3d2bce3995035054046a279ae7aa154d70d0766cea050073f3fd7ddf"
 dependencies = [
  "loom",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -180,7 +181,7 @@ dependencies = [
  "anyhow",
  "base64 0.21.7",
  "chrono",
- "diatomic-waker",
+ "diatomic-waker 0.1.0",
  "futures",
  "hashbrown 0.14.5",
  "httparse",
@@ -393,6 +394,16 @@ name = "diatomic-waker"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28025fb55a9d815acf7b0877555f437254f373036eec6ed265116c7a5c0825e9"
+dependencies = [
+ "loom",
+ "waker-fn",
+]
+
+[[package]]
+name = "diatomic-waker"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92a510eb4dc7fa435297888c00e0f999aa2ee3e920a357221c35ab615a80bbcf"
 dependencies = [
  "loom",
  "waker-fn",
@@ -1154,10 +1165,10 @@ dependencies = [
 [[package]]
 name = "qanat"
 version = "0.1.0"
-source = "git+https://codeberg.org/zesty/qanat#f090f4b2b89449d5d3a6c47e87d4f8fbd5fb772d"
+source = "git+https://codeberg.org/zesty/qanat#130e5b8010f884ac6d2b4cf6b4d6e6d467a54be4"
 dependencies = [
  "async-event",
- "diatomic-waker",
+ "diatomic-waker 0.2.0",
  "seize",
 ]
 
