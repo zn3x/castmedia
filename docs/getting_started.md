@@ -15,7 +15,7 @@ This should work on any Unix platform. But currently tested and supported:
 You can either install castmedia from the release page where prebuilt binaries are provided [here](https://codeberg.org/zesty/castmedia/releases).
 
 
-Or you can build it yourself provided that already have the rust toolchain already installed in your system:
+Or you can build it yourself provided you already have the rust toolchain installed in your system:
 
 ```
 git clone https://codeberg.org/zesty/castmedia
