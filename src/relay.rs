@@ -11,28 +11,23 @@ use qanat::{
 };
 use serde_json::json;
 use tokio::{
-    net::TcpStream,
-    io::{BufStream, AsyncWriteExt}, task::JoinHandle
+    io::AsyncWriteExt, task::JoinHandle
 };
-use tokio_native_tls::native_tls::TlsConnector;
 use tracing::{info, error};
 use url::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    server::{Server, Stream, Session, ClientSession},
-    utils::{get_header, basic_auth, concat_path}, config::MasterServerRelayScheme,
-    http::{ResponseReader, ChunkedResponseReader},
-    client::{SourceInfo, RelayStream, StreamOnDemand},
-    source::{Source, SourceAccessType},
-    response::ChunkedResponse,
-    broadcast::relay_broadcast_metadata,
-    migrate::{MigrateCommand, MigrateMasterMountUpdatesInfo}, stream::RelayBroadcastStatus,
+    broadcast::relay_broadcast_metadata, client::{RelayStream, SourceInfo, StreamOnDemand},
+    config::MasterServerRelayScheme, http::{ChunkedResponseReader, HttpClient},
     internal_api::v1::{
-        RelayedInfo, IcyProperties, MigrateConnection,
-        MigrateSlaveMountUpdates, MigrateInactiveOnDemandSource,
-        MigrateMasterMountUpdates
-    }
+        IcyProperties, MigrateConnection, MigrateInactiveOnDemandSource, MigrateMasterMountUpdates, MigrateSlaveMountUpdates, RelayedInfo
+    },
+    migrate::{MigrateCommand, MigrateMasterMountUpdatesInfo}, response::ChunkedResponse,
+    server::{ClientSession, Server, Session, Stream},
+    source::{Source, SourceAccessType},
+    stream::RelayBroadcastStatus,
+    utils::{basic_auth, concat_path, get_header}
 };
 
 #[derive(Debug, Deserialize)]
@@ -226,45 +221,15 @@ async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat
     }
 }
 
-async fn http_get_request(url: &Url, path: &str, headers: &str) -> Result<(Stream, SocketAddr)> {
-    // We did already check before running
-    let host = url.host()
-        .expect("Should be able to fetch master host")
-        .to_string();
-    let port = url.port()
-        .expect("Should be able to fetch master port");
-    let stream     = TcpStream::connect(format!("{}:{}", host, port)).await?;
-    let addr       = stream.peer_addr()?;
-    let mut stream = if url.scheme().eq("https") {
-        let cx     = tokio_native_tls::TlsConnector::from(TlsConnector::builder().build()?);
-        Stream(Box::new(BufStream::new(cx.connect(&host, stream).await?)))
-    } else {
-        Stream(Box::new(BufStream::new(stream)))
-    };
-
-    stream.write_all(format!("GET {} HTTP/1.1\r\n\
-Host: {}:{}\r\n\
-User-Agent: {}\r\n{}\
-Connection: close\r\n\r\n",
-        path,
-        host, port,
-        crate::config::SERVER_ID,
-        headers
-    ).as_bytes()).await?;
-    stream.flush().await?;
-
-    Ok((stream, addr))
-}
-
 async fn fetch_available_mounts(server: &Server, url: &Url) -> Result<MasterMounts> {
     let timeout = Duration::from_millis(server.config.limits.master_timeout);
     tokio::time::timeout(
         timeout,
         async {
-            let (mut stream, _) = http_get_request(url, "/api/serverinfo", "").await?;
-            let mut reader      = ResponseReader::new(&mut stream, server.config.limits.master_http_max_len);
+            let client     = HttpClient::connect(server, url, "/api/serverinfo").await?;
+            let mut reader = client.get().await?;
             server.stats.source_relay_connections.fetch_add(1, Ordering::Relaxed);
-            let body_buf        = reader.read_to_end("application/json").await?;
+            let body_buf   = reader.read_to_end("application/json").await?;
             // Now we go to parsing response
             let info: MasterMounts = serde_json::from_slice(&body_buf)?;
 
@@ -277,14 +242,13 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
                     auth: Option<&str>)
     -> Result<(Stream, SocketAddr, usize, usize, IcyProperties, bool)> {
     // Fetching media stream from master
-    let mut headers = String::new();
-    headers.push_str("Icy-Metadata: 1\r\n");
+    let mut client = HttpClient::connect(serv.as_ref(), url, mount).await?;
+    let addr       = client.peer_addr()?;
+    client.add_header("Icy-Metadata: 1\r\n");
     if let Some(auth) = auth {
-        headers.push_str(auth);
+        client.add_header(auth);
     }
-    let (mut stream,
-         addr)      = http_get_request(url, mount, &headers).await?;
-    let mut reader  = ResponseReader::new(&mut stream, serv.config.limits.master_http_max_len);
+    let mut reader  = client.get().await?;
     let headers_buf = reader.read_headers().await?;
 
     serv.stats.source_relay_connections.fetch_add(1, Ordering::Relaxed);
@@ -329,8 +293,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
             return Err(anyhow::Error::msg("missing content-type header"));
         }
     });
-
-    Ok((stream, addr, metaint, headers_buf.len(), properties, chunked))
+    Ok((reader.get_inner_stream(), addr, metaint, headers_buf.len(), properties, chunked))
 }
 
 pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
@@ -385,9 +348,10 @@ async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, master_ind:
         _ => unreachable!()
     };
 
-    let (mut stream, _) = http_get_request(url, "/admin/mountupdates", &auth).await?;
-    let mut reader      = ResponseReader::new(&mut stream, serv.config.limits.master_http_max_len);
-    let headers_buf     = reader.read_headers().await?;
+    let mut client  = HttpClient::connect(serv.as_ref(), url, "/admin/mountupdates").await?;
+    client.add_header(&auth);
+    let mut reader  = client.get().await?;
+    let headers_buf = reader.read_headers().await?;
 
     serv.stats.source_relay_connections.fetch_add(1, Ordering::Relaxed);
 
@@ -408,7 +372,7 @@ async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, master_ind:
     // TODO: check transfer-encoding??
     // Shouldn't matter anyway
 
-    Ok(stream)
+    Ok(reader.get_inner_stream())
 }
 
 pub enum RelaySourceMigrate {

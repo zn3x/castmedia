@@ -29,6 +29,7 @@ use crate::{
 pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {
     fn fd(&self) -> i32;
     fn local_addr(&self) -> Result<SocketAddr>;
+    fn peer_addr(&self) -> Result<SocketAddr>;
     fn close(&mut self);
 }
 
@@ -39,6 +40,10 @@ impl Socket for BufStream<TcpStream> {
 
     fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.get_ref().local_addr()?)
+    }
+
+    fn peer_addr(&self) -> Result<SocketAddr> {
+        Ok(self.get_ref().peer_addr()?)
     }
     
     fn close(&mut self) {
@@ -53,6 +58,10 @@ impl Socket for BufStream<TlsStream<TcpStream>> {
 
     fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.get_ref().get_ref().get_ref().get_ref().local_addr()?)
+    }
+
+    fn peer_addr(&self) -> Result<SocketAddr> {
+        Ok(self.get_ref().get_ref().get_ref().get_ref().peer_addr()?)
     }
 
     fn close(&mut self) {

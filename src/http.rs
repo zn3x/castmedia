@@ -1,17 +1,90 @@
+use std::net::SocketAddr;
 use anyhow::Result;
-use tokio::io::AsyncReadExt;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt, BufStream},
+    net::TcpStream
+};
+use tokio_native_tls::native_tls::TlsConnector;
+use url::Url;
 
-use crate::{server::Stream, utils::get_header};
+use crate::{server::{Server, Stream}, utils::get_header};
 
-
-pub struct ResponseReader<'a> {
-    stream: &'a mut Stream,
+pub struct HttpClient<'a> {
+    stream: Stream,
+    host: String,
+    port: u16,
+    path: &'a str,
+    headers: Vec<&'a str>,
     http_max_len: usize
 }
 
-impl<'a> ResponseReader<'a> {
-    pub fn new(stream: &'a mut Stream, http_max_len: usize) -> Self {
+impl<'a> HttpClient<'a> {
+    pub async fn connect(server: &Server, url: &Url, path: &'a str) -> Result<Self> {
+        // Host and port should have been verified before
+        let host = url.host()
+            .expect("Should be able to fetch master host")
+            .to_string();
+        let port = url.port()
+            .expect("Should be able to fetch master port");
+        let stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
+        let stream = if url.scheme().eq("https") {
+            let cx = tokio_native_tls::TlsConnector::from(TlsConnector::builder().build()?);
+            Stream(Box::new(BufStream::new(cx.connect(&host, stream).await?)))
+        } else {
+            Stream(Box::new(BufStream::new(stream)))
+        };
+
+        Ok(Self {
+            stream,
+            host,
+            port,
+            path,
+            headers: Vec::new(),
+            http_max_len: server.config.limits.http_max_len
+        })
+    }
+
+    pub fn peer_addr(&self) -> Result<SocketAddr> {
+        self.stream.peer_addr()
+    }
+
+    pub fn add_header(&mut self, header: &'a str) {
+        self.headers.push(header);
+    }
+
+    pub async fn get(mut self) -> Result<ResponseReader> {
+        self.stream.write_all(format!("GET {} HTTP/1.1\r\n\
+Host: {}:{}\r\n\
+User-Agent: {}\r\n",
+            self.path,
+            self.host,
+            self.port,
+            crate::config::SERVER_ID
+        ).as_bytes()).await?;
+        for header in self.headers {
+            self.stream.write_all(header.as_bytes()).await?;
+            self.stream.write_all(b"\r\n").await?;
+        }
+        self.stream.write_all(b"Connection: close\r\n\r\n").await?;
+        self.stream.flush().await?;
+
+        Ok(ResponseReader::new(self.stream, self.http_max_len))
+    }
+}
+
+pub struct ResponseReader {
+    stream: Stream,
+    http_max_len: usize
+}
+
+impl ResponseReader {
+    pub fn new(stream: Stream, http_max_len: usize) -> Self {
         Self { stream, http_max_len }
+    }
+
+    /// Return inner stream consuming self
+    pub fn get_inner_stream(self) -> Stream {
+        self.stream
     }
 
     /// Read header only and return it's buffer
