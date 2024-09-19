@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde_json::json;
 use tracing::info;
 
-use crate::{server::ClientSession, response, request::ApiRequest, utils};
+use crate::{internal_api::v1::IcyPropertiesPublic, request::ApiRequest, response, server::ClientSession, utils};
 
 async fn server_info(session: &mut ClientSession) -> Result<()> {
     let sid = &session.server.config.info.id;    
@@ -42,7 +42,7 @@ async fn mount_info(session: &mut ClientSession, req: ApiRequest) -> Result<()> 
 
     let source = match session.server.sources.read().await.get(mount) {
         Some(mount) => {
-            let prop_ref = mount.properties.as_ref();
+            let prop_ref = IcyPropertiesPublic(mount.properties.as_ref());
             let metadata = mount.metadata.read().await;
             json!({
                 "metadata": metadata.as_ref(),

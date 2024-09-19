@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 
 pub const INTERNAL_API_VERSION: u64 = 1;
 
@@ -66,14 +66,39 @@ pub enum MigrateConnection {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IcyProperties {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub uagent: Option<String>,
     pub public: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub genre: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bitrate: Option<String>,
     pub content_type: String
+}
+
+pub struct IcyPropertiesPublic<'a>(pub &'a IcyProperties);
+
+impl<'a> Serialize for IcyPropertiesPublic<'a> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("IcyPropertiesPublic", 7)?;
+        state.serialize_field("public", &self.0.public)?;
+        if self.0.name.is_some() { state.serialize_field("name", &self.0.name)?; }
+        if self.0.description.is_some() { state.serialize_field("description", &self.0.description)?; }
+        if self.0.url.is_some() { state.serialize_field("url", &self.0.url)?; }
+        if self.0.genre.is_some() { state.serialize_field("genre", &self.0.genre)?; }
+        if self.0.bitrate.is_some() { state.serialize_field("bitrate", &self.0.bitrate)?; }
+        state.serialize_field("content_type", &self.0.content_type)?;
+        state.end()
+    }
 }
 
 impl IcyProperties {
