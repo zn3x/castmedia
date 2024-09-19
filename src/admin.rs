@@ -82,41 +82,47 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
     auth::admin_auth(session, req.auth).await?;
     let sid = &session.server.config.info.id;
 
-    let mut sources = HashMap::new();
 
-    for source in session.server.sources.read().await.iter() {
-        let prop_ref  = source.1.properties.as_ref();
-        let metadata  = source.1.metadata.read().await;
-        let mut sinfo = json!({
-            "fallback": source.1.fallback,
-            "metadata": metadata.as_ref(),
-            "properties": prop_ref,
-            "stats": {
-                "active_listeners": source.1.stats.active_listeners.load(Ordering::Relaxed),
-                "peak_listeners": source.1.stats.peak_listeners.load(Ordering::Relaxed),
-                "bytes_read": source.1.stats.bytes_read.load(Ordering::Relaxed),
-                "bytes_sent": source.1.stats.bytes_sent.load(Ordering::Relaxed),
-                "start_time": source.1.stats.start_time
+    let chunked = ChunkedResponse::new(&mut session.stream, sid).await?;
+    chunked.send(&mut session.stream, b"{").await?;
+    {
+        let lock     = session.server.sources.read().await;
+        let mut list = lock.iter().peekable();
+        while let Some(source) = list.next() {
+            let prop_ref  = source.1.properties.as_ref();
+            let metadata  = source.1.metadata.read().await;
+            let mut sinfo = json!({
+                "fallback": source.1.fallback,
+                "metadata": metadata.as_ref(),
+                "properties": prop_ref,
+                "stats": {
+                    "active_listeners": source.1.stats.active_listeners.load(Ordering::Relaxed),
+                    "peak_listeners": source.1.stats.peak_listeners.load(Ordering::Relaxed),
+                    "bytes_read": source.1.stats.bytes_read.load(Ordering::Relaxed),
+                    "bytes_sent": source.1.stats.bytes_sent.load(Ordering::Relaxed),
+                    "start_time": source.1.stats.start_time
+                }
+            });
+
+            let s = sinfo.as_object_mut()
+                .expect("Listmounts json response should be an object");
+            match &source.1.access {
+                SourceAccessType::SourceClient { username } => {
+                    s.insert("source_username".to_string(), serde_json::to_value(username)?);
+                },
+                SourceAccessType::RelayedSource { relayed_source } => {
+                    s.insert("stream_source".to_string(), serde_json::to_value(relayed_source)?);
+                }
             }
-        });
-
-        let s = sinfo.as_object_mut()
-            .expect("Listmounts json response should be an object");
-        match &source.1.access {
-            SourceAccessType::SourceClient { username } => {
-                s.insert("source_username".to_string(), serde_json::to_value(username)?);
-            },
-            SourceAccessType::RelayedSource { relayed_source } => {
-                s.insert("stream_source".to_string(), serde_json::to_value(relayed_source)?);
+            chunked.send(&mut session.stream, format!("\"{}\":", source.0).as_bytes()).await?;
+            chunked.send(&mut session.stream, &serde_json::to_vec(&s)?).await?;
+            if list.peek().is_some() {
+                chunked.send(&mut session.stream, b",").await?;
             }
         }
-        sources.insert(source.0.to_owned(), sinfo);
     }
-
-    match serde_json::to_vec(&sources) {
-        Ok(v) => response::ok_200_json_body(&mut session.stream, sid, &v).await?,
-        Err(_) => response::internal_error(&mut session.stream, sid).await?
-    }
+    chunked.send(&mut session.stream, b"}").await?;
+    chunked.flush(&mut session.stream).await?;
 
     Ok(())
 }
