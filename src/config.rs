@@ -32,6 +32,7 @@ const SOURCE_TIMEOUT: u64                = 10000;
 const HTTP_MAX_LEN: usize                = 8192;
 const MASTER_HTTP_MAX_LEN: usize         = 16384;
 const MASTER_TIMEOUT: u64                = 20000;
+const MOUNTUPDATES_HEARTBEAT: u64        = 20000;
 const MASTER_MOUNTS_LIMIT: usize         = usize::MAX;
 const MASTER_TRANS_UP_INTERVAL: u64      = 120000;
 const MASTER_AUTH_STREAM_ON_DEMAND: bool = false;
@@ -220,7 +221,10 @@ pub struct ServerLimits {
     pub master_http_max_len: usize,
     #[serde(default = "default_val_limit_master_timeout")]
     /// Max time in millis we wait for master response including media stream read
-    pub master_timeout: u64
+    pub master_timeout: u64,
+    #[serde(default = "default_val_limit_mountupdates_heartbeat")]
+    /// Heartbeat interval in millis to keep mountupdate stream alive for master
+    pub mountupdates_heartbeat: u64
 }
 
 #[derive(Serialize, Deserialize)]
@@ -278,7 +282,8 @@ impl Default for ServerLimits {
             source_timeout: default_val_limit_source_timeout(),
             http_max_len: default_val_limit_http_max_len(),
             master_http_max_len: default_val_limit_master_http_max_len(),
-            master_timeout: default_val_limit_master_timeout()
+            master_timeout: default_val_limit_master_timeout(),
+            mountupdates_heartbeat: default_val_limit_mountupdates_heartbeat()
         }
     }
 }
@@ -323,6 +328,7 @@ fn default_val_limit_source_timeout() -> u64 { SOURCE_TIMEOUT }
 fn default_val_limit_http_max_len() -> usize { HTTP_MAX_LEN }
 fn default_val_limit_master_http_max_len() -> usize { MASTER_HTTP_MAX_LEN }
 fn default_val_limit_master_timeout() -> u64 { MASTER_TIMEOUT }
+fn default_val_limit_mountupdates_heartbeat() -> u64 { MOUNTUPDATES_HEARTBEAT }
 
 fn default_val_serveraddr_allow_auth() -> bool { SERVERADDR_ALLOW_AUTH }
 

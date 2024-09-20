@@ -49,7 +49,8 @@ pub enum MountUpdate {
     },
     Unmounted {
         mount: String
-    }
+    },
+    Heartbeat
 }
 
 pub async fn master_mount_updates(mut session: ClientSession,
@@ -76,6 +77,11 @@ pub async fn master_mount_updates(mut session: ClientSession,
     let mut remove     = None;
     let mut migrate_ch = None;
 
+    let heartbeat_msg      = serde_json::to_vec(&MountUpdate::Heartbeat)?;
+    let heartbeat_len      = (heartbeat_msg.len() as u32).to_be_bytes();
+    let mut heartbeat_tick = tokio::time::interval(Duration::from_millis(session.server.config.limits.mountupdates_heartbeat));
+    heartbeat_tick.tick().await;
+
     'NO_SOURCE: loop {
         if let Some(m) = migrate_ch {
             migrate_master_mount_updates(
@@ -87,6 +93,12 @@ pub async fn master_mount_updates(mut session: ClientSession,
         }
 
         tokio::select! {
+            _ = heartbeat_tick.tick() => {
+                chunked_writer.send(&mut session.stream, &heartbeat_len).await?;
+                chunked_writer.send(&mut session.stream, &heartbeat_msg).await?;
+                session.stream.flush().await?;
+                continue;
+            },
             r = new_source_notify.recv() => ret = r,
             m = migrate_comm.recv() => {
                 migrate_ch = Some(m);
@@ -131,6 +143,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
                 chunked_writer.send(&mut session.stream, &(ser.len() as u32).to_be_bytes()).await?;
                 chunked_writer.send(&mut session.stream, &ser).await?;
                 session.stream.flush().await?;
+                
+                heartbeat_tick.reset();
             }
 
             loop {
@@ -151,6 +165,11 @@ pub async fn master_mount_updates(mut session: ClientSession,
                 // TODO: Can we eliminate the need to transmit metadata for source if slave
                 // already listening to that source
                 tokio::select! {
+                    _ = heartbeat_tick.tick() => {
+                        chunked_writer.send(&mut session.stream, &heartbeat_len).await?;
+                        chunked_writer.send(&mut session.stream, &heartbeat_msg).await?;
+                        session.stream.flush().await?;
+                    },
                     ((mount, metadata), _, _) = select_all(reads) => {
                         let ser = match metadata {
                             Ok(v) => {
@@ -180,6 +199,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
                         chunked_writer.send(&mut session.stream, &(ser.len() as u32).to_be_bytes()).await?;
                         chunked_writer.send(&mut session.stream, &ser).await?;
                         session.stream.flush().await?;
+
+                        heartbeat_tick.reset();
                     },
                     r = new_source_notify.recv() => {
                         ret = r;
@@ -573,6 +594,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
 
     // Now handling events for every source
     match event {
+        MountUpdate::Heartbeat => (),
         MountUpdate::New { mount, properties } => {
             if let Some(mut task) = sources.remove(&mount) {
                 if task.just_migrated {
