@@ -265,7 +265,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     // Fetching media stream from master
     let mut client = HttpClient::connect(url, mount, serv.config.limits.http_max_len).await?;
     let addr       = client.peer_addr()?;
-    client.add_header("Icy-Metadata: 1\r\n");
+    client.add_header("Icy-Metadata: 1");
     if let Some(auth) = auth {
         client.add_header(auth);
     }
@@ -364,7 +364,7 @@ async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, master_ind:
     let url  = &serv.config.master[master_ind].url;
     let auth = match &serv.config.master[master_ind].relay_scheme {
         MasterServerRelayScheme::Authenticated { user, pass, .. } =>
-            format!("Authorization: Basic {}\r\n", basic_auth(user, pass)),
+            format!("Authorization: Basic {}", basic_auth(user, pass)),
         // Should not reach this as we did treat it already
         _ => unreachable!()
     };
