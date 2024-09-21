@@ -9,6 +9,8 @@ pub struct Config {
     /// Public url where clients will be able to reach streams
     /// It is worth to note that the stream mount is appended to the end of this url
     pub public_server: Url,
+    /// Radio website mainpage
+    pub url: Url,
     /// Timeout in millis when trying to fetch mountupdates stream from server
     pub timeout: u64,
     /// List of directories when streams will be published

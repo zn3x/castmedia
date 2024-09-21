@@ -356,6 +356,7 @@ async fn add_action(config: &Config, conf: &Directory, client: &Client, dir: &Ur
     if let Some(desc) = &properties.description {
         form.insert("desc", desc.clone());
     }
+    form.insert("url", config.url.to_string());
     form.insert("listenurl", listenurl.to_string());
     for _ in 0..10 {
         let resp = client.post(dir.clone())
