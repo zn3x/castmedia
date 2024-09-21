@@ -1,0 +1,27 @@
+[package]
+name = "castmediayp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+qanat.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+url.workspace = true
+httparse.workspace = true
+hashbrown.workspace = true
+
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+serde_json.workspace = true
+serde_yaml.workspace = true
+serde.workspace = true
+
+anyhow.workspace = true
+
+futures.workspace = true
+
+chrono.workspace = true
+
+castmedia = { path = "../castmedia" }
