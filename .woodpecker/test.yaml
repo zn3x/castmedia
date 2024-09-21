@@ -10,6 +10,6 @@ steps:
       - rustup default $RUST
       - cargo check
       - cargo build
-      - cargo test
+      - cargo test --package castmedia
     when:
       event: push
