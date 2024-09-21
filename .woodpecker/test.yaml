@@ -9,7 +9,7 @@ steps:
       - apt update && apt -y install ffmpeg curl
       - rustup default $RUST
       - cargo check
-      - cargo build
+      - cargo build --package castmedia
       - cargo test --package castmedia
     when:
       event: push
