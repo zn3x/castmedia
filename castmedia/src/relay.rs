@@ -247,7 +247,7 @@ async fn fetch_available_mounts(server: &Server, url: &Url) -> Result<MasterMoun
     tokio::time::timeout(
         timeout,
         async {
-            let client     = HttpClient::connect(server, url, "/api/serverinfo").await?;
+            let client     = HttpClient::connect(url, "/api/serverinfo", server.config.limits.http_max_len).await?;
             let mut reader = client.get().await?;
             server.stats.source_relay_connections.fetch_add(1, Ordering::Relaxed);
             let body_buf   = reader.read_to_end("application/json").await?;
@@ -263,7 +263,7 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
                     auth: Option<&str>)
     -> Result<(Stream, SocketAddr, usize, usize, IcyProperties, bool)> {
     // Fetching media stream from master
-    let mut client = HttpClient::connect(serv.as_ref(), url, mount).await?;
+    let mut client = HttpClient::connect(url, mount, serv.config.limits.http_max_len).await?;
     let addr       = client.peer_addr()?;
     client.add_header("Icy-Metadata: 1\r\n");
     if let Some(auth) = auth {
@@ -369,7 +369,7 @@ async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, master_ind:
         _ => unreachable!()
     };
 
-    let mut client  = HttpClient::connect(serv.as_ref(), url, "/admin/mountupdates").await?;
+    let mut client  = HttpClient::connect(url, "/admin/mountupdates", serv.config.limits.http_max_len).await?;
     client.add_header(&auth);
     let mut reader  = client.get().await?;
     let headers_buf = reader.read_headers().await?;
