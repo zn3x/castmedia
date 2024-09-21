@@ -340,6 +340,9 @@ async fn add_action(config: &Config, conf: &Directory, client: &Client, dir: &Ur
     let listenurl_path = match config.public_server.path_segments() {
         Some(v) => {
             let mut v = v.collect::<Vec<&str>>();
+            if v.last().is_some_and(|x| (*x).eq("")) {
+                v.pop();
+            }
             v.push(&mount[1..]);
             v
         },
