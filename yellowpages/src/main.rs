@@ -116,21 +116,25 @@ async fn server_mountupdates_listener_inner(config: &Arc<Config>, state: &mut St
                         continue;
                     }
 
-                    match serde_json::to_vec(&state.state) {
-                        Ok(v) => {
-                            if let Err(e) = tokio::fs::write(&config.state, &v).await {
-                                error!("Failed saving state: {e}");
-                            }
-                        },
-                        Err(e) => {
-                            error!("Failed serializing state: {e}");
-                        }
-                    }
+                    persist_state(config, state).await;
                 },
                 Err(_) => unreachable!()
             }
         }
     };
+}
+
+async fn persist_state(config: &Config, state: &State) {
+    match serde_json::to_vec(&state.state) {
+        Ok(v) => {
+            if let Err(e) = tokio::fs::write(&config.state, &v).await {
+                error!("Failed saving state: {e}");
+            }
+        },
+        Err(e) => {
+            error!("Failed serializing state: {e}");
+        }
+    }
 }
 
 async fn mountupdates_event_reader(config: &Arc<Config>, state: &mut State, client: &Client, event: MountUpdate) {
@@ -181,6 +185,7 @@ async fn mountupdates_event_reader(config: &Arc<Config>, state: &mut State, clie
         MountUpdate::Unmounted { mount } => if let Some(mut v) = state.channel.remove(&mount) {
             _ = state.state.remove(&mount);
             v.tx.send(Arc::new(MountUpdate::Unmounted { mount }));
+            persist_state(config, state).await;
         },
         MountUpdate::Heartbeat => ()
     }
