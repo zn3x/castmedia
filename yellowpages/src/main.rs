@@ -136,18 +136,13 @@ async fn server_mountupdates_listener_inner(config: &Arc<Config>, state: &mut St
 async fn mountupdates_event_reader(config: &Arc<Config>, state: &mut State, client: &Client, event: MountUpdate) {
     match event {
         MountUpdate::New { mount, properties } => {
-            let mut skip_add = false;
             match state.state.get_mut(&mount) {
                 Some(v) => if !v.properties.eq(&properties) {
                     // We must have skipped when stream was unmounted
                     v.properties = properties.clone();
-                } else {
-                    if state.channel.contains_key(&mount) {
-                        // No need to retransmit when channel is identic
-                        return;
-                    } else {
-                        skip_add = true;
-                    }
+                } else if state.channel.contains_key(&mount) {
+                    // No need to retransmit when channel is identic
+                    return;
                 },
                 None => {
                     _ = state.state.insert(mount.clone(), StreamState { properties: properties.clone(), dirs: HashMap::new() });
@@ -177,9 +172,7 @@ async fn mountupdates_event_reader(config: &Arc<Config>, state: &mut State, clie
                 },
                 Some(v) => v.tx.clone()
             };
-            if skip_add {
-                return;
-            }
+
             tx.send(Arc::new(MountUpdate::New { mount, properties }));
         },
         MountUpdate::Metadata { mount, metadata } => if let Some(v) = state.channel.get_mut(&mount) {
@@ -211,9 +204,12 @@ async fn stream_update_task(config: Arc<Config>, client: Client, dir: Url, mount
         tokio::select! {
             r = rx.recv() => match r {
                 Ok(v) => match v.as_ref() {
-                    MountUpdate::New { properties, .. } => add_action(&config, conf, &client, &dir, &mount, properties, &mut sid, &mut tick, &mut tx).await,
+                    MountUpdate::New { properties, .. } => if sid.is_none() { add_action(&config, conf, &client, &dir, &mount, properties, &mut sid, &mut tick, &mut tx).await },
                     MountUpdate::Metadata { metadata, .. } => touch_action(&config, conf, &client, &dir, &mount, &state, Some(metadata), &mut sid, &mut tick, &mut tx).await,
-                    MountUpdate::Unmounted { .. } => remove_action(conf, &client, &dir, &mount, &sid, &mut tick).await,
+                    MountUpdate::Unmounted { .. } => {
+                        remove_action(conf, &client, &dir, &mount, &sid, &mut tick).await;
+                        return;
+                    },
                     _ => unreachable!()
                 },
                 Err(_) => break
