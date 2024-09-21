@@ -7,7 +7,7 @@ use tokio::{
 use tokio_native_tls::native_tls::TlsConnector;
 use url::Url;
 
-use crate::{server::{Server, Stream}, utils::get_header};
+use crate::{server::Stream, utils::get_header};
 
 pub struct HttpClient<'a> {
     stream: Stream,
