@@ -205,12 +205,18 @@ async fn stream_update_task(config: Arc<Config>, client: Client, dir: Url, mount
         }
     };
 
+    let mut metadata_ref = None;
     loop {
         tokio::select! {
             r = rx.recv() => match r {
                 Ok(v) => match v.as_ref() {
                     MountUpdate::New { properties, .. } => if sid.is_none() { add_action(&config, conf, &client, &dir, &mount, properties, &mut sid, &mut tick, &mut tx).await },
-                    MountUpdate::Metadata { metadata, .. } => touch_action(&config, conf, &client, &dir, &mount, &state, Some(metadata), &mut sid, &mut tick, &mut tx).await,
+                    MountUpdate::Metadata { metadata, .. } => {
+                        if let Some((Some(t), Some(_))) = std::str::from_utf8(&metadata[1..]).ok().and_then(|m| metadata_decode(m).ok()) {
+                            metadata_ref = Some(t);
+                        }
+                        touch_action(&config, conf, &client, &dir, &mount, &state, metadata_ref.as_ref(), &mut sid, &mut tick, &mut tx).await
+                    },
                     MountUpdate::Unmounted { .. } => {
                         remove_action(conf, &client, &dir, &mount, &sid, &mut tick).await;
                         return;
@@ -220,7 +226,7 @@ async fn stream_update_task(config: Arc<Config>, client: Client, dir: Url, mount
                 Err(_) => break
             },
             _ = tick.tick() => if sid.is_some() {
-                touch_action(&config, conf, &client, &dir, &mount, &state, None, &mut sid, &mut tick, &mut tx).await;
+                touch_action(&config, conf, &client, &dir, &mount, &state, metadata_ref.as_ref(), &mut sid, &mut tick, &mut tx).await;
             }
         }
     };
@@ -254,7 +260,7 @@ async fn remove_action(conf: &Directory, client: &Client, dir: &Url, mount: &str
 
 #[inline(always)]
 async fn touch_action(config: &Config, conf: &Directory, client: &Client, dir: &Url,
-                      mount: &str, state: &Option<StreamState>, metadata: Option<&Vec<u8>>,
+                      mount: &str, state: &Option<StreamState>, metadata: Option<&String>,
                       sid: &mut Option<String>, tick: &mut tokio::time::Interval,
                       tx: &mut mpsc::UnboundedSender<Update>) {
     let mut sidu = match sid {
@@ -265,8 +271,8 @@ async fn touch_action(config: &Config, conf: &Directory, client: &Client, dir: &
     let mut form: HashMap<&str, String> = HashMap::new();
     form.insert("action", "touch".to_owned());
     form.insert("sid", sidu);
-    if let Some((Some(title), Some(_))) = metadata.and_then(|m| std::str::from_utf8(&m[1..]).ok().and_then(|m| metadata_decode(m).ok())) {
-        form.insert("st", title);
+    if let Some(title) = metadata {
+        form.insert("st", title.to_string());
     }
 
     for _ in 0..3 {
