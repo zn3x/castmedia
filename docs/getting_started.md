@@ -20,7 +20,7 @@ Or you can build it yourself provided you already have the rust toolchain instal
 ```
 git clone https://codeberg.org/zesty/castmedia
 cd castmedia
-cargo build --release
+cargo build --release --package castmedia
 ```
 
 ## Pages
@@ -29,3 +29,4 @@ cargo build --release
 - [API](./api.md)
 - [Relaying](./relaying.md)
 - [Migration and zero-downtime](./migration.md)
+- [YellowPages](./yp.md)
