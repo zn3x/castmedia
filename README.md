@@ -5,12 +5,12 @@ It's still in early development and any use in production is **highly** discoura
 
 ## Features
 
-- Http compatible icecast protocol for source and listeners.
+- Compatiblity with icecast protocol for source and listeners.
 - Icecast metadata updates and broadcast.
 - Configuring server resources via a single configuration file.
-- Configuring accounts for access.
-- Json API for administration and server/mount/user stats.
-- Updates without downtime (without Tls).
+- JSON API for administration and server/mount/user stats.
+- Updates without downtime (without TLS).
+- Possibility to use YellowPages directories
 
 
 Documentation can be found [here](./docs/getting_started.md).

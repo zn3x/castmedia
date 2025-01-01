@@ -12,7 +12,7 @@ use crate::{server::{ClientSession, Server, AddrType}, response, config::Account
 pub enum AllowedAuthType {
     SourceApi,
     SourceMount,
-    Slave
+    SlaveOrYP
 }
 
 pub struct HashCalculation {
@@ -32,7 +32,8 @@ pub fn password_hasher_thread(server: Arc<Server>, mut rx: mpsc::UnboundedReceiv
         let pass = match account {
             Account::Admin { pass, .. }  => pass,
             Account::Source { pass, .. } => pass,
-            Account::Slave { pass, .. }  => pass
+            Account::Slave { pass, .. }  => pass,
+            Account::YP { pass, .. }     => pass
         };
         // We have already guarded againt this in phase of config load
         let hash  = scrypt::password_hash::PasswordHash::new(pass.split_at(2).1)
@@ -84,7 +85,7 @@ pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType,
 
         // we are retrieving both index of account and if it can access mount
         // In AllowedAuthType::Source: a source can only access mount it has permission to
-        // In AllowedAuthType::Slave: slave has access
+        // In AllowedAuthType::SlaveOrYP: slave/YP has access
         // Admin has access to everything
         // While others can only get access in their respective mode
         let mut has_permission = false;
@@ -114,8 +115,8 @@ pub async fn auth(session: &mut ClientSession, allowed: AllowedAuthType,
                         has_permission = true;
                     }
                 },
-                Account::Slave { .. } => {
-                    if allowed == AllowedAuthType::Slave {
+                Account::Slave { .. } | Account::YP { .. } => {
+                    if allowed == AllowedAuthType::SlaveOrYP {
                         has_permission = true;
                     }
                 }

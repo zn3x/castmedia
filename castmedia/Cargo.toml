@@ -1,0 +1,36 @@
+[package]
+name = "castmedia"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+qanat.workspace = true
+tokio.workspace = true
+tokio-native-tls.workspace = true
+inotify.workspace = true
+futures.workspace = true
+hashbrown.workspace = true
+url.workspace = true
+httparse.workspace = true
+urlencoding.workspace = true
+base64.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+serde.workspace = true
+serde_with.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+symphonia.workspace = true
+passfd.workspace = true
+socket2.workspace = true
+zxcvbn.workspace = true
+scrypt.workspace = true
+diatomic-waker.workspace = true
+
+[dev-dependencies]
+tokio = { version = "*", features = [ "full" ] }
+test-utils = { path = "../test-utils" }
+

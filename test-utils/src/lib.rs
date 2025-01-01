@@ -36,6 +36,7 @@ pub fn spawn_server_blocking(test_dir: &str, conf: &str, conf_name: &str) -> Blo
     let server = std::process::Command::new("cargo")
         .args([
               "run",
+              "--package", "castmedia",
               "--",
               &conf_file
         ])
@@ -58,6 +59,7 @@ pub async fn spawn_server(test_dir: &str, conf: &str, conf_name: &str) -> Server
     let server = tokio::process::Command::new("cargo")
         .args([
               "run",
+              "--package", "castmedia",
               "--",
               &conf_file
         ])

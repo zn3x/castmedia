@@ -1,9 +1,11 @@
-[package]
-name = "castmedia"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = [
+    "castmedia",
+    "yellowpages",
+    "test-utils"
+]
 
-[dependencies]
+[workspace.dependencies]
 qanat = { git = "https://codeberg.org/zesty/qanat" }
 
 tokio = { version = "1.29.0", features = [ "net", "fs", "io-util", "time", "sync", "rt-multi-thread", "macros" ] }
@@ -45,9 +47,7 @@ scrypt = "0.11.0"
 
 diatomic-waker = "0.1.0"
 
-[dev-dependencies]
-tokio = { version = "1.29.0", features = [ "full" ] }
-test-utils = { path = "test-utils" }
+reqwest = { version = "0.11.24", features = [ "json", "blocking" ] }
 
 [profile.release]
 strip = true
