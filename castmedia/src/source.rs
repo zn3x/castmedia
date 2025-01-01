@@ -347,7 +347,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
 
         // In case we are defined as a master server
         // we must notify slaves here that a new mount is present
-        if session.server.relay_params.slave_auth_present {
+        if session.server.relay_params.slave_or_yp_auth_present {
             session.server.relay_params
                 .new_source_event_tx
                 .clone()

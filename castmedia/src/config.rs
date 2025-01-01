@@ -114,6 +114,9 @@ pub enum Account {
     },
     Slave {
         pass: String
+    },
+    YP {
+        pass: String
     }
 }
 
@@ -387,7 +390,8 @@ impl ServerSettings {
             let pass = match account {
                 Account::Source { pass, .. } => pass,
                 Account::Admin { pass, .. }  => pass,
-                Account::Slave { pass, .. }  => pass
+                Account::Slave { pass, .. }  => pass,
+                Account::YP { pass, .. }     => pass
             };
             
             match pass.split_at(2) {
@@ -469,7 +473,8 @@ impl ServerSettings {
                     }
                     (pass, Some(mount))
                 },
-                Account::Slave { pass } => (pass, None)
+                Account::Slave { pass } => (pass, None),
+                Account::YP { pass } => (pass, None)
             };
 
             // Checking if we don't have duplicates
@@ -477,7 +482,8 @@ impl ServerSettings {
                 let rmounts = match raccount {
                     Account::Admin { .. } => None,
                     Account::Source { mount, .. } => Some(mount),
-                    Account::Slave { .. } => None
+                    Account::Slave { .. } => None,
+                    Account::YP { .. } => None
                 };
                 // Skip if we are identic
                 if std::ptr::eq(user, ruser) {

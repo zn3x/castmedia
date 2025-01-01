@@ -368,7 +368,7 @@ async fn server_shutdown(session: &mut ClientSession, req: AdminRequest) -> Resu
 }
 
 async fn mount_updates(mut session: ClientSession, req: AdminRequest) -> Result<()> {
-    auth::auth(&mut session, AllowedAuthType::Slave, req.auth, "").await?;
+    auth::auth(&mut session, AllowedAuthType::SlaveOrYP, req.auth, "").await?;
 
     ChunkedResponse::new(&mut session.stream, &session.server.config.info.id).await?;
 
