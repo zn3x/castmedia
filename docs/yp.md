@@ -3,7 +3,7 @@
 
 A YP (Yellow Pages) directory is a listing of broadcast streams.
 
-There are multiple known YP dirs such as the one hosted by the icecast project at: http://dir.xiph.org/ or even popular internet radio curators such as [internet radio](https://www.internet-radio.com/) at: http://icecast-yp.internet-radio.com/
+There are multiple known YP directories such as the one hosted by the icecast project at: http://dir.xiph.org/ or even popular internet radio curators such as [internet radio](https://www.internet-radio.com/) at: http://icecast-yp.internet-radio.com/
 
 # YP in castmedia
 
@@ -50,7 +50,7 @@ castmediayp configyp.yaml
 ```
 
 # Caveats
-- Currently listeners count is not sent to YP dirs (and will not be implemented if there is no necessity to).
+- Currently listeners count is not sent to YP directories (and will not be implemented if there is no necessity to).
 - Each YP directory may behave differently, currently only two are tested:
     - http://dir.xiph.org
     - http://icecast-yp.internet-radio.com
