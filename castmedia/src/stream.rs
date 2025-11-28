@@ -159,6 +159,10 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
     let mut data         = Vec::new();
     let mut chunk_size   = VecDeque::new();
 
+    for i in s.broadcast.audio.snapshot().0 {
+        chunk_size.push_front(i.1.len());
+    }
+
     let fut = handle_relay_stream(
         reader.as_mut(), &s.session.server,
         s.mountpoint, &mut s.broadcast,
@@ -418,6 +422,9 @@ async fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReade
     });
     // Size of every chunk in broadcast queue
     let mut chunk_size = VecDeque::new();
+    for i in broadcast.audio.snapshot().0 {
+        chunk_size.push_front(i.1.len());
+    }
 
     // Get the next packet from the media format.
     while let Ok(ret) = rx.recv().await {
