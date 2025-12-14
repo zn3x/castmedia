@@ -1,18 +1,11 @@
-use crate::stream::StreamReader;
+use anyhow::Result;
+
+use crate::{audio::AudioReader, stream::StreamReader};
 
 /// Audio Data Transport Stream (ADTS) used by MPEG TS or Shoutcast to stream audio.
 /// https://wiki.multimedia.cx/index.php/ADTS
 /// https://github.com/dholroyd/adts-reader/blob/master/src/lib.rs
 /// https://docs.rs/symphonia-codec-aac/0.5.4/src/symphonia_codec_aac/adts.rs.html
-
-#[derive(Debug)]
-pub enum AdtsHeaderError {
-    /// Indicates that the given buffer did not start with the required sequence of 12 '1'-bits
-    /// (`0xfff`).
-    BadSyncWord,
-    /// Length of header is different than expected
-    InvalidLength
-}
 
 pub struct AdtsHeader {
     header_len: usize,
@@ -22,14 +15,16 @@ pub struct AdtsHeader {
 impl AdtsHeader {
     const SIZE: usize = 7;
 
-    pub async fn read(stream: &'_ mut dyn StreamReader) -> Result<Self, AdtsError> {
+    pub async fn read(stream: &'_ mut dyn StreamReader) -> Result<Self> {
         let mut s    = Self { buf: vec![0; Self::SIZE], header_len: Self::SIZE };
         if stream.async_read(&mut s.buf).await.is_err() {
-            return Err(AdtsError::IoError);
+            return Err(anyhow::Error::msg("ADTS IO error"));
         }
 
         if s.sync_word() != 0xfff {
-            return Err(AdtsError::Header(AdtsHeaderError::BadSyncWord));
+            // The given buffer did not start with the required sequence of 12 '1'-bits
+            // (`0xfff`).
+            return Err(anyhow::Error::msg("ADTS Bad sync word"));
         }
         // Skipping MPEG version bit
         // Skipping layer version 2 bits
@@ -37,13 +32,13 @@ impl AdtsHeader {
             s.header_len += 2;
             s.buf.extend_from_slice(&[0, 0]);
             if stream.async_read(&mut s.buf[7..9]).await.is_err() {
-                return Err(AdtsError::IoError);
+                return Err(anyhow::Error::msg("ADTS IO error"));
             }
         }
         // Going directly to frame length as it's crucial for it to be valid
         // before processing other fields
         if s.frame_length() < s.header_len as u16 {
-            return Err(AdtsError::Header(AdtsHeaderError::InvalidLength));
+            return Err(anyhow::Error::msg("ADTS Length of header is different than expected"));
         }
 
         Ok(s)
@@ -68,14 +63,6 @@ impl AdtsHeader {
 
 }
 
-#[derive(Debug)]
-pub enum AdtsError {
-    Header(AdtsHeaderError),
-    InvalidFrameLength,
-    /// IO error
-    IoError
-}
-
 pub struct AdtsReader<'a> {
     stream: &'a mut dyn StreamReader,
 }
@@ -86,26 +73,25 @@ impl<'a> AdtsReader<'a> {
             stream,
         }
     }
+}
 
-    pub async fn read(&mut self) -> Result<Vec<u8>, AdtsError> {
+#[async_trait::async_trait]
+impl AudioReader for AdtsReader<'_> {
+    async fn read(&mut self) -> Result<Vec<u8>> {
         // TODO: Support multiple AAC packets per ADTS packet.
         // https://docs.rs/symphonia-codec-aac/0.5.4/src/symphonia_codec_aac/adts.rs.html#30
         // https://wiki.multimedia.cx/index.php/ADTS recommends to only have one AAC packet per one
         // ADTS packet
-        let mut header = match AdtsHeader::read(self.stream).await {
-            Err(e) => return Err(e),
-            Ok(v) => v
-        };
-
-        let frame_len = header.frame_length() as usize;
+        let mut header = AdtsHeader::read(self.stream).await?;
+        let frame_len  = header.frame_length() as usize;
         if frame_len < header.header_len {
-            return Err(AdtsError::InvalidFrameLength);
+            return Err(anyhow::Error::msg("ADTS Invalid frame length"));
         }
 
         // TODO: More efficient way for allocation here
         let mut ret = vec![0; frame_len - header.header_len];
         if self.stream.async_read(&mut ret).await.is_err() {
-            return Err(AdtsError::IoError);
+            return Err(anyhow::Error::msg("ADTS IO error"));
         }
 
         header.buf.append(&mut ret);
