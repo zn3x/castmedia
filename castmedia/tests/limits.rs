@@ -1,6 +1,6 @@
 use std::{io::{Read, Write}, net::TcpStream, time::Duration};
 
-use test_utils::{spawn_server_blocking, spawn_source_manual};
+use test_utils::{spawn_server, spawn_source_manual};
 
 
 const CONFIG: &str = "
@@ -39,11 +39,11 @@ const MOUNT_SOURCE1: &str = "/stream1.mp3";
 const MOUNT_SOURCE2: &str = "/stream2.mp3";
 const MOUNT_SOURCE3: &str = "/stream3.mp3";
 
-#[test]
-fn limits() {
-    let server = spawn_server_blocking(TEST_DIR, CONFIG, "limits.yaml");
+#[tokio::test]
+async fn limits() {
+    let server = spawn_server(TEST_DIR, CONFIG, "limits.yaml").await;
 
-    std::thread::sleep(Duration::from_secs(4));
+    tokio::time::sleep(Duration::from_secs(4)).await;
 
     // Checking if server respects header_timeout
     let mut tasks = Vec::new();
@@ -103,25 +103,13 @@ fn limits() {
         let source1 = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE1);
         assert!(source1.is_ok());
 
-        let r1 = test_utils::reqwest::blocking::Client::new()
-            .get(format!("http://{}{}", BASE, MOUNT_SOURCE1))
-            .header("Icy-Metadata", "1")
-            .send()
-            .unwrap();
+        let r1 = test_utils::get_response(&format!("http://{}{}", BASE, MOUNT_SOURCE1)).await;
         assert_eq!(r1.status().as_u16(), 200);
 
-        let r2 = test_utils::reqwest::blocking::Client::new()
-            .get(format!("http://{}{}", BASE, MOUNT_SOURCE1))
-            .header("Icy-Metadata", "1")
-            .send()
-            .unwrap();
+        let r2 = test_utils::get_response(&format!("http://{}{}", BASE, MOUNT_SOURCE1)).await;
         assert_eq!(r2.status().as_u16(), 200);
 
-        let r3 = test_utils::reqwest::blocking::Client::new()
-            .get(format!("http://{}{}", BASE, MOUNT_SOURCE1))
-            .header("Icy-Metadata", "1")
-            .send()
-            .unwrap();
+        let r3 = test_utils::get_response(&format!("http://{}{}", BASE, MOUNT_SOURCE1)).await;
         assert_ne!(r3.status().as_u16(), 200);
     }
 

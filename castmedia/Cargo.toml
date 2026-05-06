@@ -33,4 +33,4 @@ diatomic-waker.workspace = true
 [dev-dependencies]
 tokio = { version = "*", features = [ "full" ] }
 test-utils = { path = "../test-utils" }
-
+futures.workspace = true

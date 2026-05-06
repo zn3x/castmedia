@@ -3,11 +3,11 @@
 // Add test for source stream
 // Add test for metaint
 
-use std::{time::Duration, io::{Read, Write}};
-
+use std::{time::Duration, io::Write};
 use castmedia::broadcast::metadata_decode;
+use futures::{AsyncReadExt, StreamExt, TryStreamExt};
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, probe::Hint, formats::FormatOptions, meta::MetadataOptions};
-use test_utils::{spawn_source_manual, spawn_server_blocking};
+use test_utils::{spawn_source_manual, spawn_server};
 
 const CONFIG: &str = "
 address:
@@ -42,11 +42,11 @@ const AUTH_ADMIN: &str    = "admin:pass";
 const AUTH_SOURCE: &str   = "source:pass";
 const MOUNT_SOURCE: &str  = "/stream.mp3";
 
-#[test]
-fn stream_general() {
-    let mut server = spawn_server_blocking(TEST_DIR, CONFIG, "stream.yaml");
+#[tokio::test]
+async fn stream_general() {
+    let mut server = spawn_server(TEST_DIR, CONFIG, "stream.yaml").await;
 
-    std::thread::sleep(Duration::from_secs(4));
+    tokio::time::sleep(Duration::from_secs(4)).await;
 
     let mut buf = [0u8; 100000];
     let mut len = [8u8; 1];
@@ -70,11 +70,15 @@ fn stream_general() {
     let mut total_written = 0;
 
     for i in 1..=5 {
-        let mut r = test_utils::reqwest::blocking::Client::new()
+        let resp = test_utils::reqwest::Client::new()
             .get(&format!("http://{}{}", BASE, MOUNT_SOURCE))
             .header("Icy-Metadata", "1")
             .send()
+            .await
             .unwrap();
+        let mut r = resp.bytes_stream()
+            .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+            .into_async_read();
 
         let mut c = 0;
         loop {
@@ -82,11 +86,7 @@ fn stream_general() {
 
             // Metadata update on when we read third time
             if i == 2 && c == 1 {
-                let r = test_utils::reqwest::blocking::Client::new()
-                    .get(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here&song=title_here", AUTH_SOURCE, ADMIN, MOUNT_SOURCE))
-                    .send()
-                    .unwrap()
-                    .status();
+                let r = test_utils::get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=url_here&song=title_here", AUTH_SOURCE, ADMIN, MOUNT_SOURCE)).await;
                 assert_eq!(r, 200);
             }
 
@@ -100,11 +100,11 @@ fn stream_general() {
                 }
             }
 
-            r.read_exact(&mut buf).unwrap();
-            r.read_exact(&mut len).unwrap();
+            r.read_exact(&mut buf).await.unwrap();
+            r.read_exact(&mut len).await.unwrap();
             let metadata_len = (len[0] as usize) << 4;
             let mut metadata_buf = vec![0u8; metadata_len];
-            r.read_exact(&mut metadata_buf).unwrap();
+            r.read_exact(&mut metadata_buf).await.unwrap();
             let metadata = std::str::from_utf8(&metadata_buf).unwrap();
             
             if i <= 2 && c < 2 {
@@ -120,8 +120,8 @@ fn stream_general() {
 
         drop(r);
         if i != 5 {
-            let server1 = spawn_server_blocking(TEST_DIR, CONFIG, "stream.yaml");
-            std::thread::sleep(Duration::from_secs(2));
+            let server1 = spawn_server(TEST_DIR, CONFIG, "stream.yaml").await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
 
             let status = server.child.try_wait();
             assert!(matches!(status, Ok(Some(_))));
@@ -129,9 +129,6 @@ fn stream_general() {
         }
     }
 
-    let r = test_utils::reqwest::blocking::get(format!("http://{}@{}/admin/shutdown", AUTH_ADMIN, ADMIN))
-        .unwrap()
-        .status()
-        .as_u16();
+    let r = test_utils::get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_ADMIN, ADMIN)).await;
     assert_eq!(r, 200);
 }

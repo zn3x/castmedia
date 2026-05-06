@@ -7,6 +7,6 @@ edition = "2021"
 
 [dependencies]
 tokio.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = [ "stream" ] }
 base64.workspace = true
 anyhow.workspace = true

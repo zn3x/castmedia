@@ -4,16 +4,6 @@ use anyhow::Result;
 use base64::Engine;
 pub use reqwest;
 
-pub struct BlockingServer {
-    pub child: std::process::Child
-}
-
-impl Drop for BlockingServer {
-    fn drop(&mut self) {
-        _ = self.child.kill();
-    }
-}
-
 pub struct Server {
     pub child: tokio::process::Child
 }
@@ -21,30 +11,6 @@ pub struct Server {
 impl Drop for Server {
     fn drop(&mut self) {
         _ = self.child.start_kill();
-    }
-}
-
-// Really...???
-pub fn spawn_server_blocking(test_dir: &str, conf: &str, conf_name: &str) -> BlockingServer {
-    let conf = conf.to_owned();
-
-    let conf_file = format!("{}/{}", test_dir, conf_name);
-
-    std::fs::write(&conf_file, conf)
-        .expect("Failed to write config file");
-    
-    let server = std::process::Command::new("cargo")
-        .args([
-              "run",
-              "--package", "castmedia",
-              "--",
-              &conf_file
-        ])
-        .spawn()
-        .expect("failed to start castmedia");
-
-    BlockingServer {
-        child: server
     }
 }
 

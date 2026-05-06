@@ -1,6 +1,7 @@
-use std::{io::{Read, Write}, time::Duration};
+use std::{io::Write, time::Duration};
 
-use test_utils::{spawn_server_blocking, spawn_source_manual};
+use futures::{AsyncReadExt, StreamExt, TryStreamExt};
+use test_utils::{spawn_server, spawn_source_manual};
 use castmedia::broadcast::metadata_decode;
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, probe::Hint, formats::FormatOptions, meta::MetadataOptions};
 
@@ -148,13 +149,13 @@ const AUTH_SOURCE: &str  = "source:pass";
 const MOUNT_SOURCE: &str = "/stream.mp3";
 
 
-#[test]
+#[tokio::test]
 #[allow(unused_assignments)]
-fn relaying() {
-    let mut master_server = spawn_server_blocking(TEST_DIR, CONFIG_MASTER, "relay_master.yaml");
-    let mut slave_server  = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE, "relay_slave.yaml");
+async fn relaying() {
+    let mut master_server = spawn_server(TEST_DIR, CONFIG_MASTER, "relay_master.yaml").await;
+    let mut slave_server  = spawn_server(TEST_DIR, CONFIG_SLAVE, "relay_slave.yaml").await;
 
-    std::thread::sleep(Duration::from_secs(4));
+    tokio::time::sleep(Duration::from_secs(4)).await;
 
     let (mut source_sock, media) = spawn_source_manual(AUTH_SOURCE, ADMIN_MASTER, MOUNT_SOURCE).unwrap();
     let stdout                   = media.stdout.unwrap();
@@ -172,60 +173,53 @@ fn relaying() {
 
     let mut format = probed.format;
 
-    let r = test_utils::reqwest::blocking::Client::new()
-        .get(format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=1&song=1", AUTH_SOURCE, ADMIN_MASTER, MOUNT_SOURCE))
-        .send()
-        .unwrap()
-        .status();
+    let r = test_utils::get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=1&song=1", AUTH_SOURCE, ADMIN_MASTER, MOUNT_SOURCE)).await;
     assert_eq!(r, 200);
 
     let packet1 = format.next_packet().unwrap();
     assert!(source_sock.write_all(packet1.buf()).is_ok());
 
     // Mount should not be present in slave
-    let mounts = test_utils::reqwest::blocking::Client::new()
-        .get(format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN_SLAVE))
-        .send()
-        .unwrap()
-        .json::<serde_json::Value>()
-        .unwrap();
+    let mounts = test_utils::get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN_SLAVE)).await
+        .json::<serde_json::Value>().await.unwrap();
     let mounts = mounts.as_object()
         .unwrap();
     assert!(!mounts.contains_key(MOUNT_SOURCE));
 
     // Waiting for next mount poll by slave server
-    std::thread::sleep(Duration::from_secs(5));
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     let packet2 = format.next_packet().unwrap();
     assert!(source_sock.write_all(packet2.buf()).is_ok());
 
-    std::thread::sleep(Duration::from_secs(5));
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
-    let mounts = test_utils::reqwest::blocking::Client::new()
-        .get(format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN_SLAVE))
-        .send()
-        .unwrap()
-        .json::<serde_json::Value>()
-        .unwrap();
+    let mounts = test_utils::get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN_SLAVE)).await
+        .json::<serde_json::Value>().await.unwrap();
     let mounts = mounts.as_object()
         .unwrap();
     assert!(mounts.contains_key(MOUNT_SOURCE));
 
-    let mut r = test_utils::reqwest::blocking::Client::new()
-        .get(format!("http://{}{}", BASE_SLAVE, MOUNT_SOURCE))
+    let resp = test_utils::reqwest::Client::new()
+        .get(&format!("http://{}{}", BASE_SLAVE, MOUNT_SOURCE))
         .header("Icy-Metadata", "1")
         .send()
+        .await
         .unwrap();
     
-    assert_eq!(r.status().as_u16(), 200);
+    assert_eq!(resp.status().as_u16(), 200);
+    let mut r = resp
+        .bytes_stream()
+        .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        .into_async_read();
 
     let packet3 = format.next_packet().unwrap();
     assert!(source_sock.write_all(packet3.buf()).is_ok());
 
     let mut buf = [0u8; 3000];
     let mut len = [0u8; 1];
-    assert!(r.read_exact(&mut buf).is_ok());
-    r.read_exact(&mut len).unwrap();
+    r.read_exact(&mut buf).await.unwrap();
+    r.read_exact(&mut len).await.unwrap();
 
     assert_eq!(&buf[0..packet1.buf().len()], packet1.buf());
     assert_eq!(&buf[packet1.buf().len()..packet1.buf().len()+packet2.buf().len()], packet2.buf());
@@ -233,20 +227,16 @@ fn relaying() {
 
     let metadata_len = (len[0] as usize) << 4;
     let mut metadata_buf = vec![0u8; metadata_len];
-    r.read_exact(&mut metadata_buf).unwrap();
+    r.read_exact(&mut metadata_buf).await.unwrap();
     let metadata = std::str::from_utf8(&metadata_buf).unwrap();
     assert_eq!((Some("1".to_owned()), Some("1".to_owned())), metadata_decode(metadata).unwrap());
 
     // Restarting master, but we also add a slave user
-    let master_server1 = spawn_server_blocking(TEST_DIR, CONFIG_MASTER1, "relay_master.yaml");
-    std::thread::sleep(Duration::from_secs(2));
+    let master_server1 = spawn_server(TEST_DIR, CONFIG_MASTER1, "relay_master.yaml").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
     master_server = master_server1;
 
-    let ret = test_utils::reqwest::blocking::Client::new()
-        .get(format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=2&song=2", AUTH_SOURCE, ADMIN_MASTER, MOUNT_SOURCE))
-        .send()
-        .unwrap()
-        .status();
+    let ret = test_utils::get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=2&song=2", AUTH_SOURCE, ADMIN_MASTER, MOUNT_SOURCE)).await;
     assert_eq!(ret, 200);
 
     let packet4 = format.next_packet().unwrap();
@@ -260,17 +250,17 @@ fn relaying() {
 
     let mut buf = [0u8; 3000];
     let mut len = [0u8; 1];
-    assert!(r.read_exact(&mut buf).is_ok());
-    r.read_exact(&mut len).unwrap();
+    r.read_exact(&mut buf).await.unwrap();
+    r.read_exact(&mut len).await.unwrap();
     let mut metadata_buf = vec![0u8; metadata_len];
-    r.read_exact(&mut metadata_buf).unwrap();
+    r.read_exact(&mut metadata_buf).await.unwrap();
     let metadata = std::str::from_utf8(&metadata_buf).unwrap();
     assert_eq!((Some("2".to_owned()), Some("2".to_owned())), metadata_decode(metadata).unwrap());
 
     // Now we want slave to run in authenticated mode
     
-    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE1, "relay_slave.yaml");
-    std::thread::sleep(Duration::from_secs(2));
+    let slave_server1 = spawn_server(TEST_DIR, CONFIG_SLAVE1, "relay_slave.yaml").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
     slave_server = slave_server1;
 
     for _ in 0..3 {
@@ -279,7 +269,7 @@ fn relaying() {
     }
 
     let mut buf = [0u8; 3000];
-    assert!(r.read_exact(&mut buf).is_ok());
+    r.read_exact(&mut buf).await.unwrap();
 
     drop(r);
     // Now enabling on_demand mode
@@ -289,46 +279,52 @@ fn relaying() {
         assert!(source_sock.write_all(packet.buf()).is_ok());
     }
 
-    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE2, "relay_slave.yaml");
-    std::thread::sleep(Duration::from_secs(2));
+    let slave_server1 = spawn_server(TEST_DIR, CONFIG_SLAVE2, "relay_slave.yaml").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
     slave_server = slave_server1;
 
     let packet = format.next_packet().unwrap();
     assert!(source_sock.write_all(packet.buf()).is_ok());
 
     // Waiting until source becomes inactive
-    std::thread::sleep(Duration::from_secs(2));
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     let packet = format.next_packet().unwrap();
     assert!(source_sock.write_all(packet.buf()).is_ok());
 
-    let mut r = test_utils::reqwest::blocking::Client::new()
-        .get(format!("http://{}{}", BASE_SLAVE, MOUNT_SOURCE))
+    let resp = test_utils::reqwest::Client::new()
+        .get(&format!("http://{}{}", BASE_SLAVE, MOUNT_SOURCE))
         .header("Icy-Metadata", "1")
         .send()
+        .await
         .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let mut r = resp
+        .bytes_stream()
+        .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        .into_async_read();
 
     // We should be able to read from start
     let mut buf = [0u8; 3000];
     let mut len = [0u8; 1];
-    assert!(r.read_exact(&mut buf).is_ok());
-    r.read_exact(&mut len).unwrap();
+    r.read_exact(&mut buf).await.unwrap();
+    r.read_exact(&mut len).await.unwrap();
     assert_eq!(&buf[0..packet1.buf().len()], packet1.buf());
 
     // Now we want to return back from authenticated to transparent
-    let slave_server1 = spawn_server_blocking(TEST_DIR, CONFIG_SLAVE, "relay_slave.yaml");
-    std::thread::sleep(Duration::from_secs(2));
+    let slave_server1 = spawn_server(TEST_DIR, CONFIG_SLAVE, "relay_slave.yaml").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
     slave_server = slave_server1;
 
     let mut buf = [0u8; 3000];
-    assert!(r.read_exact(&mut buf).is_ok());
+    r.read_exact(&mut buf).await.unwrap();
 
     drop(r);
 
     // Removing slave user from master, it's safe to do so because we no longer use authenticated
     // mode in slave
-    let master_server1 = spawn_server_blocking(TEST_DIR, CONFIG_MASTER, "relay_master.yaml");
-    std::thread::sleep(Duration::from_secs(2));
+    let master_server1 = spawn_server(TEST_DIR, CONFIG_MASTER, "relay_master.yaml").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
     master_server = master_server1;
 
     for _ in 0..3 {
@@ -336,12 +332,8 @@ fn relaying() {
         assert!(source_sock.write_all(packet.buf()).is_ok());
     }
     
-    let r = test_utils::reqwest::blocking::Client::new()
-        .get(format!("http://{}{}", BASE_SLAVE, MOUNT_SOURCE))
-        .header("Icy-Metadata", "1")
-        .send()
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 200);
+    let r = test_utils::get_status_code(&format!("http://{}{}", BASE_SLAVE, MOUNT_SOURCE)).await;
+    assert_eq!(r, 200);
 
     drop(master_server);
     drop(slave_server);
