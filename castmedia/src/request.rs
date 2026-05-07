@@ -118,7 +118,7 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
     }
 
     let queries = utils::get_queries(path);
-    let path    = clean_path::clean(path).to_str().map(|x| x.to_string()).ok_or(anyhow::anyhow!("Can't pase path"))?;
+    let path    = clean_path::clean(path).to_str().map(|x| x.to_string()).ok_or(anyhow::anyhow!("Can't parse path"))?;
 
     // Now we check request made by user
     match request.method {
