@@ -204,34 +204,45 @@ pub struct Session {
     pub addr: SocketAddr
 }
 
-async fn accept_connections(serv: Arc<Server>, listener: TcpListener, addr_type: AddrType) {
+async fn accept_connections_plain(serv: Arc<Server>, listener: TcpListener, addr_type: AddrType) {
+    accept_loop(serv, &listener, addr_type, None).await;
+}
+
+async fn accept_loop(serv: Arc<Server>, listener: &TcpListener, addr_type: AddrType, tls: Option<TlsAcceptor>) {
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
                 let serv_clone = serv.clone();
-                tokio::spawn(async move {
-                    serv_clone.stats.connections.fetch_add(1, Ordering::Relaxed);
-                    // Here we are trying to acquire the semaphore before handling connection
-                    // If we can't, we already hit the max number of clients allowed and we can't
-                    // do nothing
-                    let sem = serv_clone.max_clients.clone();
-                    let aq  = sem.try_acquire();
-                    if let Ok(_guard) = aq {
-                        client::handle(ClientSession {
-                            addr_type,
-                            server: serv_clone,
-                            // Use bufferer for socket to reduce syscalls we make
-                            stream: Stream(Box::new(BufStream::new(stream))),
-                            addr,
-                            user: None
-                        }).await;
+                match &tls {
+                    Some(tls) => {
+                        let tls = tls.clone();
+                        tokio::spawn(async move {
+                            let tls_stream = match tls.accept(stream).await {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    error!("Tls connection failed with {}: {}", addr, e);
+                                    return;
+                                }
+                            };
+                            handle_accepted(serv_clone, addr_type, Stream(Box::new(BufStream::new(tls_stream))), addr).await;
+                        });
+                    },
+                    None => {
+                        tokio::spawn(handle_accepted(serv_clone, addr_type, Stream(Box::new(BufStream::new(stream))), addr));
                     }
-                });
+                }
             },
-            Err(e) => {
-                error!("Failed to accept connection: {}", e);
-            }
+            Err(e) => error!("Failed to accept connection: {}", e),
         }
+    }
+}
+
+async fn handle_accepted(serv: Arc<Server>, addr_type: AddrType, stream: Stream, addr: SocketAddr) {
+    serv.stats.connections.fetch_add(1, Ordering::Relaxed);
+    let sem = serv.max_clients.clone();
+    let aq  = sem.try_acquire();
+    if let Ok(_guard) = aq {
+        client::handle(ClientSession { addr_type, server: serv, stream, addr, user: None }).await;
     }
 }
 
@@ -254,7 +265,7 @@ async fn tls_accept_connections(serv: Arc<Server>, listener: TcpListener, addr_t
 
     loop {
         tokio::select! {
-            _ = tls_connection_acceptor(&serv, &listener, addr_type, &tls_acceptor) => {
+            _ = accept_loop(serv.clone(), &listener, addr_type, Some(tls_acceptor.clone())) => {
                 continue;
             },
             u = tls_update_stream.next() => {
@@ -294,46 +305,6 @@ async fn load_cert(tls_identity: &TlsIdentity, old_hash: u64) -> Result<Option<(
         hash,
         tokio_native_tls::TlsAcceptor::from(native_tls::TlsAcceptor::new(tls_id)?)
     )))
-}
-
-#[inline]
-async fn tls_connection_acceptor(serv: &Arc<Server>, listener: &TcpListener, addr_type: AddrType, tls_acceptor: &TlsAcceptor) {
-    loop {
-        match listener.accept().await {
-            Ok((stream, addr)) => {
-                let tls_acc_clone = tls_acceptor.clone();
-                let serv_clone    = serv.clone();
-                tokio::spawn(async move {
-                    serv_clone.stats.connections.fetch_add(1, Ordering::Relaxed);
-                    // Here we are trying to acquire the semaphore before handling connection
-                    // If we can't, we already hit the max number of clients allowed and we can't
-                    // do nothing
-                    let sem = serv_clone.max_clients.clone();
-                    let aq  = sem.try_acquire();
-                    if let Ok(_guard) = aq {
-                        let tls_stream = match tls_acc_clone.accept(stream).await {
-                            Ok(v) => v,
-                            Err(e) => {
-                                error!("Tls connection failed with {}: {}", addr, e);
-                                return;
-                            }
-                        };
-                        client::handle(ClientSession {
-                            addr_type,
-                            server: serv_clone,
-                            // Use bufferer for socket to reduce syscalls we make
-                            stream: Stream(Box::new(BufStream::new(tls_stream))),
-                            addr,
-                            user: None
-                        }).await;
-                    }
-                });
-            },
-            Err(e) => {
-                error!("Failed to accept connection: {}", e);
-            }
-        }
-    }
 }
 
 fn set_socket(bind: SocketAddr) -> Result<TcpListener> {
@@ -408,7 +379,7 @@ pub async fn listener(config: ServerSettings) {
                 )
             );
         } else {
-            set.spawn(accept_connections(serv.clone(), listener, AddrType::Admin));
+            set.spawn(accept_connections_plain(serv.clone(), listener, AddrType::Admin));
         }
     }
     
@@ -432,7 +403,7 @@ pub async fn listener(config: ServerSettings) {
                 )
             );
         } else {
-            set.spawn(accept_connections(serv.clone(), listener, is_auth));
+            set.spawn(accept_connections_plain(serv.clone(), listener, is_auth));
         }
     }
 
