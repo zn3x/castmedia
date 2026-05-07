@@ -1,10 +1,9 @@
 use std::{time::Duration, net::SocketAddr};
 use anyhow::Result;
 use httparse::Status;
-use tokio::io::AsyncReadExt;
 
 use crate::{
-    server::{ClientSession, Stream},
+    server::ClientSession,
     utils::{self, get_basic_auth, Query, get_header}, response
 };
 
@@ -46,32 +45,10 @@ pub struct ApiRequest {
     pub queries: Vec<Query>
 }
 
-async fn read_request_header(stream: &mut Stream, buf: &mut Vec<u8>, max_len: usize) -> Result<()> {
-    let mut byte = [ 0; 1 ];
-    while buf.len() < 4 || buf[buf.len()-4..].ne(b"\r\n\r\n") {
-        match stream.read(&mut byte).await {
-            Ok(read) => if read > 0 {
-                buf.push(byte[0]);
-                if buf.len() > max_len {
-                    // Stop any potential attack
-                    return Err(anyhow::Error::msg("Header is too big"));
-                }
-            } else {
-                // Here we already read whole header
-                break;
-            }
-            Err(e) => return Err(anyhow::Error::from(e))
-        }
-    }
-
-    Ok(())
-}
-
 pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Request<'a>) -> Result<RequestType> {
-    // We first read header using predefined timeout
-    tokio::time::timeout(
+    request.headers_buf = tokio::time::timeout(
         Duration::from_millis(session.server.config.limits.header_timeout),
-        read_request_header(&mut session.stream, &mut request.headers_buf, session.server.config.limits.http_max_len)
+        utils::read_http_headers(&mut session.stream, session.server.config.limits.http_max_len)
     ).await??;
 
 

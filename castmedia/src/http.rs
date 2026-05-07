@@ -7,7 +7,7 @@ use tokio::{
 use tokio_native_tls::native_tls::TlsConnector;
 use url::Url;
 
-use crate::{server::Stream, utils::get_header};
+use crate::{server::Stream, utils};
 
 pub struct HttpClient<'a> {
     stream: Stream,
@@ -87,27 +87,8 @@ impl ResponseReader {
         self.stream
     }
 
-    /// Read header only and return it's buffer
     pub async fn read_headers(&mut self) -> Result<Vec<u8>> {
-        let mut buf  = Vec::new();
-		let mut byte = [ 0; 1 ];
-		loop {
-			match self.stream.read(&mut byte).await {
-				Ok(_) => {
-					buf.extend_from_slice(&byte);
-					// checking if double crlf is in header
-                    if buf.len() >= 4 && buf[buf.len()-4..].eq(b"\r\n\r\n") {
-						break;
-					} else if buf.len() > self.http_max_len {
-						// Stop any potential attack
-						return Err(anyhow::Error::msg("long header"))
-					}
-				},
-				Err(e) => return Err(e.into())
-			}
-		};
-
-        Ok(buf)
+        utils::read_http_headers(&mut self.stream, self.http_max_len).await
     }
 
     /// Read content-length response with predicted content type
@@ -132,7 +113,7 @@ impl ResponseReader {
         }
 
         // Checking content-type of body
-        match get_header("content-type", resp.headers) {
+        match utils::get_header("content-type", resp.headers) {
             Some(header) => {
                 if !header.starts_with(content_type.as_bytes()) {
                     return Err(anyhow::Error::msg(format!("Response must be of type {}", content_type)));
@@ -144,7 +125,7 @@ impl ResponseReader {
         }
 
         // Checking if body length match what is in content-length
-        let len = match get_header("content-length", resp.headers) {
+        let len = match utils::get_header("content-length", resp.headers) {
             Some(header) => {
                 std::str::from_utf8(header)?
                     .parse::<usize>()?

@@ -6,6 +6,7 @@ use passfd::FdPassingExt;
 use tokio::{net::TcpStream, io::BufStream};
 
 use crate::server::Stream;
+use tokio::io::AsyncReadExt;
 
 #[derive(Debug)]
 pub struct Query {
@@ -86,6 +87,27 @@ pub fn concat_path(url: &str, path: &str) -> String {
     }
 
     url
+}
+
+pub async fn read_http_headers(stream: &mut Stream, max_len: usize) -> Result<Vec<u8>> {
+    let mut buf  = Vec::new();
+    let mut byte = [0; 1];
+    loop {
+        match stream.read(&mut byte).await {
+            Ok(0) => break,
+            Ok(_) => {
+                buf.push(byte[0]);
+                if buf.len() >= 4 && buf[buf.len()-4..] == *b"\r\n\r\n" {
+                    break;
+                }
+                if buf.len() > max_len {
+                    return Err(anyhow::Error::msg("Header is too big"));
+                }
+            },
+            Err(e) => return Err(e.into())
+        }
+    }
+    Ok(buf)
 }
 
 pub fn read_socket_from_unix_socket(unixsock: &mut UnixStream) -> Result<TcpStream> {
