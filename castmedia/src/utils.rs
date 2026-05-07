@@ -7,64 +7,6 @@ use tokio::{net::TcpStream, io::BufStream};
 
 use crate::server::Stream;
 
-// Shamelessly taken from clean_path crate https://docs.rs/clean-path/latest/clean_path/
-pub fn clean_path(path: &str) -> String {
-    match path {
-        "" => return ".".to_string(),
-        "." => return ".".to_string(),
-        ".." => return "..".to_string(),
-        "/" => return "/".to_string(),
-        _ => {}
-    }
-
-    let mut out = vec![];
-    let is_root = path.starts_with('/');
-
-    let path = path.trim_end_matches('/');
-    let num_segments = path.split('/').count();
-
-    for segment in path.split('/') {
-        match segment {
-            "" => continue,
-            "." => {
-                if num_segments == 1 {
-                    out.push(segment);
-                };
-                continue;
-            }
-            ".." => {
-                let previous = out.pop();
-                if previous.is_some() && !can_backtrack(previous.unwrap()) {
-                    out.push(previous.unwrap());
-                    out.push(segment);
-                } else if previous.is_none() && !is_root {
-                    out.push(segment);
-                };
-                continue;
-            }
-            _ => {
-                out.push(segment);
-            }
-        };
-    }
-
-    let mut out_str = out.join("/");
-
-    if is_root {
-        out_str = format!("/{}", out_str);
-    }
-
-    if out_str.is_empty() {
-        return ".".to_string();
-    }
-
-    out_str
-}
-
-fn can_backtrack(segment: &str) -> bool {
-    !matches!(segment, "." | "..")
-}
-
 #[derive(Debug)]
 pub struct Query {
     pub key: String,
@@ -164,16 +106,6 @@ pub fn read_stream_from_unix_socket(unixsock: &mut UnixStream) -> Result<(Stream
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn clean_path() {
-        assert_eq!(super::clean_path("././file"), "file");
-        assert_eq!(super::clean_path("./../file"), "../file");
-        assert_eq!(super::clean_path("./../"), "..");
-        assert_eq!(super::clean_path("/file.mp3"), "/file.mp3");
-        assert_eq!(super::clean_path("/a/b/"), "/a/b");
-        assert_eq!(super::clean_path("/a/../b/"), "/b");
-    }
-
     #[test]
     fn queries() {
         let q = super::get_queries("/a?a=b&b=c");

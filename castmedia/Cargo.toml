@@ -29,6 +29,7 @@ socket2.workspace = true
 zxcvbn.workspace = true
 scrypt.workspace = true
 diatomic-waker.workspace = true
+clean-path.workspace = true
 
 [dev-dependencies]
 tokio = { version = "*", features = [ "full" ] }
