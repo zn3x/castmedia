@@ -10,7 +10,7 @@ use crate::{
     server::ClientSession,
     request::AdminRequest,
     response::{self, ChunkedResponse},
-    auth::{self, AllowedAuthType}, utils,
+    auth::{self, RequiredRole}, utils,
     broadcast::broadcast_metadata,
     source::{MoveClientsCommand, MoveClientsType, SourceAccessType}
 };
@@ -18,7 +18,7 @@ use crate::{
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
     match utils::get_queries_val_for_keys(&["mode", "mount", "song", "url"], &req.queries).as_slice() {
         &[Some(mode), Some(mount), song, url] => {
-            auth::auth(session, AllowedAuthType::SourceApi, req.auth, mount).await?;
+            auth::authenticate(session, req.auth, RequiredRole::SourceApi { mount: mount.to_string() }).await?;
             let sid = &session.server.config.info.id;
 
             if !mode.eq("updinfo") {
@@ -52,7 +52,7 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
 async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
     match utils::get_queries_val_for_keys(&["mount", "fallback"], &req.queries).as_slice() {
         &[Some(mount), fallback] => {
-            auth::auth(session, AllowedAuthType::SourceApi, req.auth, mount).await?;
+            auth::authenticate(session, req.auth, RequiredRole::SourceApi { mount: mount.to_string() }).await?;
             let sid = &session.server.config.info.id;
 
             let success = match session.server.sources.write().await.get_mut(mount) {
@@ -79,7 +79,7 @@ async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Resu
 }
 
 async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    auth::admin_auth(session, req.auth).await?;
+    auth::authenticate(session, req.auth, RequiredRole::Admin).await?;
     let sid = &session.server.config.info.id;
 
 
@@ -128,7 +128,7 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
 }
 
 async fn stats(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    auth::admin_auth(session, req.auth).await?;
+    auth::authenticate(session, req.auth, RequiredRole::Admin).await?;
     let sid = &session.server.config.info.id;
 
     let stats = json!({
@@ -157,7 +157,7 @@ async fn stats(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
 }
 
 async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    auth::admin_auth(session, req.auth).await?;
+    auth::authenticate(session, req.auth, RequiredRole::Admin).await?;
     let sid = &session.server.config.info.id;
 
     match utils::get_queries_val_for_keys(&["mount", "destination"], &req.queries).as_slice() {
@@ -209,7 +209,7 @@ enum SourceKillSwitchFound {
 }
 
 async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    auth::admin_auth(session, req.auth).await?;
+    auth::authenticate(session, req.auth, RequiredRole::Admin).await?;
     let sid = &session.server.config.info.id;
 
     match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
@@ -251,7 +251,7 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
 }
 
 async fn list_clients(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    auth::admin_auth(session, req.auth).await?;
+    auth::authenticate(session, req.auth, RequiredRole::Admin).await?;
     let sid = &session.server.config.info.id;
 
     let mount = match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
@@ -307,7 +307,7 @@ enum ClientKillSwitchFound {
 }
 
 async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    auth::admin_auth(session, req.auth).await?;
+    auth::authenticate(session, req.auth, RequiredRole::Admin).await?;
     let sid = &session.server.config.info.id;
 
     match utils::get_queries_val_for_keys(&["mount", "id"], &req.queries).as_slice() {
@@ -357,7 +357,7 @@ async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<(
 }
 
 async fn server_shutdown(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    auth::admin_auth(session, req.auth).await?;
+    auth::authenticate(session, req.auth, RequiredRole::Admin).await?;
     let sid = &session.server.config.info.id;
 
     _ = response::ok_200(&mut session.stream, sid).await;
@@ -368,7 +368,7 @@ async fn server_shutdown(session: &mut ClientSession, req: AdminRequest) -> Resu
 }
 
 async fn mount_updates(mut session: ClientSession, req: AdminRequest) -> Result<()> {
-    auth::auth(&mut session, AllowedAuthType::SlaveOrYP, req.auth, "").await?;
+    auth::authenticate(&mut session, req.auth, RequiredRole::SlaveOrYP).await?;
 
     ChunkedResponse::new(&mut session.stream, &session.server.config.info.id).await?;
 

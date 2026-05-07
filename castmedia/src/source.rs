@@ -152,7 +152,7 @@ impl Source {
 }
 
 pub async fn handle_request(mut session: ClientSession, request: Request<'_>, req: SourceRequest) -> Result<()> {
-    if let Err(e) = auth::auth(&mut session, auth::AllowedAuthType::SourceMount, req.auth, &req.mountpoint).await {
+    if let Err(e) = auth::authenticate(&mut session, req.auth, auth::RequiredRole::SourceMount { mount: req.mountpoint.clone() }).await {
         response::internal_error(&mut session.stream, &session.server.config.info.id).await?;
         return Err(anyhow::Error::msg(format!("Source authentication failed, cause: {}", e)));
     }

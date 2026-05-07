@@ -5,10 +5,7 @@ use std::{
 };
 use chrono::{DateTime, Local};
 use futures::{StreamExt, executor::block_on};
-use qanat::{
-    broadcast::{channel, Receiver, Sender},
-    mpsc
-};
+use qanat::broadcast::{channel, Receiver, Sender};
 use tokio::{
     net::{TcpListener, TcpStream},
     task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream, AsyncWriteExt}, sync::{Semaphore, RwLock}
@@ -22,7 +19,7 @@ use anyhow::Result;
 use crate::{
     config::{ServerSettings, TlsIdentity, Account}, 
     client, source::Source, migrate::MigrateCommand,
-    auth::{self, HashCalculation}, relay,
+    relay,
     auth::UserRef
 };
 
@@ -98,8 +95,6 @@ pub struct Server {
     pub migrate_tx: Sender<Arc<MigrateCommand>>,
     /// Receiver to listener when migration happens
     pub migrate: Receiver<Arc<MigrateCommand>>,
-    /// In order not to block async tasks, we have dedicated thread to calculate hashes
-    pub hash_calculator: mpsc::UnboundedSender<HashCalculation>,
     /// Relay specific parameters
     pub relay_params: RelayParams
 }
@@ -377,7 +372,6 @@ pub async fn listener(config: ServerSettings) {
     let init_size   = 1.try_into().expect("1 should not be 0");
     let (tx, rx)    = channel(init_size);
     let mut migrate = rx.clone();
-    let (tx1, rx1)  = mpsc::unbounded_channel();
     let (tx2, rx2)  = channel(init_size);
     let serv        = Arc::new(Server {
         max_clients: Arc::new(Semaphore::new(config.limits.clients)),
@@ -393,12 +387,6 @@ pub async fn listener(config: ServerSettings) {
         stats: ServerStats::new(start_time.timestamp()),
         migrate_tx: tx,
         migrate: rx,
-        hash_calculator: tx1
-    });
-
-    let serv_clone = serv.clone();
-    tokio::task::spawn_blocking(move || {
-        auth::password_hasher_thread(serv_clone, rx1);
     });
 
     let mut set = JoinSet::new();
