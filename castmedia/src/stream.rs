@@ -15,6 +15,7 @@ use qanat::{oneshot, mpsc};
 use tokio::{time::timeout, io::AsyncReadExt};
 
 use crate::{
+    utils,
     server::{Stream, Session, Server},
     source::{SourceBroadcast, SourceStats, MoveClientsCommand, MoveClientsType, SourceAccessType},
     migrate::{
@@ -386,10 +387,7 @@ async fn migrate_stream(s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
     }
 
     // We have finished all preparations for migration
-    // Idling here till process exits
-    loop {
-        tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
-    }
+    utils::hang().await;
 }
 
 async fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReader,

@@ -77,6 +77,18 @@ pub struct ResponseReader {
     http_max_len: usize
 }
 
+pub fn parse_http_response<'a>(headers_buf: &'a [u8], resp: &mut httparse::Response<'a, 'a>) -> Result<()> {
+    match resp.parse(headers_buf) {
+        Ok(httparse::Status::Complete(_)) => {},
+        Ok(httparse::Status::Partial) => return Err(anyhow::Error::msg("Incomplete response")),
+        Err(e) => return Err(e.into())
+    };
+    if !resp.code.is_some_and(|c| c == 200) {
+        return Err(anyhow::Error::msg("Unexpected response status code"));
+    }
+    Ok(())
+}
+
 impl ResponseReader {
     pub fn new(stream: Stream, http_max_len: usize) -> Self {
         Self { stream, http_max_len }
@@ -93,24 +105,11 @@ impl ResponseReader {
 
     /// Read content-length response with predicted content type
     pub async fn read_to_end(&mut self, content_type: &str) -> Result<Vec<u8>> {
-        // We start off by reading raw server response then we parse it
         let headers_buf = self.read_headers().await?;
         let mut headers = [httparse::EMPTY_HEADER; 32];
         let mut resp    = httparse::Response::new(&mut headers);
 
-        match resp.parse(&headers_buf) {
-            Ok(httparse::Status::Complete(_)) => {},
-            Ok(httparse::Status::Partial) => return Err(anyhow::Error::msg("Incomplete response")),
-            Err(e) => return Err(e.into())
-        };
-
-        // Now we do sanity checks on response
-        match resp.code {
-            Some(code) => if code != 200 {
-                return Err(anyhow::Error::msg("Status code is not 200"));
-            },
-            _ => return Err(anyhow::Error::msg("Received unexpected response"))
-        }
+        parse_http_response(&headers_buf, &mut resp)?;
 
         // Checking content-type of body
         match utils::get_header("content-type", resp.headers) {

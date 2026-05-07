@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     broadcast::relay_broadcast_metadata, client::{RelayStream, SourceInfo, StreamOnDemand},
-    config::MasterServerRelayScheme, http::{ChunkedResponseReader, HttpClient},
+    config::MasterServerRelayScheme, http::{self, ChunkedResponseReader, HttpClient},
     internal_api::v1::{
         IcyProperties, MigrateConnection, MigrateInactiveOnDemandSource, MigrateMasterMountUpdates, MigrateSlaveMountUpdates, RelayedInfo
     },
@@ -27,7 +27,7 @@ use crate::{
     server::{ClientSession, Server, Session, Stream},
     source::{Source, SourceAccessType},
     stream::RelayBroadcastStatus,
-    utils::{basic_auth, concat_path, get_header}
+    utils::{self, basic_auth, concat_path, get_header}
 };
 
 #[derive(Debug, Deserialize)]
@@ -237,9 +237,7 @@ async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat
         });
     }
 
-    loop {
-        tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
-    }
+    utils::hang().await;
 }
 
 async fn fetch_available_mounts(server: &Server, url: &Url) -> Result<MasterMounts> {
@@ -274,21 +272,10 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
 
     serv.stats.source_relay_connections.fetch_add(1, Ordering::Relaxed);
 
-    // Parsing response headers
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut resp    = httparse::Response::new(&mut headers);
+    http::parse_http_response(&headers_buf, &mut resp)?;
 
-    match resp.parse(&headers_buf) {
-        Ok(httparse::Status::Complete(_)) => {},
-        Ok(httparse::Status::Partial) => return Err(anyhow::Error::msg("Incomplete response")),
-        Err(e) => return Err(e.into())
-    };
-
-    if !resp.code.is_some_and(|c| c == 200) {
-        return Err(anyhow::Error::msg("Unexpected response status code"));
-    }
-
-    // We should check if this is an icecast server
     if get_header("icy-name", resp.headers).is_none() {
         return Err(anyhow::Error::msg("not an icecast server"));
     }
@@ -349,9 +336,7 @@ pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
                         let migrate = migrate
                             .expect("Got migrate notice with closed mpsc");
                         _ = migrate.slave_mountupdates.send(None);
-                        loop {
-                            tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
-                        }
+                        utils::hang().await;
                     }
                 };
                 authenticated_mode_event_listener(&serv, stream, master_ind, m).await;
@@ -376,23 +361,11 @@ async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, master_ind:
 
     serv.stats.source_relay_connections.fetch_add(1, Ordering::Relaxed);
 
-    // Parsing response headers
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut resp    = httparse::Response::new(&mut headers);
 
-    match resp.parse(&headers_buf) {
-        Ok(httparse::Status::Complete(_)) => {},
-        Ok(httparse::Status::Partial) => return Err(anyhow::Error::msg("Incomplete response")),
-        Err(e) => return Err(e.into())
-    };
-
-    if !resp.code.is_some_and(|c| c == 200) {
-        return Err(anyhow::Error::msg("Unexpected response status code"));
-    }
+    http::parse_http_response(&headers_buf, &mut resp)?;
     
-    // TODO: check transfer-encoding??
-    // Shouldn't matter anyway
-
     Ok(reader.get_inner_stream())
 }
 
@@ -561,9 +534,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                         crate::migrate::MigrateSlaveMountUpdatesInfo { info, sock: stream }
                 ));
             }
-            loop {
-                tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
-            }
+            utils::hang().await;
         }
     }
     
@@ -816,9 +787,7 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
                     }
                 }
 
-                loop {
-                    tokio::time::sleep(Duration::from_secs(u64::MAX)).await;
-                }
+                utils::hang().await;
             }
         }
 

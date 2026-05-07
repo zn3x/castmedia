@@ -110,6 +110,11 @@ pub async fn read_http_headers(stream: &mut Stream, max_len: usize) -> Result<Ve
     Ok(buf)
 }
 
+pub async fn hang() -> ! {
+    std::future::pending::<()>().await;
+    unreachable!()
+}
+
 pub fn read_socket_from_unix_socket(unixsock: &mut UnixStream) -> Result<TcpStream> {
     let fd       = unixsock.recv_fd()?;
     // Safety: We just got the fd from older instance, we are sure it's a tcp socket
