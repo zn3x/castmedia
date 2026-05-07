@@ -24,89 +24,54 @@ Access-Control-Allow-Origin: *\r\n\r\n",
     Ok(())
 }
 
-pub async fn method_not_allowed(stream: &mut Stream, server_id: &str) -> Result<()> {
-    stream.write_all(b"HTTP/1.1 405 Method Not Allowed\r\n\
-Connection: close\r\n").await?;
-
-    server_info(stream, server_id).await?;
-    Ok(())
+async fn write_status(stream: &mut Stream, server_id: &str, status: &[u8]) -> Result<()> {
+    stream.write_all(status).await?;
+    server_info(stream, server_id).await
 }
 
-pub async fn not_found(stream: &mut Stream, server_id: &str) -> Result<()> {
-    stream.write_all(b"HTTP/1.1 404 File Not Found\r\n\
-Connection: close\r\n").await?;
-
-    server_info(stream, server_id).await?;
-    Ok(())
-}
-
-pub async fn authentication_needed(stream: &mut Stream, server_id: &str) -> Result<()> {
-    stream.write_all(b"HTTP/1.1 401 Authorization Required\r\n\
-WWW-Authenticate: Basic realm=\"Icy Server\"\r\n\
-Connection: close\r\n").await?;
-
-    server_info(stream, server_id).await?;
-    Ok(())
-}
-
-pub async fn internal_error(stream: &mut Stream, server_id: &str) -> Result<()> {
-    stream.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\
-Connection: close\r\n").await?;
-
-    server_info(stream, server_id).await?;
-    Ok(())
-}
-
-pub async fn forbidden(stream: &mut Stream, server_id: &str, message: &str) -> Result<()> {
-    stream.write_all(format!("HTTP/1.1 403 Forbidden\r\n\
-Content-Type: text/plain; charset=utf-8\r\n\
-Content-Length: {}\r\n\
-Connection: close\r\n",
-        message.len()
-    ).as_bytes()).await?;
-
-    server_info(stream, server_id).await?;
-    stream.write_all(message.as_bytes()).await?;
-    stream.flush().await?;
-
-    Ok(())
-}
-
-pub async fn bad_request(stream: &mut Stream, server_id: &str, message: &str) -> Result<()> {
-    stream.write_all(format!("HTTP/1.1 400 Bad request\r\n\
-Content-Type: text/plain; charset=utf-8\r\n\
-Content-Length: {}\r\n\
-Connection: close\r\n",
-        message.len()
-    ).as_bytes()).await?;
-
-    server_info(stream, server_id).await?;
-    stream.write_all(message.as_bytes()).await?;
-    stream.flush().await?;
-
-    Ok(())
-}
-
-pub async fn ok_200(stream: &mut Stream, server_id: &str) -> Result<()> {
-    stream.write_all(b"HTTP/1.1 200 OK\r\n\
-Connection: close\r\n").await?;
-
-    server_info(stream, server_id).await?;
-    Ok(())
-}
-
-pub async fn ok_200_json_body(stream: &mut Stream, server_id: &str, body: &[u8]) -> Result<()> {
-    stream.write_all(format!("HTTP/1.1 200 OK\r\n\
+async fn write_status_body(stream: &mut Stream, server_id: &str, status_header: &str, content_type: &str, body: &[u8]) -> Result<()> {
+    stream.write_all(format!("{}\r\n\
 Connection: close\r\n\
 Content-Length: {}\r\n\
-Content-Type: application/json; charset=utf-8\r\n",
-        body.len()
+Content-Type: {}\r\n",
+        status_header, body.len(), content_type
     ).as_bytes()).await?;
-
     server_info(stream, server_id).await?;
     stream.write_all(body).await?;
     stream.flush().await?;
     Ok(())
+}
+
+pub async fn method_not_allowed(stream: &mut Stream, server_id: &str) -> Result<()> {
+    write_status(stream, server_id, b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n").await
+}
+
+pub async fn not_found(stream: &mut Stream, server_id: &str) -> Result<()> {
+    write_status(stream, server_id, b"HTTP/1.1 404 File Not Found\r\nConnection: close\r\n").await
+}
+
+pub async fn authentication_needed(stream: &mut Stream, server_id: &str) -> Result<()> {
+    write_status(stream, server_id, b"HTTP/1.1 401 Authorization Required\r\nWWW-Authenticate: Basic realm=\"Icy Server\"\r\nConnection: close\r\n").await
+}
+
+pub async fn internal_error(stream: &mut Stream, server_id: &str) -> Result<()> {
+    write_status(stream, server_id, b"HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n").await
+}
+
+pub async fn forbidden(stream: &mut Stream, server_id: &str, message: &str) -> Result<()> {
+    write_status_body(stream, server_id, "HTTP/1.1 403 Forbidden", "text/plain; charset=utf-8", message.as_bytes()).await
+}
+
+pub async fn bad_request(stream: &mut Stream, server_id: &str, message: &str) -> Result<()> {
+    write_status_body(stream, server_id, "HTTP/1.1 400 Bad request", "text/plain; charset=utf-8", message.as_bytes()).await
+}
+
+pub async fn ok_200(stream: &mut Stream, server_id: &str) -> Result<()> {
+    write_status(stream, server_id, b"HTTP/1.1 200 OK\r\nConnection: close\r\n").await
+}
+
+pub async fn ok_200_json_body(stream: &mut Stream, server_id: &str, body: &[u8]) -> Result<()> {
+    write_status_body(stream, server_id, "HTTP/1.1 200 OK", "application/json; charset=utf-8", body).await
 }
 
 #[derive(Default)]
@@ -114,12 +79,10 @@ pub struct ChunkedResponse {}
 
 impl ChunkedResponse {
     pub async fn new(stream: &mut Stream, server_id: &str) -> Result<Self> {
-        stream.write_all(b"HTTP/1.1 200 OK\r\n\
+        write_status(stream, server_id, b"HTTP/1.1 200 OK\r\n\
 Connection: close\r\n\
 Transfer-Encoding: Chunked\r\n\
 Content-Type: application/json; charset=utf-8\r\n").await?;
-
-        server_info(stream, server_id).await?;
         Ok(Self {})
     }
 
@@ -143,7 +106,7 @@ Content-Type: application/json; charset=utf-8\r\n").await?;
 }
 
 pub async fn ok_200_icy_metadata(stream: &mut Stream, server_id: &str, properties: &IcyProperties, metaint: usize) -> Result<()> {
-    stream.write_all(format!("HTTP/1.1 200 OK\r\n\
+    let mut status = format!("HTTP/1.1 200 OK\r\n\
 Connection: close\r\n\
 Content-Type: {}\r\n\
 icy-metaint: {}\r\n\
@@ -152,30 +115,21 @@ icy-genre: {}\r\n\
 icy-name: {}\r\n\
 icy-pub: {}\r\n\
 icy-url: {}\r\n",
-    properties.content_type,
-    metaint,
-    properties.description.as_ref().unwrap_or(&"Unknewn".to_string()),
-    properties.genre.as_ref().unwrap_or(&"Unknewn".to_string()),
-    properties.name.as_ref().unwrap_or(&"Unknewn".to_string()),
-    properties.public as usize,
-    properties.url.as_ref().unwrap_or(&"Unknewn".to_string()),
-    ).as_bytes()).await?;
+        properties.content_type, metaint,
+        properties.description.as_deref().unwrap_or("Unknewn"),
+        properties.genre.as_deref().unwrap_or("Unknewn"),
+        properties.name.as_deref().unwrap_or("Unknewn"),
+        properties.public as usize,
+        properties.url.as_deref().unwrap_or("Unknewn"),
+    );
 
     if let Some(bitrate) = properties.bitrate.as_ref() {
-        stream.write_all(format!("icy-bitrate: {}\r\n", bitrate).as_bytes()).await?;
+        status.push_str(&format!("icy-bitrate: {}\r\n", bitrate));
     }
 
-    server_info(stream, server_id).await?;
-    Ok(())
+    write_status(stream, server_id, status.as_bytes()).await
 }
 
 pub async fn ok_200_listener(stream: &mut Stream, server_id: &str, properties: &IcyProperties) -> Result<()> {
-    stream.write_all(format!("HTTP/1.1 200 OK\r\n\
-Connection: close\r\n\
-Content-Type: {}\r\n",
-        properties.content_type
-    ).as_bytes()).await?;
-
-    server_info(stream, server_id).await?;
-    Ok(())
+    write_status(stream, server_id, format!("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: {}\r\n", properties.content_type).as_bytes()).await
 }
