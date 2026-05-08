@@ -185,8 +185,8 @@ pub async fn handle_request(mut session: ClientSession, request: Request<'_>, re
     });
 
     // We need to check stream type from content-type header
-    if !["audio/mpeg"].contains(&properties.content_type.as_str()) {
-        response::forbidden(&mut session.stream, sid, "Insuported stream codec").await?;
+    if !["audio/mpeg", "audio/aac"].contains(&properties.content_type.as_str()) {
+        response::forbidden(&mut session.stream, sid, "Unsupported stream codec").await?;
         return Ok(());
     }
 

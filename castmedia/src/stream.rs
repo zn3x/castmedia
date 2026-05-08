@@ -8,10 +8,9 @@ use std::{
 };
 use futures::{executor::block_on, Future};
 use qanat::broadcast::Sender;
-use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, meta::MetadataOptions, formats::FormatOptions, probe::Hint};
 use tracing::{error, info};
 use anyhow::Result;
-use qanat::{oneshot, mpsc};
+use qanat::oneshot;
 use tokio::{time::timeout, io::AsyncReadExt};
 
 use crate::{
@@ -24,7 +23,8 @@ use crate::{
     client::StreamOnDemand,
     http::ChunkedResponseReader,
     broadcast::{metadata_encode, relay_broadcast_metadata},
-    internal_api::v1::{MigrateConnection, MigrateSource, MigrateSourceConnectionType, RelayedInfo}
+    internal_api::v1::{MigrateConnection, MigrateSource, MigrateSourceConnectionType, RelayedInfo},
+    audio::{AudioReader, Mp3Reader, AdtsReader}
 };
 
 #[inline(always)]
@@ -393,50 +393,36 @@ async fn migrate_stream(s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
 async fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReader,
                               server: &Server, mut broadcast: SourceBroadcast,
                               queue_size: &mut usize, mut kill_notifier: oneshot::Receiver<()>) {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    tokio::task::spawn_blocking(move || {
-        let mss  = MediaSourceStream::new(Box::new(ReadOnlySource::new(st)), Default::default());
-        let hint = Hint::new();
-
-        // Use the default options for metadata and format readers.
-        let meta_opts: MetadataOptions  = Default::default();
-        let fmt_opts: FormatOptions     = Default::default();
-
-        let probed = match symphonia::default::get_probe()
-            .format(&hint, mss, &fmt_opts, &meta_opts) {
-            Ok(v) => v,
-            Err(_) => return
-        };
-
-        let mut format = probed.format;
-        loop {
-            let ret = format.next_packet();
-            let err = ret.is_err();
-            if tx.send(ret).is_err() || err
-                || matches!(kill_notifier.try_recv(), Ok(()) | Err(oneshot::TryRecvError::Closed)) {
-                break;
-            }
-        }
-    });
+    let mut stream: Box<dyn AudioReader + Send> = match server.sources.read().await.get(mountpoint) {
+        Some(v) => match v.properties.content_type.as_str() {
+            "audio/mpeg" => Box::new(Mp3Reader::new(st)),
+            "audio/aac" => Box::new(AdtsReader::new(st)),
+            _ => unreachable!()
+        },
+        None => Box::new(Mp3Reader::new(st))
+    };
     // Size of every chunk in broadcast queue
     let mut chunk_size = VecDeque::new();
     for i in broadcast.audio.snapshot().0 {
         chunk_size.push_front(i.1.len());
     }
 
-    // Get the next packet from the media format.
-    while let Ok(ret) = rx.recv().await {
-        let packet = match ret {
-            Ok(packet) => packet,
-            Err(e) => {
-                error!("Failed to read media stream for {mountpoint}: {e}");
-                break;
-            }
-        };
-        let slice = packet.data.into_vec();
-        if let Err(e) = push_to_queue(&mut broadcast, mountpoint, queue_size, &mut chunk_size, server, slice) {
-            error!("Failed pushing media block to queue for {mountpoint}: {e}");
-            break;
+    loop {
+        tokio::select! {
+            // Get the next packet from the media format.
+            r = stream.read() => match r {
+                Ok(slice) => {
+                    if let Err(e) = push_to_queue(&mut broadcast, mountpoint, queue_size, &mut chunk_size, server, slice) {
+                        error!("Failed pushing media block to queue for {mountpoint}: {e}");
+                        break;
+                    }
+                },
+                Err(e) => {
+                    error!("Failed to read media stream for {mountpoint}: {e}");
+                    break;
+                }
+            },
+            r = kill_notifier.recv() => if r.is_ok() { break }
         }
     }
 }
