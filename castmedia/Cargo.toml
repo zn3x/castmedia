@@ -23,7 +23,6 @@ serde_with.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-symphonia.workspace = true
 passfd.workspace = true
 socket2.workspace = true
 zxcvbn.workspace = true
@@ -33,6 +32,7 @@ clean-path.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
+symphonia.workspace = true
 tokio = { version = "*", features = [ "full" ] }
 test-utils = { path = "../test-utils" }
 futures.workspace = true
