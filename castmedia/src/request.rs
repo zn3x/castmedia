@@ -1,10 +1,11 @@
 use std::{time::Duration, net::SocketAddr};
 use anyhow::Result;
+use hashbrown::HashMap;
 use httparse::Status;
 
 use crate::{
     server::ClientSession,
-    utils::{self, get_basic_auth, Query, get_header}, response
+    utils::{self, get_basic_auth, get_header}, response
 };
 
 pub struct Request<'a> {
@@ -24,7 +25,7 @@ pub enum RequestType {
 #[derive(Debug)]
 pub struct AdminRequest {
     pub path: String,
-    pub queries: Vec<Query>,
+    pub queries: HashMap<String, String>,
     pub auth: Option<(String, String)>
 }
 
@@ -42,7 +43,7 @@ pub struct ListenRequest {
 #[derive(Debug)]
 pub struct ApiRequest {
     pub path: String,
-    pub queries: Vec<Query>
+    pub queries: HashMap<String, String>
 }
 
 pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Request<'a>) -> Result<RequestType> {
@@ -94,7 +95,7 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
         }
     }
 
-    let queries = utils::get_queries(path);
+    let queries = utils::get_queries(path)?;
     let path    = clean_path::clean(path).to_str().map(|x| x.to_string()).ok_or(anyhow::anyhow!("Can't parse path"))?;
 
     // Now we check request made by user

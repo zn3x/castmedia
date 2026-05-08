@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde_json::json;
 use tracing::info;
 
-use crate::{internal_api::v1::IcyPropertiesPublic, request::ApiRequest, response, server::ClientSession, utils};
+use crate::{internal_api::v1::IcyPropertiesPublic, request::ApiRequest, response, server::ClientSession};
 
 async fn server_info(session: &mut ClientSession) -> Result<()> {
     let sid = &session.server.config.info.id;    
@@ -32,8 +32,8 @@ async fn mount_info(session: &mut ClientSession, req: ApiRequest) -> Result<()> 
 
     info!("Get mount info request by {session}");
 
-    let mount = match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
-        [Some(mount)] => *mount,
+    let mount = match req.queries.get("mount") {
+        Some(mount) => mount,
         _ => {
             response::bad_request(&mut session.stream, sid, "Mount not specified").await?;
             return Ok(());

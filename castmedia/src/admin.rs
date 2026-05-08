@@ -10,14 +10,14 @@ use crate::{
     server::ClientSession,
     request::AdminRequest,
     response::{self, ChunkedResponse},
-    auth::{self, RequiredRole}, utils,
+    auth::{self, RequiredRole},
     broadcast::broadcast_metadata,
     source::{MoveClientsCommand, MoveClientsType, SourceAccessType}
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    match utils::get_queries_val_for_keys(&["mode", "mount", "song", "url"], &req.queries).as_slice() {
-        &[Some(mode), Some(mount), song, url] => {
+    match (req.queries.get("mode"), req.queries.get("mount"), req.queries.get("song"), req.queries.get("url")) {
+        (Some(mode), Some(mount), song, url) => {
             auth::authenticate(session, req.auth, RequiredRole::SourceApi { mount: mount.to_string() }).await?;
             let sid = &session.server.config.info.id;
 
@@ -27,7 +27,7 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
             }
 
             let success = if let Some(source) = session.server.sources.read().await.get(mount) {
-                broadcast_metadata(source, &song, &url).await;
+                broadcast_metadata(source, &song.map(|s| s.as_str()), &url.map(|s| s.as_str())).await;
                 true
             } else {
                 false
@@ -50,8 +50,8 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
 }
 
 async fn update_fallback(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
-    match utils::get_queries_val_for_keys(&["mount", "fallback"], &req.queries).as_slice() {
-        &[Some(mount), fallback] => {
+    match (req.queries.get("mount"), req.queries.get("fallback")) {
+        (Some(mount), fallback) => {
             auth::authenticate(session, req.auth, RequiredRole::SourceApi { mount: mount.to_string() }).await?;
             let sid = &session.server.config.info.id;
 
@@ -160,8 +160,8 @@ async fn move_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
     auth::authenticate(session, req.auth, RequiredRole::Admin).await?;
     let sid = &session.server.config.info.id;
 
-    match utils::get_queries_val_for_keys(&["mount", "destination"], &req.queries).as_slice() {
-        &[Some(mount), Some(destination)] => {
+    match (req.queries.get("mount"), req.queries.get("destination")) {
+        (Some(mount), Some(destination)) => {
             let move_comm = session.server.sources.read().await.get(destination).map(|destination|
                 MoveClientsCommand {
                     broadcast: destination.broadcast.clone(),
@@ -212,8 +212,8 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
     auth::authenticate(session, req.auth, RequiredRole::Admin).await?;
     let sid = &session.server.config.info.id;
 
-    match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
-        &[Some(mount)] => {
+    match req.queries.get("mount") {
+        Some(mount) => {
             let mut kill_switch = SourceKillSwitchFound::None;
             if let Some(source) = session.server.sources.write().await.get_mut(mount) {
                 kill_switch = if let SourceAccessType::SourceClient { .. } = &source.access {
@@ -254,8 +254,8 @@ async fn list_clients(session: &mut ClientSession, req: AdminRequest) -> Result<
     auth::authenticate(session, req.auth, RequiredRole::Admin).await?;
     let sid = &session.server.config.info.id;
 
-    let mount = match utils::get_queries_val_for_keys(&["mount"], &req.queries).as_slice() {
-        &[Some(mount)] => mount,
+    let mount = match req.queries.get("mount") {
+        Some(mount) => mount,
         _ => {
             response::bad_request(&mut session.stream, sid, "Mount not specified").await?;
             return Ok(());
@@ -310,8 +310,8 @@ async fn kill_client(session: &mut ClientSession, req: AdminRequest) -> Result<(
     auth::authenticate(session, req.auth, RequiredRole::Admin).await?;
     let sid = &session.server.config.info.id;
 
-    match utils::get_queries_val_for_keys(&["mount", "id"], &req.queries).as_slice() {
-        &[Some(mount), Some(id)] => {
+    match (req.queries.get("mount"), req.queries.get("id")) {
+        (Some(mount), Some(id)) => {
             let id = match Uuid::parse_str(id) {
                 Ok(v) => v,
                 Err(_) => {

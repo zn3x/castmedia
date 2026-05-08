@@ -4,48 +4,15 @@ use anyhow::Result;
 use base64::Engine;
 use passfd::FdPassingExt;
 use tokio::{net::TcpStream, io::BufStream};
+use hashbrown::HashMap;
+use url::Url;
 
 use crate::server::Stream;
 use tokio::io::AsyncReadExt;
 
-#[derive(Debug)]
-pub struct Query {
-    pub key: String,
-    pub val: String
-}
-
-pub fn get_queries(path: &str) -> Vec<Query> {
-    let mut queries = Vec::new();
-    if let Some(i) = path.find('?') {
-        for query in path[i+1..].split('&') {
-            if let Some((key, val)) = query.replace( '+', " " ).split_once('=') {
-                let key = urlencoding::decode(key);
-                let val = urlencoding::decode(val);
-                if let Ok(key) = key {
-                    if let Ok(val) = val {
-                        queries.push(Query { key: key.to_string(), val: val.to_string() });
-                    }
-                }
-            }
-        }
-    }
-
-    queries
-}
-
-pub fn get_queries_val_for_keys<'a>(keys: &[&str], queries: &'a [Query]) -> Vec<Option<&'a str>> {
-    let mut vals = vec![None; keys.len()];
-
-    for i in 0..keys.len() {
-        for query in queries {
-            if query.key.eq(keys[i]) {
-                vals[i] = Some(query.val.as_str());
-                break;
-            }
-        }
-    }
-
-    vals
+pub fn get_queries(path: &str) -> Result<HashMap<String, String>> {
+    let parsed_url = Url::parse(&format!("s://h{}", path))?;
+    Ok(parsed_url.query_pairs().into_owned().collect())
 }
 
 /// Get header from headers list if it exits
@@ -135,34 +102,23 @@ pub fn read_stream_from_unix_socket(unixsock: &mut UnixStream) -> Result<(Stream
 mod tests {
     #[test]
     fn queries() {
-        let q = super::get_queries("/a?a=b&b=c");
-        assert_eq!(q[0].key, "a".to_string());
-        assert_eq!(q[0].val, "b".to_string());
-        assert_eq!(q[1].key, "b".to_string());
-        assert_eq!(q[1].val, "c".to_string());
-        let q = super::get_queries("/a?a=b&b=c&a=d");
-        assert_eq!(q[0].key, "a".to_string());
-        assert_eq!(q[0].val, "b".to_string());
-        assert_eq!(q[1].key, "b".to_string());
-        assert_eq!(q[1].val, "c".to_string());
-        assert_eq!(q[2].key, "a".to_string());
-        assert_eq!(q[2].val, "d".to_string());
-        let mut path = String::new();
-        path.push('/');
-        path.push_str(urlencoding::encode(r#"'4"4ef$%GH?"#).as_ref());
-        path.push('?');
-        path.push_str(urlencoding::encode(r#"$O9r0#4="#).as_ref());
-        path.push('=');
-        path.push_str(urlencoding::encode(r#"#T343op"#).as_ref());
-        let q = super::get_queries(&path);
-        assert_eq!(q[0].key, r#"$O9r0#4="#.to_string());
-        assert_eq!(q[0].val, r#"#T343op"#.to_string());
+        let q = super::get_queries("/a?a=b&b=c").unwrap();
+        assert_eq!(q.get("a").map(|s| s.as_str()), Some("b"));
+        assert_eq!(q.get("b").map(|s| s.as_str()), Some("c"));
+        assert_eq!(q.len(), 2);
 
-        let q = super::get_queries("/a?a=b&b=c&a=v");
-        let r = super::get_queries_val_for_keys(&["a", "b", "d"], &q);
-        assert_eq!(r[0], Some("b"));
-        assert_eq!(r[1], Some("c"));
-        assert_eq!(r[2], None);
+        let q = super::get_queries("/a?a=b&b=c&a=d").unwrap();
+        assert_eq!(q.get("a").map(|s| s.as_str()), Some("d"));
+        assert_eq!(q.get("b").map(|s| s.as_str()), Some("c"));
+
+        let q = super::get_queries("/a?%24O9r0%234%3D=%23T343op&a=b").unwrap();
+        assert_eq!(q.get("$O9r0#4=").map(|s| s.as_str()), Some("#T343op"));
+        assert_eq!(q.get("a").map(|s| s.as_str()), Some("b"));
+
+        let q = super::get_queries("/a?a=b&b=c&a=v").unwrap();
+        assert_eq!(q.get("a").map(|s| s.as_str()), Some("v"));
+        assert_eq!(q.get("b").map(|s| s.as_str()), Some("c"));
+        assert_eq!(q.get("d"), None);
     }
 
     #[test]
