@@ -3,11 +3,11 @@
 // Add test for source stream
 // Add test for metaint
 
-use std::{time::Duration, io::Write};
+use std::{time::Duration, io::{Read, Write}};
 use castmedia::broadcast::metadata_decode;
 use futures::{AsyncReadExt, StreamExt, TryStreamExt};
 use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, probe::Hint, formats::FormatOptions, meta::MetadataOptions};
-use test_utils::{spawn_source_manual, spawn_server};
+use test_utils::{spawn_source_manual, spawn_source_manual_aac, spawn_server};
 
 const CONFIG: &str = "
 address:
@@ -24,6 +24,7 @@ account:
     role: source
     mount:
       - path: '/stream.mp3'
+      - path: '/stream.aac'
 admin_access:
   enabled: true
   address:
@@ -41,6 +42,7 @@ const ADMIN: &str         = "127.0.0.1:9102";
 const AUTH_ADMIN: &str    = "admin:pass";
 const AUTH_SOURCE: &str   = "source:pass";
 const MOUNT_SOURCE: &str  = "/stream.mp3";
+const MOUNT_AAC: &str     = "/stream.aac";
 
 #[tokio::test]
 async fn stream_general() {
@@ -131,4 +133,80 @@ async fn stream_general() {
 
     let r = test_utils::get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_ADMIN, ADMIN)).await;
     assert_eq!(r, 200);
+
+    let server = spawn_server(TEST_DIR, CONFIG, "stream_aac.yaml").await;
+
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    let (mut source_sock, media) = spawn_source_manual_aac(AUTH_SOURCE, ADMIN, MOUNT_AAC).unwrap();
+    let mut stdout = media.stdout.unwrap();
+
+    let mut ffmpeg_buf = [0u8; 4096];
+    let mut total_written = 0;
+
+    // Feed some AAC data first so listeners have something to connect to
+    loop {
+        let n = stdout.read(&mut ffmpeg_buf).expect("Should read from ffmpeg");
+        if n == 0 {
+            break;
+        }
+        source_sock.write_all(&ffmpeg_buf[..n]).expect("Should write to source socket");
+        total_written += n;
+        if total_written >= 50000 {
+            break;
+        }
+    }
+
+    // Connect a listener and verify we receive valid ADTS data
+    let resp = test_utils::reqwest::Client::new()
+        .get(&format!("http://{}{}", BASE, MOUNT_AAC))
+        .header("Icy-Metadata", "1")
+        .send()
+        .await
+        .unwrap();
+
+    // Verify the content-type is audio/aac
+    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    assert_eq!(ct, "audio/aac");
+
+    let mut r = resp.bytes_stream()
+        .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        .into_async_read();
+
+    let mut read_buf = [0u8; 8192];
+    let mut frames_found = 0;
+    let mut data_read = 0;
+
+    loop {
+        let n = stdout.read(&mut ffmpeg_buf).unwrap_or(0);
+        if n > 0 {
+            source_sock.write_all(&ffmpeg_buf[..n]).expect("Should write to source socket");
+        }
+
+        match tokio::time::timeout(Duration::from_secs(2), r.read(&mut read_buf)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                data_read += n;
+                for i in 0..read_buf.len().saturating_sub(1) {
+                    if read_buf[i] == 0xFF && (read_buf[i + 1] & 0xF0) == 0xF0 {
+                        frames_found += 1;
+                    }
+                }
+            }
+            Ok(Err(_)) => break,
+            Err(_) => break,
+        }
+
+        if data_read >= 10000 && frames_found >= 2 {
+            break;
+        }
+    }
+
+    assert!(frames_found >= 2, "Should find at least 2 ADTS sync words, found {}", frames_found);
+    assert!(data_read >= 1000, "Should have read at least 1000 bytes, got {}", data_read);
+
+    let r = test_utils::get_status_code(&format!("http://{}@{}/admin/shutdown", AUTH_ADMIN, ADMIN)).await;
+    assert_eq!(r, 200);
+
+    drop(server);
 }

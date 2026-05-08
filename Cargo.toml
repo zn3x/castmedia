@@ -35,7 +35,7 @@ anyhow = "1.0.70"
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = [ "env-filter" ] }
 
-symphonia = { version = "0.5.3", default-features = false, features = [ "mp3" ] }
+symphonia = { version = "0.5.3", default-features = false, features = [ "mp3", "aac" ] }
 
 passfd = "0.1.6"
 
