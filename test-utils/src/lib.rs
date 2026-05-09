@@ -64,13 +64,21 @@ pub async fn spawn_source(auth: &str, addr: &str, mount: &str) -> tokio::process
 }
 
 pub fn spawn_source_manual(auth: &str, addr: &str, mount: &str) -> Result<(TcpStream, std::process::Child)> {
+    spawn_source_manual_with_content_type(auth, addr, mount, "audio/mpeg")
+}
+
+pub fn spawn_source_manual_aac(auth: &str, addr: &str, mount: &str) -> Result<(TcpStream, std::process::Child)> {
+    spawn_source_manual_with_content_type(auth, addr, mount, "audio/aac")
+}
+
+pub fn spawn_source_manual_with_content_type(auth: &str, addr: &str, mount: &str, content_type: &str) -> Result<(TcpStream, std::process::Child)> {
     let mut sock = TcpStream::connect(addr)
         .expect("Should be able to connect");
 
     let bs64 = base64::engine::general_purpose::URL_SAFE;
 
-    sock.write_all(format!("SOURCE {} HTTP/1.1\r\nHost: {}\r\nContent-Type: audio/mpeg\r\nAuthorization: Basic {}\r\nConnection: close\r\nIcy-Metadata: 1\r\nIce-Public: 1\r\n\r\n",
-                       mount, addr, bs64.encode(auth)).as_bytes())
+    sock.write_all(format!("SOURCE {} HTTP/1.1\r\nHost: {}\r\nContent-Type: {}\r\nAuthorization: Basic {}\r\nConnection: close\r\nIcy-Metadata: 1\r\nIce-Public: 1\r\n\r\n",
+                       mount, addr, content_type, bs64.encode(auth)).as_bytes())
         .expect("Should be able to write");
 
 
@@ -89,14 +97,18 @@ pub fn spawn_source_manual(auth: &str, addr: &str, mount: &str) -> Result<(TcpSt
         return Err(anyhow::Error::msg("Source: got bad response"));
     }
 
+    let (format, bitrate) = match content_type {
+        "audio/aac" => ("adts", "128k"),
+        _           => ("mp3",  "320k"),
+    };
+
     let media = std::process::Command::new("ffmpeg")
         .args([
               "-loglevel", "panic",
               "-f", "lavfi",
               "-i", "sine=frequency=1000",
-              "-content_type", "audio/mpeg",
-              "-vn", "-f", "mp3",
-              "-b:a", "320k",
+              "-vn", "-f", format,
+              "-b:a", bitrate,
               "-"
         ])
         .stdout(Stdio::piped())
