@@ -256,45 +256,50 @@ async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastIn
     let mut temp_metadata = None;
     let mut bytes_sent    = 0;
     let mut stat_int      = tokio::time::interval(Duration::from_secs(30));
+    let mut buffer        = Vec::with_capacity(32);
 
     let mut migrate_comm = session.server.migrate.clone();
 
     loop {
         loop {
             tokio::select! {
-                r = read_media_broadcast(&mut b.stream, &mut b.meta_stream, &mut metadata, &mut temp_metadata) => match r {
-                    Ok(buf) => {
-                        // We are checking here if we need to broadcast metadata
-                        // Metadata needs to be sent inbetween ever metaint interval
-                        if b.with_metadata {
-                            if b.metaint + buf.len() >= session.server.config.metaint {
-                                let diff          = (b.metaint + buf.len()) - session.server.config.metaint;
-                                let first_buf_len = session.server.config.metaint - b.metaint;
-                                
-                                if first_buf_len > 0 {
-                                    session.stream.write_all(&buf[..first_buf_len]).await?;
+                r = read_media_broadcast(&mut b.stream, &mut buffer, &mut b.meta_stream, &mut metadata, &mut temp_metadata) => match r {
+                    Ok(()) | Err(RecvError::Closed) => {
+                        if buffer.is_empty() {
+                            break;
+                        }
+                        for buf in &buffer {
+                            // We are checking here if we need to broadcast metadata
+                            // Metadata needs to be sent inbetween ever metaint interval
+                            if b.with_metadata {
+                                if b.metaint + buf.len() >= session.server.config.metaint {
+                                    let diff          = (b.metaint + buf.len()) - session.server.config.metaint;
+                                    let first_buf_len = session.server.config.metaint - b.metaint;
+                                    
+                                    if first_buf_len > 0 {
+                                        session.stream.write_all(&buf[..first_buf_len]).await?;
+                                    }
+                                    // Now we write metadata
+                                    session.stream.write_all(&metadata.1).await?;
+                                    // Followed by what left in buffer if there is any
+                                    if diff > 0 {
+                                        session.stream.write_all(&buf[first_buf_len..]).await?;
+                                    }
+                                    b.metaint   = diff;
+                                    bytes_sent += metadata.1.len() + buf.len();
+                                } else {
+                                    session.stream.write_all(&buf).await?;
+                                    b.metaint  += buf.len();
+                                    bytes_sent += buf.len();
                                 }
-                                // Now we write metadata
-                                session.stream.write_all(&metadata.1).await?;
-                                // Followed by what left in buffer if there is any
-                                if diff > 0 {
-                                    session.stream.write_all(&buf[first_buf_len..]).await?;
-                                }
-                                b.metaint   = diff;
-                                bytes_sent += metadata.1.len() + buf.len();
                             } else {
                                 session.stream.write_all(&buf).await?;
-                                b.metaint  += buf.len();
                                 bytes_sent += buf.len();
                             }
-                        } else {
-                            session.stream.write_all(&buf).await?;
-                            bytes_sent += buf.len();
                         }
                         session.stream.flush().await?;
                     },
-                    Err(RecvError::Lagged) => (),
-                    Err(RecvError::Closed) => break
+                    Err(RecvError::Lagged) => ()
                 },
                 // We increment sent bytes count with interval in order not to have degraded performance
                 // under contention if any

@@ -95,11 +95,12 @@ pub async fn relay_broadcast_metadata<'a>(src_metadata: &RwLock<Option<IcyMetada
 }
 
 pub async fn read_media_broadcast(stream: &mut Receiver<Arc<Vec<u8>>>,
+                                  media_buf: &mut Vec<Arc<Vec<u8>>>,
                                   meta_stream: &mut Receiver<Arc<(u64, Vec<u8>)>>,
                                   metadata: &mut Arc<(u64, Vec<u8>)>,
                                   temp_metadata: &mut Option<Arc<(u64, Vec<u8>)>>)
-    -> Result<Arc<Vec<u8>>, RecvError> {
-    let ret = stream.recv().await;
+    -> Result<(), RecvError> {
+    let ret = stream.recv_batched(media_buf, 32, false).await;
     
     match meta_stream.try_recv() {
         Ok(v) => {
