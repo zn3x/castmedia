@@ -100,24 +100,21 @@ pub struct MiscSettings {
     pub check_forwardedfor: bool
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "role")]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum Account {
-    Admin {
-        pass: String,
-    },
-    Source {
-        pass: String,
-        #[serde(default = "default_source_mount")]
-        mount: Vec<Mount>
-    },
-    Slave {
-        pass: String
-    },
-    YP {
-        pass: String
-    }
+pub enum Role {
+    Admin,
+    Source,
+    Slave,
+    YP,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Account {
+    pub pass: String,
+    pub role: Role,
+    #[serde(default = "default_source_mount")]
+    pub mount: Vec<Mount>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -387,14 +384,7 @@ impl ServerSettings {
     pub fn hash_passwords(config: &mut ServerSettings) {
         // Converting plaintext passwords to hash
         for (_, account) in &mut config.account {
-            let pass = match account {
-                Account::Source { pass, .. } => pass,
-                Account::Admin { pass, .. }  => pass,
-                Account::Slave { pass, .. }  => pass,
-                Account::YP { pass, .. }     => pass
-            };
-            
-            match pass.split_at(2) {
+            match account.pass.split_at(2) {
                 ("1$", _) => (),
                 ("0$", rawpass) => {
                     let salt = SaltString::generate(&mut OsRng);
@@ -408,8 +398,8 @@ impl ServerSettings {
                     let hash = Scrypt.hash_password(rawpass.as_bytes(), &salt)
                         .expect("Should be able to hash password")
                         .to_string();
-                    *pass    = "1$".to_string();
-                    pass.push_str(&hash);
+                    account.pass = "1$".to_string();
+                    account.pass.push_str(&hash);
                 },
                 _ => ()
             }
@@ -465,25 +455,22 @@ impl ServerSettings {
 
         // Verifying accounts credentials
         for (user, account) in &config.account {
-            let (pass, mounts) = match account {
-                Account::Admin { pass } => (pass, None),
-                Account::Source { pass, mount } => {
-                    if mount.is_empty() {
+            let pass = &account.pass;
+            let mounts = match account.role {
+                Role::Source => {
+                    if account.mount.is_empty() {
                         warn!("Source {} has no defined mount, this means it can't mount any stream", user);
                     }
-                    (pass, Some(mount))
+                    Some(&account.mount)
                 },
-                Account::Slave { pass } => (pass, None),
-                Account::YP { pass } => (pass, None)
+                _ => None,
             };
 
             // Checking if we don't have duplicates
             for (ruser, raccount) in &config.account {
-                let rmounts = match raccount {
-                    Account::Admin { .. } => None,
-                    Account::Source { mount, .. } => Some(mount),
-                    Account::Slave { .. } => None,
-                    Account::YP { .. } => None
+                let rmounts = match raccount.role {
+                    Role::Source => Some(&raccount.mount),
+                    _ => None,
                 };
                 // Skip if we are identic
                 if std::ptr::eq(user, ruser) {

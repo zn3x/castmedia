@@ -17,7 +17,7 @@ use crate::{
     server::{ClientSession, Session},
     request::{SourceRequest, Request},
     response, utils, stream::{self, BroadcastInfo, RelayBroadcastStatus}, auth,
-    client::{Client, SourceInfo}, config::Account
+    client::{Client, SourceInfo}, config::Role
 };
 pub use crate::internal_api::v1::IcyProperties;
 
@@ -230,10 +230,10 @@ pub async fn handle_request(mut session: ClientSession, request: Request<'_>, re
 
     let mut fallback = None;
     if let Some(account) = &session.server.config.account.get(&user_id) {
-        match account {
-            Account::Admin { .. } => (),
-            Account::Source { mount, .. } => {
-                for mount in mount {
+        match account.role {
+            Role::Admin => (),
+            Role::Source => {
+                for mount in &account.mount {
                     if mount.path.eq(&req.mountpoint) {
                         fallback = mount.fallback.clone();
                         break;

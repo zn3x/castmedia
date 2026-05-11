@@ -5,7 +5,7 @@ use scrypt::password_hash::{PasswordHash, PasswordVerifier};
 
 use crate::{
     server::{ClientSession, AddrType},
-    response, config::Account,
+    response, config::Role,
 };
 
 pub enum RequiredRole {
@@ -51,47 +51,35 @@ pub async fn authenticate(
         let mut password_hash  = None::<String>;
         if let Some(account) = session.server.config.account.get(&user) {
             // Admin accounts on admin interface have universal access
-            if matches!(account, Account::Admin { .. }) && session.addr_type == AddrType::Admin {
+            if account.role == Role::Admin && session.addr_type == AddrType::Admin {
                 has_permission = true;
-                if let Account::Admin { pass } = account {
-                    password_hash = Some(pass.clone());
-                }
+                password_hash = Some(account.pass.clone());
             } else {
                 match role {
                     RequiredRole::Admin => {}
-                    RequiredRole::SourceApi { ref mount } => {
-                        if let Account::Source { pass, mount: mounts } = account {
-                            has_permission = mounts.iter().any(|x| x.path == "*" || x.path == *mount);
-                            if has_permission {
-                                password_hash = Some(pass.clone());
-                            }
-                            has_permission = has_permission
-                                && match session.server.sources.read().await.get(mount) {
-                                    Some(v) => match &v.access {
-                                        crate::source::SourceAccessType::SourceClient { username } => username == &user,
-                                        _ => false,
-                                    },
-                                    None => false,
-                                };
+                    RequiredRole::SourceApi { ref mount } => if account.role == Role::Source {
+                        has_permission = account.mount.iter().any(|x| x.path == "*" || x.path == *mount);
+                        if has_permission {
+                            password_hash = Some(account.pass.clone());
+                        }
+                        has_permission = has_permission
+                            && match session.server.sources.read().await.get(mount) {
+                                Some(v) => match &v.access {
+                                    crate::source::SourceAccessType::SourceClient { username } => username == &user,
+                                    _ => false,
+                                },
+                                None => false,
+                            };
+                    }
+                    RequiredRole::SourceMount { ref mount } => if account.role == Role::Source {
+                        has_permission = account.mount.iter().any(|x| x.path == "*" || x.path == *mount);
+                        if has_permission {
+                            password_hash = Some(account.pass.clone());
                         }
                     }
-                    RequiredRole::SourceMount { ref mount } => {
-                        if let Account::Source { pass, mount: mounts } = account {
-                            has_permission = mounts.iter().any(|x| x.path == "*" || x.path == *mount);
-                            if has_permission {
-                                password_hash = Some(pass.clone());
-                            }
-                        }
-                    }
-                    RequiredRole::SlaveOrYP => {
-                        if matches!(account, Account::Slave { .. } | Account::YP { .. }) {
-                            has_permission = true;
-                            password_hash = Some(match account {
-                                Account::Slave { pass } => pass.clone(),
-                                Account::YP { pass } => pass.clone(),
-                                _ => unreachable!(),
-                            });
-                        }
+                    RequiredRole::SlaveOrYP => if matches!(account.role, Role::Slave | Role::YP) {
+                        has_permission = true;
+                        password_hash = Some(account.pass.clone());
                     }
                 }
             }

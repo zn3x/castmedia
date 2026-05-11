@@ -18,7 +18,7 @@ use inotify::{Inotify, WatchMask};
 use anyhow::Result;
 
 use crate::{
-    config::{ServerSettings, TlsIdentity, Account}, 
+    config::{ServerSettings, TlsIdentity, Role}, 
     client, source::Source, migrate::MigrateCommand,
     relay,
     auth::UserRef
@@ -361,7 +361,7 @@ pub async fn listener(config: ServerSettings) {
         relay_params: RelayParams {
             slave_or_yp_auth_present: config.account
                 .iter()
-                .any(|x| matches!(x.1, Account::Slave { .. } | Account::YP { .. })),
+                .any(|x| matches!(x.1.role, Role::Slave | Role::YP)),
             new_source_event_tx: tx2,
             new_source_event_rx: rx2
         },
