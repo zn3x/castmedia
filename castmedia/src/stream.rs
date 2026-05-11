@@ -1,12 +1,11 @@
 use std::{
-    time::Duration, collections::VecDeque, io::Read,
-    num::NonZeroUsize,
+    time::Duration, collections::VecDeque, num::NonZeroUsize,
     sync::{
         Arc,
         atomic::Ordering
     }, pin::Pin
 };
-use futures::{executor::block_on, Future};
+use futures::Future;
 use qanat::broadcast::Sender;
 use tracing::{error, info};
 use anyhow::Result;
@@ -44,9 +43,7 @@ async fn read_with_stats(stats: &SourceStats, time: Duration, fut: impl Future<O
     Ok(r)
 }
 
-// TODO: Proper async interface...
-// TODO: lang async trait seems to be hard to shove here for now, keeping the same hack here
-pub trait StreamReader: Send + Sync + Read {
+pub trait StreamReader: Send + Sync {
     fn fd(&self) -> i32;
     fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>>;
 }
@@ -77,12 +74,6 @@ impl StreamReader for SimpleReader {
     }
 }
 
-impl Read for SimpleReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        block_on(self.async_read(buf))
-    }
-}
-
 pub struct ChunkedReader {
     inner: SimpleReader,
     chunked: ChunkedResponseReader
@@ -108,12 +99,6 @@ impl StreamReader for ChunkedReader {
             self.inner.timeout,
             self.chunked.read(&mut self.inner.stream, buf)
         ))
-    }
-}
-
-impl Read for ChunkedReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        block_on(self.async_read(buf))
     }
 }
 
