@@ -140,14 +140,14 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
 
             if !session.server.sources.read().await.contains_key(&path) {
                 _ = response::not_found(&mut session.stream, &session.server.config.info.id).await;
-                return Err(anyhow::Error::msg("Unknewn path wanted by client"));
+                return Err(anyhow::Error::msg("Unknown path wanted by client"));
             }
 
             Ok(RequestType::Listen(ListenRequest { mountpoint: path }))
         },
         _ => {
             _ = response::method_not_allowed(&mut session.stream, &session.server.config.info.id).await;
-            Err(anyhow::Error::msg("Unknewn method sent by user"))
+            Err(anyhow::Error::msg("Unknown method sent by user"))
         }
     }
 }

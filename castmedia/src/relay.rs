@@ -486,7 +486,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                             .expect("Error shouldn't be returned on relay stream")
                             .expect("RelayBroadcastStatus should be returned on relay stream");
 
-                        if let Some(v) = relay_source_on_demand_exepction(ret).await {
+                        if let Some(v) = relay_source_on_demand_exception(ret).await {
                             relay_source_on_demand(&serv_cl, master_ind, cmount, v, auth_cl).await;
                         }
                     });
@@ -792,14 +792,14 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
         }
 
         let ret = fetch_source_from_master(serv, master_ind, mount.clone(), Some(on_demand), Some(&auth)).await;
-        match relay_source_on_demand_exepction(ret).await {
+        match relay_source_on_demand_exception(ret).await {
             Some(v) => on_demand = v,
             None => break
         }
     }
 }
 
-async fn relay_source_on_demand_exepction(ret: RelayBroadcastStatus) -> Option<StreamOnDemand> {
+async fn relay_source_on_demand_exception(ret: RelayBroadcastStatus) -> Option<StreamOnDemand> {
     match ret {
         // Stream suddenly ended (Due to network problems or detecting end of stream before master
         // server sending unmount notification)

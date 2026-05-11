@@ -116,11 +116,11 @@ icy-name: {}\r\n\
 icy-pub: {}\r\n\
 icy-url: {}\r\n",
         properties.content_type, metaint,
-        properties.description.as_deref().unwrap_or("Unknewn"),
-        properties.genre.as_deref().unwrap_or("Unknewn"),
-        properties.name.as_deref().unwrap_or("Unknewn"),
+        properties.description.as_deref().unwrap_or("Unknown"),
+        properties.genre.as_deref().unwrap_or("Unknown"),
+        properties.name.as_deref().unwrap_or("Unknown"),
         properties.public as usize,
-        properties.url.as_deref().unwrap_or("Unknewn"),
+        properties.url.as_deref().unwrap_or("Unknown"),
     );
 
     if let Some(bitrate) = properties.bitrate.as_ref() {
