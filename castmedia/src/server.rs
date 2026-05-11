@@ -8,7 +8,8 @@ use futures::{StreamExt, executor::block_on};
 use qanat::broadcast::{channel, Receiver, Sender};
 use tokio::{
     net::{TcpListener, TcpStream},
-    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream, AsyncWriteExt}, sync::{Semaphore, RwLock}
+    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream, AsyncWriteExt}, sync::{Semaphore, RwLock},
+    signal
 };
 use tokio_native_tls::{native_tls, TlsStream, TlsAcceptor};
 use tracing::{info, error, warn};
@@ -338,6 +339,16 @@ async fn bind(bind: SocketAddr) -> TcpListener {
     }
 }
 
+async fn shutdown_signal() {
+    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+        .expect("Failed to install SIGTERM handler");
+
+    tokio::select! {
+        _ = sigterm.recv() => {},
+        _ = signal::ctrl_c() => {},
+    }
+}
+
 pub async fn listener(config: ServerSettings) {
     let start_time  = chrono::offset::Utc::now();
     let init_size   = 1.try_into().expect("1 should not be 0");
@@ -450,6 +461,26 @@ pub async fn listener(config: ServerSettings) {
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
             };
+        },
+        _ = shutdown_signal() => {
+            info!("Received shutdown signal, starting graceful shutdown");
+            set.abort_all();
+            while !set.is_empty() {
+                _ = set.join_next().await;
+            }
+            // Kill all sources to trigger listener cleanup (fallback movement, etc.)
+            let kill_senders: Vec<_> = {
+                let mut sources = serv.sources.write().await;
+                sources.iter_mut().filter_map(|(_, s)| s.kill.take()).collect()
+            };
+            info!("Stopping {} active source(s)", kill_senders.len());
+            for kill in kill_senders {
+                _ = kill.send(());
+            }
+            // Give a short window for cleanup
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            info!("Graceful shutdown complete");
+            std::process::exit(0);
         }
     }
 }
