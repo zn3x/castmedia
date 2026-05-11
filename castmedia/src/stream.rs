@@ -237,29 +237,21 @@ pub async fn broadcast(mut s: BroadcastInfo<'_>) {
 
     let omountpoint = s.mountpoint.to_owned();
 
-    let reader: Box<dyn StreamReader>;
+    let mut reader: Box<dyn StreamReader>;
     let base_reader = SimpleReader::new(s.session.stream, s.session.server.config.limits.source_timeout, s.stats);
     if s.chunked {
         reader      = Box::new(ChunkedReader::new(base_reader));
     } else {
         reader      = Box::new(base_reader);
     }
-    // Safety: rguard is valid as long as reader is valid
-    // We explicitely await thread accessing reader before freeing
-    // rguard
-    let reader = Box::leak(reader);
-    let rguard = unsafe { Box::from_raw(reader) };
-
     let media_broadcast = s.broadcast.audio.clone();
     let server          = s.session.server.clone();
-    let fut             = handle_source_stream(&omountpoint, reader, &s.session.server, s.broadcast, &mut s.queue_size, s.kill_notifier);
-    
     // Here we either wait for source to broadcast till it disconnects
     // Or we receive a command to kill it from admin
     // Or we receive command for a migration
     let mut migrate_comm = server.migrate.clone();
     tokio::select! {
-        _ = fut => (),
+        _ = handle_source_stream(&omountpoint, reader.as_mut(), &s.session.server, s.broadcast, &mut s.queue_size, s.kill_notifier) => (),
         migrate = migrate_comm.recv() => {
             migrate_stream(
                 MigrateStreamInfo {
@@ -269,7 +261,7 @@ pub async fn broadcast(mut s: BroadcastInfo<'_>) {
                     media_broadcast,
                     chunked: s.chunked,
                     queue_size: s.queue_size,
-                    stream: rguard,
+                    stream: reader,
                     client_addr: s.session.addr.to_string()
                 },
                 None,
@@ -375,7 +367,7 @@ async fn migrate_stream(s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
     utils::hang().await;
 }
 
-async fn handle_source_stream(mountpoint: &str, st: &'static mut dyn StreamReader,
+async fn handle_source_stream(mountpoint: &str, st: &mut dyn StreamReader,
                               server: &Server, mut broadcast: SourceBroadcast,
                               queue_size: &mut usize, mut kill_notifier: oneshot::Receiver<()>) {
     let mut stream: Box<dyn AudioReader + Send> = match server.sources.read().await.get(mountpoint) {
