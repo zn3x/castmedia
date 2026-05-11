@@ -14,11 +14,9 @@ use tokio::{time::timeout, io::AsyncReadExt};
 
 use crate::{
     utils,
-    server::{Stream, Session, Server},
+    server::{Stream, Session, Server, PassFD},
     source::{SourceBroadcast, SourceStats, MoveClientsCommand, MoveClientsType, SourceAccessType},
-    migrate::{
-        MigrateSourceInfo, MigrateCommand, ActiveSourceInfo
-    },
+    migrate::{MigrateCommand, MigrateEntry},
     client::StreamOnDemand,
     http::ChunkedResponseReader,
     broadcast::{metadata_encode, relay_broadcast_metadata},
@@ -43,8 +41,7 @@ async fn read_with_stats(stats: &SourceStats, time: Duration, fut: impl Future<O
     Ok(r)
 }
 
-pub trait StreamReader: Send + Sync {
-    fn fd(&self) -> i32;
+pub trait StreamReader: Send + Sync + PassFD {
     fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>>;
 }
 
@@ -61,16 +58,18 @@ impl SimpleReader {
 }
 
 impl StreamReader for SimpleReader {
-    fn fd(&self) -> i32 {
-        self.stream.fd()
-    }
-
     fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>> {
         Box::pin(read_with_stats(
             &self.stats,
             self.timeout,
             self.stream.read(buf)
         ))
+    }
+}
+
+impl PassFD for SimpleReader {
+    fn fd(&self) -> i32 {
+        self.stream.fd()
     }
 }
 
@@ -89,16 +88,18 @@ impl ChunkedReader {
 }
 
 impl StreamReader for ChunkedReader {
-    fn fd(&self) -> i32 {
-        self.inner.stream.fd()
-    }
-
     fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>> {
         Box::pin(read_with_stats(
             &self.inner.stats,
             self.inner.timeout,
             self.chunked.read(&mut self.inner.stream, buf)
         ))
+    }
+}
+
+impl PassFD for ChunkedReader {
+    fn fd(&self) -> i32 {
+        self.inner.fd()
     }
 }
 
@@ -333,35 +334,25 @@ async fn migrate_stream(s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
     // We need to first take a snapshot of media channel
     // This is mainly the thing that will let us resume in new process
     let snapshot = s.media_broadcast.snapshot();
-    let info     = MigrateConnection::Source {
-        info: MigrateSource {
-            mountpoint,
-            properties,
-            broadcast_snapshot: (snapshot.0.len() as u64, snapshot.1, snapshot.2),
-            fallback,
-            metadata,
-            queue_size: s.queue_size as u64,
-            chunked: s.chunked,
-            is_relay: match access {
-                SourceAccessType::SourceClient { username } => MigrateSourceConnectionType::SourceClient { username },
-                SourceAccessType::RelayedSource { relayed_source } => MigrateSourceConnectionType::RelayedSource {
-                    relayed_stream: relayed_source,
-                    relay_info: relay.expect("Should have non empty RelayInfo on source migration"),
-                    on_demand
-                }
-            },
-            client_addr: s.client_addr
-        }
-    };
-    if let Ok(info) = serde_json::to_vec(&info) {
-        _ = migrate.source.send(MigrateSourceInfo {
-            info,
-            active: Some(ActiveSourceInfo {
-                media: snapshot.0,
-                sock: s.stream
-            })
-        });
-    }
+    let info     = MigrateConnection::Source(MigrateSource {
+        mountpoint,
+        properties,
+        broadcast_snapshot: snapshot,
+        fallback,
+        metadata,
+        queue_size: s.queue_size as u64,
+        chunked: s.chunked,
+        is_relay: match access {
+            SourceAccessType::SourceClient { username } => MigrateSourceConnectionType::SourceClient { username },
+            SourceAccessType::RelayedSource { relayed_source } => MigrateSourceConnectionType::RelayedSource {
+                relayed_stream: relayed_source,
+                relay_info: relay.expect("Should have non empty RelayInfo on source migration"),
+                on_demand
+            }
+        },
+        client_addr: s.client_addr
+    });
+    _ = migrate.source.send(MigrateEntry { info, sock: Some(s.stream) });
 
     // We have finished all preparations for migration
     utils::hang().await;

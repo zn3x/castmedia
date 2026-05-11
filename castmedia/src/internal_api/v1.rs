@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 
 pub const INTERNAL_API_VERSION: u64 = 1;
@@ -6,8 +7,8 @@ pub const INTERNAL_API_VERSION: u64 = 1;
 pub struct MigrateSource {
     pub mountpoint: String,
     pub properties: IcyProperties,
-    /// Contains (number of frames in channel, channel size, last index)
-    pub broadcast_snapshot: (u64, u64, u64),
+    /// Contains (id + elements, channel size, last index)
+    pub broadcast_snapshot: (Vec<(u64, Arc<Vec<u8>>)>, u64, u64),
     pub fallback: Option<String>,
     pub metadata: Vec<u8>,
     pub chunked: bool,
@@ -57,11 +58,11 @@ pub struct MigrateSlaveMountUpdates {
 
 #[derive(Serialize, Deserialize)]
 pub enum MigrateConnection {
-    Source { info: MigrateSource },
-    Client { info: MigrateClient },
-    MasterMountUpdates { info: MigrateMasterMountUpdates },
-    SlaveMountUpdates { info: MigrateSlaveMountUpdates },
-    SlaveInactiveOnDemandSource { info: MigrateInactiveOnDemandSource }
+    Source(MigrateSource),
+    Client(MigrateClient),
+    MasterMountUpdates(MigrateMasterMountUpdates),
+    SlaveMountUpdates(MigrateSlaveMountUpdates),
+    SlaveInactiveOnDemandSource(MigrateInactiveOnDemandSource)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

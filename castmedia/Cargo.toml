@@ -18,7 +18,7 @@ uuid.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 serde_with.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

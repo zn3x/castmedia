@@ -251,6 +251,8 @@ async fn read_exact(stream: &mut dyn StreamReader, buf: &mut [u8]) -> Result<()>
 
 #[cfg(test)]
 mod tests {
+    use crate::server::PassFD;
+
     use super::*;
     use std::future::Future;
     use std::io::{Cursor, Read};
@@ -274,11 +276,11 @@ mod tests {
         }
     }
 
-    impl StreamReader for MockStreamReader {
-        fn fd(&self) -> i32 {
-            -1
-        }
+    impl PassFD for MockStreamReader {
+        fn fd(&self) -> i32 { -1 }
+    }
 
+    impl StreamReader for MockStreamReader {
         fn async_read<'a>(
             &'a mut self,
             buf: &'a mut [u8],
@@ -299,11 +301,11 @@ mod tests {
         }
     }
 
-    impl StreamReader for ErrorMockStreamReader {
-        fn fd(&self) -> i32 {
-            -1
-        }
+    impl PassFD for ErrorMockStreamReader {
+        fn fd(&self) -> i32 { -1 }
+    }
 
+    impl StreamReader for ErrorMockStreamReader {
         fn async_read<'a>(
             &'a mut self,
             _buf: &'a mut [u8],
@@ -346,11 +348,11 @@ mod tests {
         }
     }
 
-    impl StreamReader for ShortReadMockStreamReader {
-        fn fd(&self) -> i32 {
-            -1
-        }
+    impl PassFD for ShortReadMockStreamReader {
+        fn fd(&self) -> i32 { -1 }
+    }
 
+    impl StreamReader for ShortReadMockStreamReader {
         fn async_read<'a>(
             &'a mut self,
             buf: &'a mut [u8],

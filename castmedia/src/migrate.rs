@@ -5,7 +5,7 @@ use std::{
 use anyhow::Result;
 use qanat::broadcast::{restore_channel_from_snapshot, self};
 use tokio::runtime::Handle;
-use qanat::mpsc::{self, UnboundedSender, UnboundedReceiver};
+use qanat::mpsc::{self, UnboundedSender};
 use passfd::FdPassingExt;
 use tracing::{error, info};
 use url::Url;
@@ -17,50 +17,25 @@ use crate::{
         ListenerRestoreInfo, SourceInfo,
         ListenerInfo, RelayStream, MasterMountUpdatesInfo
     },
-    server::{Server, Stream}, stream::StreamReader,
+    server::{Server, PassFD},
     config::MasterServerRelayScheme,
     utils::{read_socket_from_unix_socket, read_stream_from_unix_socket}, relay::RelaySourceMigrate,
     internal_api::v1::*
 };
 
-pub struct MigrateClientInfo {
-    /// Serialized MigrateConnection::Client
-    pub info: Vec<u8>,
-    pub mountpoint: String,
-    pub sock: Stream
-}
-
-pub struct MigrateSourceInfo {
-    /// Serialized MigrateConnection::Source
-    pub info: Vec<u8>,
-    pub active: Option<ActiveSourceInfo>
-}
-
-pub struct ActiveSourceInfo {
-    pub media: Vec<(u64, Arc<Vec<u8>>)>,
-    pub sock: Box<dyn StreamReader>
-}
-
-pub struct MigrateMasterMountUpdatesInfo {
-    /// Serialized MigrateConnection::MasterMountUpdates
-    pub info: Vec<u8>,
-    pub sock: Stream
-}
-
-pub struct MigrateSlaveMountUpdatesInfo {
-    /// Serialized MigrateConnection::SlaveMountUpdates
-    pub info: Vec<u8>,
-    pub sock: Stream
+pub struct MigrateEntry {
+    pub info: MigrateConnection,
+    pub sock: Option<Box<dyn PassFD>>
 }
 
 pub struct MigrateCommand {
     /// mpsc channel where we will send connection info related to sources and listeners
-    pub source: mpsc::UnboundedSender<MigrateSourceInfo>,
-    pub listener: mpsc::UnboundedSender<MigrateClientInfo>,
+    pub source: mpsc::UnboundedSender<MigrateEntry>,
+    pub listener: mpsc::UnboundedSender<MigrateEntry>,
     /// /admin/mountpoint on master side
-    pub master_mountupdates: mpsc::UnboundedSender<MigrateMasterMountUpdatesInfo>,
+    pub master_mountupdates: mpsc::UnboundedSender<MigrateEntry>,
     /// /admin/mountpoint on slave side
-    pub slave_mountupdates: mpsc::UnboundedSender<Option<MigrateSlaveMountUpdatesInfo>>,
+    pub slave_mountupdates: mpsc::UnboundedSender<Option<MigrateEntry>>,
 }
 
 pub async fn spawn_listener(server: Arc<Server>) {
@@ -143,11 +118,7 @@ fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
         loop {
             while let Ok(v) = rx3.try_recv() {
                 if let Some(v) = v {
-                    // We first write mountupdates info
-                    successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
-                    successor.write_all(&v.info)?;
-                    // Then pass on fd
-                    successor.send_fd(v.sock.fd())?;
+                    send_connection(&mut successor, v)?;
                 }
             }
             count += 1;
@@ -162,7 +133,10 @@ fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
     let mut source_count = 0;
     // We first read all sources
     loop {
-        write_sources(&mut successor, &mut rx, &mut source_count)?;
+        while let Ok(v) = rx.try_recv() {
+            source_count += 1;
+            send_connection(&mut successor, v)?;
+        }
 
         if server.sources.blocking_read().len() == source_count {
             // We got all sources and now exiting
@@ -177,11 +151,7 @@ fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
     // We iterate over each source and make sure no client is active
     loop {
         while let Ok(v) = rx1.try_recv() {
-            // We send info first
-            successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
-            successor.write_all(&v.info)?;
-            // Then fd
-            successor.send_fd(v.sock.fd())?;
+            send_connection(&mut successor, v)?;
         }
 
         // We check if all client have been removed
@@ -197,12 +167,7 @@ fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
     // Doing best effort here as there is no way to knew if
     // there are other mountupdates streams we didn't pull
     while let Ok(v) = rx2.try_recv() {
-
-        // We first write mountupdates info
-        successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
-        successor.write_all(&v.info)?;
-        // Then pass on fd
-        successor.send_fd(v.sock.fd())?;
+        send_connection(&mut successor, v)?;
     }
 
     successor.write_all(&0u64.to_be_bytes())?;
@@ -212,25 +177,13 @@ fn migrate_predecessor(server: Arc<Server>) -> Result<()> {
     std::process::exit(0);
 }
 
-fn write_sources(successor: &mut UnixStream,
-                rx: &mut UnboundedReceiver<MigrateSourceInfo>,
-                source_count: &mut usize) -> Result<()> {
-    while let Ok(v) = rx.try_recv() {
-        *source_count += 1;
+fn send_connection(successor: &mut UnixStream, entry: MigrateEntry) -> Result<()> {
+    let ser = serde_json::to_vec(&entry.info)?;
 
-        // We first write source info
-        successor.write_all(&(v.info.len() as u64).to_be_bytes())?;
-        successor.write_all(&v.info)?;
-        if let Some(v) = v.active {
-            // Then media stream
-            for frame in v.media {
-                successor.write_all(&frame.0.to_be_bytes())?;
-                successor.write_all(&frame.1.len().to_be_bytes())?;
-                successor.write_all(&frame.1[..])?;
-            }
-            // Then pass on fd
-            successor.send_fd(v.sock.fd())?;
-        }
+    successor.write_all(&(ser.len() as u64).to_be_bytes())?;
+    successor.write_all(&ser)?;
+    if let Some(sock) = entry.sock {
+        successor.send_fd(sock.fd())?;
     }
 
     Ok(())
@@ -281,28 +234,14 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                 break;
             }
         } else if len > buf.len() {
-            buf.reserve(len - buf.len());
+            buf = vec![0; len];
         }
         predeseccor.read_exact(&mut buf[..len])?;
         let client_addr;
         let source: MigrateConnection = serde_json::from_slice(&buf[..len])?;
         let cl_info = match source {
-            MigrateConnection::Source { info } => {
-                // We now read media
-                let mut snapshot_msgs = Vec::new();
-                for _ in 0..info.broadcast_snapshot.0 {
-                    let mut u64_buf = [0u8; 8];
-                    predeseccor.read_exact(&mut u64_buf)?;
-                    let index = u64::from_be_bytes(u64_buf);
-                    u64_buf   = [0u8; 8];
-                    predeseccor.read_exact(&mut u64_buf)?;
-                    let len     = u64::from_be_bytes(u64_buf) as usize;
-                    let mut vec = vec![0u8; len];
-                    predeseccor.read_exact(&mut vec)?;
-                    snapshot_msgs.push((index, Arc::new(vec)));
-                }
-
-                let snapshot = restore_channel_from_snapshot((snapshot_msgs, info.broadcast_snapshot.1, info.broadcast_snapshot.2));
+            MigrateConnection::Source(info) => {
+                let snapshot = restore_channel_from_snapshot(info.broadcast_snapshot);
                 let mut is_relay = None;
                 let (access, relayed) = match info.is_relay {
                     MigrateSourceConnectionType::RelayedSource { relayed_stream, relay_info, .. } => {
@@ -416,7 +355,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
 
                 crate::client::ClientInfo::Source(ret)
             },
-            MigrateConnection::Client { info } => {
+            MigrateConnection::Client(info) => {
                 client_addr = info.properties.addr.clone();
                 crate::client::ClientInfo::Listener(ListenerInfo {
                     mountpoint: info.mountpoint,
@@ -427,14 +366,14 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                     properties: info.properties
                 })
             },
-            MigrateConnection::MasterMountUpdates { info } => {
+            MigrateConnection::MasterMountUpdates(info) => {
                 client_addr = info.client_addr;
                 crate::client::ClientInfo::MasterMountUpdates(MasterMountUpdatesInfo {
                     mounts: info.mounts,
                     user_id: info.user_id
                 })
             },
-            MigrateConnection::SlaveMountUpdates { info } => {
+            MigrateConnection::SlaveMountUpdates(info) => {
                 // Migrating slave mount update connections
                 // This must always be called sent to us before
                 // any SlaveInactiveOnDemandSource is sent
@@ -475,7 +414,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                 }
                 continue;
             },
-            MigrateConnection::SlaveInactiveOnDemandSource { info } => {
+            MigrateConnection::SlaveInactiveOnDemandSource(info) => {
                 // Here we only ever add this inactive ondemand source when
                 // New loaded configuration states that we have same master
                 // but with ondemand flag true

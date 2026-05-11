@@ -4,11 +4,11 @@ use std::{
     ops::{Deref, DerefMut}
 };
 use chrono::{DateTime, Local};
-use futures::{StreamExt, executor::block_on};
+use futures::StreamExt;
 use qanat::broadcast::{channel, Receiver, Sender};
 use tokio::{
     net::{TcpListener, TcpStream},
-    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream, AsyncWriteExt}, sync::{Semaphore, RwLock},
+    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock},
     signal
 };
 use tokio_native_tls::{native_tls, TlsStream, TlsAcceptor};
@@ -24,18 +24,16 @@ use crate::{
     auth::UserRef
 };
 
-pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {
-    fn fd(&self) -> i32;
+pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin + PassFD {
     fn local_addr(&self) -> Result<SocketAddr>;
     fn peer_addr(&self) -> Result<SocketAddr>;
-    fn close(&mut self);
+}
+
+pub trait PassFD: Send + Sync {
+    fn fd(&self) -> i32;
 }
 
 impl Socket for BufStream<TcpStream> {
-    fn fd(&self) -> i32 {
-        self.get_ref().as_raw_fd()
-    }
-
     fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.get_ref().local_addr()?)
     }
@@ -43,27 +41,27 @@ impl Socket for BufStream<TcpStream> {
     fn peer_addr(&self) -> Result<SocketAddr> {
         Ok(self.get_ref().peer_addr()?)
     }
-    
-    fn close(&mut self) {
-        _ = block_on(self.get_mut().shutdown());
+}
+
+impl PassFD for BufStream<TcpStream> {
+    fn fd(&self) -> i32 {
+        self.get_ref().as_raw_fd()
+    }
+}
+
+impl PassFD for BufStream<TlsStream<TcpStream>> {
+    fn fd(&self) -> i32 {
+        unreachable!("Can't migrate Tls connection")
     }
 }
 
 impl Socket for BufStream<TlsStream<TcpStream>> {
-    fn fd(&self) -> i32 {
-        unreachable!("Can't migrate Tls connection")
-    }
-
     fn local_addr(&self) -> Result<SocketAddr> {
         Ok(self.get_ref().get_ref().get_ref().get_ref().local_addr()?)
     }
 
     fn peer_addr(&self) -> Result<SocketAddr> {
         Ok(self.get_ref().get_ref().get_ref().get_ref().peer_addr()?)
-    }
-
-    fn close(&mut self) {
-        _ = block_on(self.get_mut().shutdown());
     }
 }
 

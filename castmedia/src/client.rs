@@ -21,7 +21,7 @@ use crate::{
     request::{read_request, Request, RequestType, ListenRequest},
     source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast, SourceAccessType},
     response, utils, admin, api,
-    migrate::{MigrateClientInfo, MigrateCommand},
+    migrate::{MigrateEntry, MigrateCommand},
     broadcast::read_media_broadcast,
     internal_api::v1::{RelayedInfo, ClientProperties, MigrateClient, MigrateConnection}
 };
@@ -351,22 +351,16 @@ async fn migrate_listener(session: ClientSession,
     // Safety: migrate sender half is NEVER dropped until process exits
     let migrate = migrate
         .expect("Got migrate notice with closed mpsc");
-    let info = MigrateConnection::Client {
-        info: MigrateClient {
-            mountpoint: b.mountpoint.clone(),
-            properties: client.properties,
-            resume_point: b.stream.read_position(),
-            metaint: b.metaint as u64
-        }
-    };
-    // Well, can't do nothing if we ran out of memory here
-    if let Ok(info) = serde_json::to_vec(&info) {
-        _ = migrate.listener.send(MigrateClientInfo {
-            info,
-            mountpoint: b.mountpoint.clone(),
-            sock: session.stream
-        });
-    }
+    let info = MigrateConnection::Client(MigrateClient {
+        mountpoint: b.mountpoint.clone(),
+        properties: client.properties,
+        resume_point: b.stream.read_position(),
+        metaint: b.metaint as u64
+    });
+    _ = migrate.listener.send(MigrateEntry {
+        info,
+        sock: Some(session.stream.0)
+    });
 }
 
 async fn change_mount(b: &mut BroadcastInfo,

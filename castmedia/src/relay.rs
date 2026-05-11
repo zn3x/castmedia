@@ -23,7 +23,7 @@ use crate::{
     internal_api::v1::{
         IcyProperties, MigrateConnection, MigrateInactiveOnDemandSource, MigrateMasterMountUpdates, MigrateSlaveMountUpdates, RelayedInfo
     },
-    migrate::{MigrateCommand, MigrateMasterMountUpdatesInfo}, response::ChunkedResponse,
+    migrate::{MigrateCommand, MigrateEntry}, response::ChunkedResponse,
     server::{ClientSession, Server, Session, Stream},
     source::{Source, SourceAccessType},
     stream::RelayBroadcastStatus,
@@ -222,20 +222,16 @@ async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat
     let migrate = migrate
         .expect("Got migrate notice with closed mpsc");
 
-    let info = MigrateConnection::MasterMountUpdates {
-        info: MigrateMasterMountUpdates {
-            mounts: mounts.into_keys().collect::<Vec<String>>(),
-            user_id,
-            client_addr: session.addr.to_string()
-        }
-    };
+    let info = MigrateConnection::MasterMountUpdates(MigrateMasterMountUpdates {
+        mounts: mounts.into_keys().collect::<Vec<String>>(),
+        user_id,
+        client_addr: session.addr.to_string()
+    });
 
-    if let Ok(info) = serde_json::to_vec(&info) {
-        _ = migrate.master_mountupdates.send(MigrateMasterMountUpdatesInfo {
-            info,
-            sock: session.stream
-        });
-    }
+    _ = migrate.master_mountupdates.send(MigrateEntry {
+        info,
+        sock: Some(session.stream.0)
+    });
 
     utils::hang().await;
 }
@@ -524,16 +520,10 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
             let migrate = migrate
                 .expect("Got migrate notice with closed mpsc");
 
-            let info = MigrateConnection::SlaveMountUpdates {
-                info: MigrateSlaveMountUpdates {
-                    master_url: master.url.to_string()
-                }
-            };
-            if let Ok(info) = serde_json::to_vec(&info) {
-                _ = migrate.slave_mountupdates.send(Some(
-                        crate::migrate::MigrateSlaveMountUpdatesInfo { info, sock: stream }
-                ));
-            }
+            let info = MigrateConnection::SlaveMountUpdates(MigrateSlaveMountUpdates {
+                master_url: master.url.to_string()
+            });
+            _ = migrate.slave_mountupdates.send(Some(MigrateEntry { info, sock: Some(stream.0) }));
             utils::hang().await;
         }
     }
@@ -770,21 +760,17 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
 
                 let master = &serv.config.master[master_ind];
                 if let Some(properties) = serv.sources.read().await.get(&mount).map(|x| (*x.properties).to_owned()) {
-                    let info = MigrateConnection::SlaveInactiveOnDemandSource {
-                        info: MigrateInactiveOnDemandSource {
-                            master_url: master.url.to_string(),
-                            mountpoint: mount,
-                            properties
-                        }
-                    };
-                    if let Ok(info) = serde_json::to_vec(&info) {
-                        _ = migrate
-                            .source
-                            .send(crate::migrate::MigrateSourceInfo {
-                                info,
-                                active: None
-                            });
-                    }
+                    let info = MigrateConnection::SlaveInactiveOnDemandSource(MigrateInactiveOnDemandSource {
+                        master_url: master.url.to_string(),
+                        mountpoint: mount,
+                        properties
+                    });
+                    _ = migrate
+                        .source
+                        .send(MigrateEntry {
+                            info,
+                            sock: None
+                        });
                 }
 
                 utils::hang().await;
