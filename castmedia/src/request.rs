@@ -1,4 +1,4 @@
-use std::{time::Duration, net::SocketAddr};
+use std::{time::Duration, net::{IpAddr, SocketAddr}};
 use anyhow::Result;
 use hashbrown::HashMap;
 use httparse::Status;
@@ -88,10 +88,11 @@ pub async fn read_request<'a>(session: &mut ClientSession, request: &'a mut Requ
     };
 
     if session.server.config.misc.check_forwardedfor {
-        if let Some(addr) = get_header("x-forwarded-for", &request.headers)
+        if let Some(ip) = get_header("x-forwarded-for", &request.headers)
             .and_then(|header| std::str::from_utf8(header).ok())
-            .and_then(|addr_str| addr_str.parse::<SocketAddr>().ok()) {
-            session.addr = addr;
+            .and_then(|addr_str| addr_str.split(',').next())
+            .and_then(|ip_str| ip_str.trim().parse::<IpAddr>().ok()) {
+            session.addr = SocketAddr::new(ip, session.addr.port());
         }
     }
 
