@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use test_utils::{spawn_server, get_response, get_status_code, spawn_source, spawn_listener};
+use test_utils::{get_response, get_status_code, spawn_listener, spawn_server, spawn_source, spawn_source_manual};
 
 const CONFIG_ADMIN_API: &str = "
 address:
@@ -57,6 +57,32 @@ admin_access:
   enabled: true
   address:
     bind: 127.0.0.1:9101
+misc:
+  unsafe_pass: true
+";
+
+const CONFIG_RESERVED_PATHS: &str = "
+address:
+  - bind: 127.0.0.1:9023
+metadata_interval: 30000
+limits:
+  queue_size: 400000
+account:
+  admin:
+    pass: 0$pass
+    role: admin
+  source:
+    pass: 0$pass
+    role: source
+    mount:
+      - path: '*'
+admin_access:
+  enabled: true
+  address:
+    bind: 127.0.0.1:9123
+migrate:
+  enabled: true
+  bind: /tmp/migration_reserved.sock
 misc:
   unsafe_pass: true
 ";
@@ -435,6 +461,52 @@ async fn public_api() {
     listener.kill().await.ok();
     listener1.kill().await.ok();
     source.kill().await.ok();
+    drop(server);
+}
+
+#[tokio::test]
+async fn source_mount_reserved_paths() {
+    let server = spawn_server(TEST_DIR, CONFIG_RESERVED_PATHS, "reserved_paths.yaml").await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let admin = "127.0.0.1:9123";
+
+    // Try to mount on /admin - should be forbidden
+    let result = spawn_source_manual(AUTH_SOURCE, admin, "/admin");
+    assert!(result.is_err(), "Mounting on /admin should be forbidden");
+
+    // Try to mount on /admin/something - should be forbidden
+    let result = spawn_source_manual(AUTH_SOURCE, admin, "/admin/test");
+    assert!(
+        result.is_err(),
+        "Mounting on /admin/ subpath should be forbidden"
+    );
+
+    // Try to mount on /api - should be forbidden
+    let result = spawn_source_manual(AUTH_SOURCE, admin, "/api");
+    assert!(result.is_err(), "Mounting on /api should be forbidden");
+
+    // Try to mount on /api/something - should be forbidden
+    let result = spawn_source_manual(AUTH_SOURCE, admin, "/api/test");
+    assert!(
+        result.is_err(),
+        "Mounting on /api/ subpath should be forbidden"
+    );
+
+    // Mounting on a normal path should succeed
+    let result = spawn_source_manual(AUTH_SOURCE, admin, "/mystream.mp3");
+    assert!(
+        result.is_ok(),
+        "Mounting on a normal path should succeed"
+    );
+
+    let r = test_utils::get_status_code(&format!(
+        "http://{}@{}/admin/shutdown",
+        AUTH_ADMIN, admin
+    ))
+    .await;
+    assert_eq!(r, 200);
+
     drop(server);
 }
 
