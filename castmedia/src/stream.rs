@@ -1,5 +1,6 @@
 use std::{
     time::Duration, collections::VecDeque, num::NonZeroUsize,
+    net::SocketAddr,
     sync::{
         Arc,
         atomic::Ordering
@@ -11,7 +12,7 @@ use qanat::broadcast::Sender;
 use tracing::{error, info};
 use anyhow::Result;
 use qanat::oneshot;
-use tokio::io::{AsyncReadExt, ReadBuf, AsyncRead};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 
 use crate::{
     utils,
@@ -179,7 +180,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
                     chunked: s.chunked,
                     queue_size: s.queue_size,
                     stream: reader,
-                    client_addr: s.session.addr.to_string()
+                    client_addr: s.session.addr
                 },
                 Some(relay),
                 s.on_demand
@@ -247,7 +248,7 @@ pub async fn broadcast(mut s: BroadcastInfo<'_>) {
                     chunked: s.chunked,
                     queue_size: s.queue_size,
                     stream: reader,
-                    client_addr: s.session.addr.to_string()
+                    client_addr: s.session.addr
                 },
                 None,
                 false
@@ -290,10 +291,10 @@ struct MigrateStreamInfo<'a> {
     chunked: bool,
     queue_size: usize,
     stream: StreamReader,
-    client_addr: String
+    client_addr: SocketAddr
 }
 
-async fn migrate_stream(s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
+async fn migrate_stream(mut s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
                         on_demand: bool) -> ! {
     // Safety: migrate sender half is NEVER dropped until process exits
     let migrate = s.migrate
@@ -333,10 +334,13 @@ async fn migrate_stream(s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
                 relay_info: relay.expect("Should have non empty RelayInfo on source migration"),
                 on_demand
             }
-        },
-        client_addr: s.client_addr
+        }
     });
-    _ = migrate.source.send(MigrateEntry { info, sock: Some(s.stream.stream.0) });
+
+    match s.stream.stream.flush().await {
+        Ok(()) => _ = migrate.source.send(MigrateEntry { info, sock: Some((s.stream.stream, s.client_addr)) }),
+        Err(e) => tracing::error!("Failed migrating source stream: {e}")
+    }
 
     // We have finished all preparations for migration
     utils::hang().await;

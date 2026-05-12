@@ -1,6 +1,5 @@
 use std::{
-    sync::Arc,
-    os::unix::net::{UnixListener, UnixStream}, io::{Write, Read}, time::Duration, num::NonZeroUsize, net::SocketAddr
+    io::{Read, Write}, net::SocketAddr, num::NonZeroUsize, os::{fd::AsRawFd, unix::net::{UnixListener, UnixStream}}, sync::Arc, time::Duration
 };
 use anyhow::Result;
 use qanat::broadcast::{restore_channel_from_snapshot, self};
@@ -17,15 +16,15 @@ use crate::{
         ListenerRestoreInfo, SourceInfo,
         ListenerInfo, RelayStream, MasterMountUpdatesInfo
     },
-    server::{Server, PassFD},
+    server::{Server, Stream},
     config::MasterServerRelayScheme,
-    utils::{read_socket_from_unix_socket, read_stream_from_unix_socket}, relay::RelaySourceMigrate,
+    utils, relay::RelaySourceMigrate,
     internal_api::v1::*
 };
 
 pub struct MigrateEntry {
     pub info: MigrateConnection,
-    pub sock: Option<Box<dyn PassFD>>
+    pub sock: Option<(Stream, SocketAddr)>
 }
 
 pub struct MigrateCommand {
@@ -183,10 +182,30 @@ fn send_connection(successor: &mut UnixStream, entry: MigrateEntry) -> Result<()
     successor.write_all(&(ser.len() as u64).to_be_bytes())?;
     successor.write_all(&ser)?;
     if let Some(sock) = entry.sock {
-        successor.send_fd(sock.fd())?;
+        let (s, read_buffer) = sock.0.prepare_for_migration();
+        successor.send_fd(s.as_raw_fd())?;
+        let ser = serde_json::to_vec(&MigrateSocket {
+            read_buffer,
+            client_addr: sock.1
+        })?;
+        successor.write_all(&(ser.len() as u64).to_be_bytes())?;
+        successor.write_all(&ser)?;
     }
 
     Ok(())
+}
+
+fn read_socket(predeseccor: &mut UnixStream) -> Result<(Stream, SocketAddr)> {
+    let sock = utils::read_stream_from_unix_socket(predeseccor)?;
+    let mut len_buf = [0u8; 8];
+    predeseccor.read_exact(&mut len_buf)?;
+    let len = u64::from_be_bytes(len_buf) as usize;
+    let mut buf = vec![0u8; len];
+    predeseccor.read_exact(&mut buf)?;
+    let info: MigrateSocket = serde_json::from_slice(&buf[..len])?;
+    let stream = Stream::new_migrated(sock, info.read_buffer);
+
+    Ok((stream, info.client_addr))
 }
 
 struct MasterServerTask<'a> {
@@ -237,7 +256,6 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
             buf = vec![0; len];
         }
         predeseccor.read_exact(&mut buf[..len])?;
-        let client_addr;
         let source: MigrateConnection = serde_json::from_slice(&buf[..len])?;
         let cl_info = match source {
             MigrateConnection::Source(info) => {
@@ -273,15 +291,8 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                 };
                 
                 if let Some(r) = is_relay {
-                    let (stream, addr) = match read_stream_from_unix_socket(&mut predeseccor) {
-                        Ok(v) => (
-                            v.0,
-                            // Making sure we are getting real address if check_forwardedfor is
-                            // enabled
-                            info.client_addr.parse::<SocketAddr>()
-                                .inspect_err(|e| error!("Failed parsing socket addr: {e}"))
-                                .unwrap_or(v.1)
-                        ),
+                    let (stream, addr) = match read_socket(&mut predeseccor) {
+                        Ok(v) => v,
                         Err(e) => {
                             error!("Failed to fetch migrated connection: {}", e);
                             continue 'OUTER;
@@ -349,14 +360,10 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                     // If we can't find a master server for this relay source
                     // we will drop it here
                     continue 'OUTER;
-                } else {
-                    client_addr = info.client_addr;
                 }
-
                 crate::client::ClientInfo::Source(ret)
             },
             MigrateConnection::Client(info) => {
-                client_addr = info.properties.addr.clone();
                 crate::client::ClientInfo::Listener(ListenerInfo {
                     mountpoint: info.mountpoint,
                     migrated: Some(ListenerRestoreInfo {
@@ -367,7 +374,6 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                 })
             },
             MigrateConnection::MasterMountUpdates(info) => {
-                client_addr = info.client_addr;
                 crate::client::ClientInfo::MasterMountUpdates(MasterMountUpdatesInfo {
                     mounts: info.mounts,
                     user_id: info.user_id
@@ -382,7 +388,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                     if let Ok(url) = info.master_url.parse::<Url>() {
                         if master.url.host_str().eq(&url.host_str())
                             && master.url.port().eq(&url.port()) {
-                            let (stream, _) = match read_stream_from_unix_socket(&mut predeseccor) {
+                            let (stream, _) = match read_socket(&mut predeseccor) {
                                 Ok(v) => v,
                                 Err(e) => {
                                     error!("Failed to fetch migrated connection: {}", e);
@@ -431,7 +437,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
             }
         };
 
-        let sock = if let Ok(v) = read_socket_from_unix_socket(&mut predeseccor) {
+        let (sock, addr) = if let Ok(v) = read_socket(&mut predeseccor) {
             v
         } else {
             continue;
@@ -444,7 +450,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
             let sem = server_cl.max_clients.clone();
             let aq  = sem.try_acquire();
             if let Ok(_guard) = aq {
-                handle_migrated(sock, client_addr, server_cl, cl_info, rx_cl).await;
+                handle_migrated(sock, addr, server_cl, cl_info, rx_cl).await;
             }
         });
     };

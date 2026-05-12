@@ -1,9 +1,9 @@
-use std::{os::{unix::net::UnixStream, fd::FromRawFd}, net::SocketAddr};
+use std::os::{unix::net::UnixStream, fd::FromRawFd};
 
 use anyhow::Result;
 use base64::Engine;
 use passfd::FdPassingExt;
-use tokio::{net::TcpStream, io::BufStream};
+use tokio::net::TcpStream;
 use hashbrown::HashMap;
 use url::Url;
 
@@ -82,20 +82,13 @@ pub async fn hang() -> ! {
     unreachable!()
 }
 
-pub fn read_socket_from_unix_socket(unixsock: &mut UnixStream) -> Result<TcpStream> {
+pub fn read_stream_from_unix_socket(unixsock: &mut UnixStream) -> Result<TcpStream> {
     let fd       = unixsock.recv_fd()?;
     // Safety: We just got the fd from older instance, we are sure it's a tcp socket
     let std_sock = unsafe { std::net::TcpStream::from_raw_fd(fd) };
     std_sock.set_nonblocking(true)?;
+
     Ok(TcpStream::from_std(std_sock)?)
-}
-
-pub fn read_stream_from_unix_socket(unixsock: &mut UnixStream) -> Result<(Stream, SocketAddr)> {
-    let sock = read_socket_from_unix_socket(unixsock)?;
-    let addr = sock.peer_addr()?;
-    let stream = Stream(Box::new(BufStream::new(sock)));
-
-    Ok((stream, addr))
 }
 
 #[cfg(test)]

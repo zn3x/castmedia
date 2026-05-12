@@ -30,6 +30,7 @@ scrypt.workspace = true
 diatomic-waker.workspace = true
 clean-path.workspace = true
 async-trait.workspace = true
+pin-project.workspace = true
 
 [dev-dependencies]
 symphonia.workspace = true

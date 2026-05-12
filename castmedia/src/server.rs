@@ -1,21 +1,23 @@
 use std::{
     sync::{Arc, atomic::{AtomicUsize, Ordering}},
     net::SocketAddr, hash::BuildHasher, os::fd::AsRawFd, time::Duration,
-    ops::{Deref, DerefMut}
+    ops::{Deref, DerefMut},
+    pin::Pin, task::{Poll, Context}, io
 };
 use chrono::{DateTime, Local};
 use futures::StreamExt;
 use qanat::broadcast::{channel, Receiver, Sender};
 use tokio::{
     net::{TcpListener, TcpStream},
-    task::JoinSet, io::{AsyncRead, AsyncWrite, BufStream}, sync::{Semaphore, RwLock},
-    signal
+    task::JoinSet, io::{AsyncRead, AsyncWrite, BufReader, BufWriter, ReadBuf},
+    sync::{Semaphore, RwLock}, signal
 };
 use tokio_native_tls::{native_tls, TlsStream, TlsAcceptor};
 use tracing::{info, error, warn};
 use hashbrown::{HashMap, hash_map::DefaultHashBuilder};
 use inotify::{Inotify, WatchMask};
 use anyhow::Result;
+use pin_project::pin_project;
 
 use crate::{
     config::{ServerSettings, TlsIdentity, Role}, 
@@ -24,48 +26,132 @@ use crate::{
     auth::UserRef
 };
 
-pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin + PassFD {
+pub trait Socket: Send + Sync + AsyncRead + AsyncWrite + Unpin {
+    fn fd(&self) -> i32;
     fn local_addr(&self) -> Result<SocketAddr>;
     fn peer_addr(&self) -> Result<SocketAddr>;
+    fn consume(self: Box<Self>) -> (TcpStream, Vec<u8>);
 }
 
-pub trait PassFD: Send + Sync {
-    fn fd(&self) -> i32;
-}
+impl Socket for BufReader<BufWriter<TcpStream>> {
+    fn fd(&self) -> i32 {
+        self.get_ref().get_ref().as_raw_fd()
+    }
 
-impl Socket for BufStream<TcpStream> {
     fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.get_ref().local_addr()?)
+        Ok(self.get_ref().get_ref().local_addr()?)
     }
 
     fn peer_addr(&self) -> Result<SocketAddr> {
-        Ok(self.get_ref().peer_addr()?)
+        Ok(self.get_ref().get_ref().peer_addr()?)
+    }
+
+    fn consume(self: Box<Self>) -> (TcpStream, Vec<u8>) {
+        let read_buf = self.buffer().to_vec();
+        let buf_writer: BufWriter<TcpStream> = self.into_inner();
+        (buf_writer.into_inner(), read_buf)
     }
 }
 
-impl PassFD for BufStream<TcpStream> {
-    fn fd(&self) -> i32 {
-        self.get_ref().as_raw_fd()
-    }
-}
+impl Socket for BufReader<BufWriter<TlsStream<TcpStream>>> {
+    fn fd(&self) -> i32 { unreachable!("Can't migrate Tls connection") }
 
-impl PassFD for BufStream<TlsStream<TcpStream>> {
-    fn fd(&self) -> i32 {
-        unreachable!("Can't migrate Tls connection")
-    }
-}
-
-impl Socket for BufStream<TlsStream<TcpStream>> {
     fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.get_ref().get_ref().get_ref().get_ref().local_addr()?)
+        Ok(self.get_ref().get_ref().get_ref().get_ref().get_ref().local_addr()?)
     }
 
     fn peer_addr(&self) -> Result<SocketAddr> {
-        Ok(self.get_ref().get_ref().get_ref().get_ref().peer_addr()?)
+        Ok(self.get_ref().get_ref().get_ref().get_ref().get_ref().peer_addr()?)
+    }
+
+    fn consume(self: Box<Self>) -> (TcpStream, Vec<u8>) { unreachable!("Can't migrate Tls connection") }
+}
+
+#[pin_project]
+pub struct PrefixedStream {
+    stream: BufReader<BufWriter<TcpStream>>,
+    prefix: Option<Vec<u8>>,
+}
+
+impl AsyncRead for PrefixedStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.project();
+        if let Some(ref mut prefix) = this.prefix {
+            let n = prefix.len().min(buf.remaining());
+            buf.put_slice(&prefix[..n]);
+            prefix.drain(0..n);
+
+            if prefix.is_empty() {
+                *this.prefix = None;
+            }
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(this.stream).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for PrefixedStream {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        let this = self.project();
+        Pin::new(this.stream).poll_write(cx, buf)
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.project();
+        Pin::new(this.stream).poll_flush(cx)
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.project();
+        Pin::new(this.stream).poll_shutdown(cx)
+    }
+}
+
+impl Socket for PrefixedStream {
+    fn fd(&self) -> i32 {
+        self.stream.get_ref().get_ref().as_raw_fd()
+    }
+
+    fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.stream.get_ref().get_ref().local_addr()?)
+    }
+
+    fn peer_addr(&self) -> Result<SocketAddr> {
+        Ok(self.stream.get_ref().get_ref().peer_addr()?)
+    }
+
+    fn consume(self: Box<Self>) -> (TcpStream, Vec<u8>) {
+        let mut read_buf = self.prefix.unwrap_or_default();
+        read_buf.extend_from_slice(self.stream.buffer());
+        let buf_writer: BufWriter<TcpStream> = self.stream.into_inner();
+        (buf_writer.into_inner(), read_buf)
     }
 }
 
 pub struct Stream(pub Box<dyn Socket>);
+
+impl Stream {
+    pub fn new(s: TcpStream) -> Self {
+        Self(Box::new(BufReader::new(BufWriter::new(s))))
+    }
+
+    pub fn new_tls(s: TlsStream<TcpStream>) -> Self {
+        Self(Box::new(BufReader::new(BufWriter::new(s))))
+    }
+
+    pub fn new_migrated(stream: TcpStream, prefix: Vec<u8>) -> Self {
+        match prefix.is_empty() {
+            true => Self::new(stream),
+            false => Self(Box::new(PrefixedStream { stream: BufReader::new(BufWriter::new(stream)), prefix: Some(prefix) }))
+        }
+    }
+
+    pub fn prepare_for_migration(self) -> (TcpStream, Vec<u8>) {
+        self.0.consume()
+    }
+}
 
 impl Deref for Stream {
     type Target = Box<dyn Socket>;
@@ -223,11 +309,11 @@ async fn accept_loop(serv: Arc<Server>, listener: &TcpListener, addr_type: AddrT
                                     return;
                                 }
                             };
-                            handle_accepted(serv_clone, addr_type, Stream(Box::new(BufStream::new(tls_stream))), addr).await;
+                            handle_accepted(serv_clone, addr_type, Stream::new_tls(tls_stream), addr).await;
                         });
                     },
                     None => {
-                        tokio::spawn(handle_accepted(serv_clone, addr_type, Stream(Box::new(BufStream::new(stream))), addr));
+                        tokio::spawn(handle_accepted(serv_clone, addr_type, Stream::new(stream), addr));
                     }
                 }
             },

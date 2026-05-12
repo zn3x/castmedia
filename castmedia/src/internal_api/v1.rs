@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 
 pub const INTERNAL_API_VERSION: u64 = 1;
@@ -13,8 +13,7 @@ pub struct MigrateSource {
     pub metadata: Vec<u8>,
     pub chunked: bool,
     pub queue_size: u64,
-    pub is_relay: MigrateSourceConnectionType,
-    pub client_addr: String
+    pub is_relay: MigrateSourceConnectionType
 }
 
 #[derive(Serialize, Deserialize)]
@@ -47,8 +46,7 @@ pub struct MigrateClient {
 #[derive(Serialize, Deserialize)]
 pub struct MigrateMasterMountUpdates {
     pub mounts: Vec<String>,
-    pub user_id: String,
-    pub client_addr: String
+    pub user_id: String
 }
 
 #[derive(Serialize, Deserialize)]
@@ -63,6 +61,12 @@ pub enum MigrateConnection {
     MasterMountUpdates(MigrateMasterMountUpdates),
     SlaveMountUpdates(MigrateSlaveMountUpdates),
     SlaveInactiveOnDemandSource(MigrateInactiveOnDemandSource)
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MigrateSocket {
+    pub read_buffer: Vec<u8>,
+    pub client_addr: SocketAddr
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

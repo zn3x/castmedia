@@ -8,11 +8,7 @@ use qanat::{
     broadcast::{Receiver, RecvError, Sender},
     oneshot
 };
-use tokio::{
-    io::{AsyncWriteExt, BufStream},
-    sync::RwLock,
-    net::TcpStream
-};
+use tokio::{io::AsyncWriteExt, sync::RwLock};
 use tracing::{info, error};
 use uuid::Uuid;
 
@@ -341,7 +337,7 @@ async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastIn
     Ok(BroadcastStatus::EndofStream)
 }
 
-async fn migrate_listener(session: ClientSession,
+async fn migrate_listener(mut session: ClientSession,
                           b: &mut BroadcastInfo,
                           migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>) {
     // Safety only task of client will ever remove itself
@@ -357,10 +353,11 @@ async fn migrate_listener(session: ClientSession,
         resume_point: b.stream.read_position(),
         metaint: b.metaint as u64
     });
-    _ = migrate.listener.send(MigrateEntry {
-        info,
-        sock: Some(session.stream.0)
-    });
+
+    match session.stream.flush().await {
+        Ok(()) => _ = migrate.listener.send(MigrateEntry { info, sock: Some((session.stream, session.addr)) }),
+        Err(e) => tracing::error!("Failed migrating listener: {e}")
+    }
 }
 
 async fn change_mount(b: &mut BroadcastInfo,
@@ -471,23 +468,9 @@ pub struct ListenerInfo {
     pub properties: ClientProperties
 }
 
-pub async fn handle_migrated(sock: TcpStream, addr: String,
+pub async fn handle_migrated(stream: Stream, addr: SocketAddr,
                              server: Arc<Server>, client: ClientInfo,
                              mut migrate_finished: Receiver<()>) {
-    let addr = match addr.parse::<SocketAddr>()
-            .inspect_err(|e| error!("Failed to parse client addr in migration: {e}"))
-            .ok() {
-        Some(v) => v,
-        None => match sock.peer_addr() {
-            Ok(v) => v,
-            Err(e) => {
-                error!("Failed to fetch migrated connection address: {}", e);
-                return;
-            }
-        }
-    };
-    let stream = Stream(Box::new(BufStream::new(sock)));
-
     match client {
         ClientInfo::Source(info) => {
             // We will only allow source clients that are still present in config

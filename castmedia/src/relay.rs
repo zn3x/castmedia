@@ -217,21 +217,20 @@ pub async fn master_mount_updates(mut session: ClientSession,
 }
 
 async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>,
-                                      user_id: String, session: ClientSession, 
+                                      user_id: String, mut session: ClientSession, 
                                       mounts: HashMap<String, Receiver<Arc<(u64, Vec<u8>)>>>) -> ! {
     let migrate = migrate
         .expect("Got migrate notice with closed mpsc");
 
     let info = MigrateConnection::MasterMountUpdates(MigrateMasterMountUpdates {
         mounts: mounts.into_keys().collect::<Vec<String>>(),
-        user_id,
-        client_addr: session.addr.to_string()
+        user_id
     });
 
-    _ = migrate.master_mountupdates.send(MigrateEntry {
-        info,
-        sock: Some(session.stream.0)
-    });
+    match session.stream.flush().await {
+        Ok(()) => _ = migrate.master_mountupdates.send(MigrateEntry { info, sock: Some((session.stream, session.addr)) }),
+        Err(e) => tracing::error!("Failed migrating master mount updates: {e}")
+    }
 
     utils::hang().await;
 }
@@ -523,7 +522,13 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
             let info = MigrateConnection::SlaveMountUpdates(MigrateSlaveMountUpdates {
                 master_url: master.url.to_string()
             });
-            _ = migrate.slave_mountupdates.send(Some(MigrateEntry { info, sock: Some(stream.0) }));
+            match (stream.peer_addr(), stream.flush().await) {
+                (Ok(client_addr), Ok(())) => {
+                    _ = migrate.slave_mountupdates.send(Some(MigrateEntry { info, sock: Some((stream, client_addr)) }));
+                },
+                (Err(e), _) => error!("Failed migrating relaying connection: {e}"),
+                (_, Err(e)) => error!("Failed migrating relaying connection: {e}")
+            }
             utils::hang().await;
         }
     }

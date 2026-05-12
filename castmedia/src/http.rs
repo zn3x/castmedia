@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use anyhow::Result;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufStream},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream
 };
 use tokio_native_tls::native_tls::TlsConnector;
@@ -29,9 +29,9 @@ impl<'a> HttpClient<'a> {
         let stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
         let stream = if url.scheme().eq("https") {
             let cx = tokio_native_tls::TlsConnector::from(TlsConnector::builder().build()?);
-            Stream(Box::new(BufStream::new(cx.connect(&host, stream).await?)))
+            Stream::new_tls(cx.connect(&host, stream).await?)
         } else {
-            Stream(Box::new(BufStream::new(stream)))
+            Stream::new(stream)
         };
 
         Ok(Self {
