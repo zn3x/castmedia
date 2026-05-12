@@ -3,18 +3,19 @@ use std::{
     sync::{
         Arc,
         atomic::Ordering
-    }, pin::Pin
+    },
+    pin::Pin, task::{Poll, Context}
 };
 use futures::Future;
 use qanat::broadcast::Sender;
 use tracing::{error, info};
 use anyhow::Result;
 use qanat::oneshot;
-use tokio::{time::timeout, io::AsyncReadExt};
+use tokio::io::{AsyncReadExt, ReadBuf, AsyncRead};
 
 use crate::{
     utils,
-    server::{Stream, Session, Server, PassFD},
+    server::{Stream, Session, Server},
     source::{SourceBroadcast, SourceStats, MoveClientsCommand, MoveClientsType, SourceAccessType},
     migrate::{MigrateCommand, MigrateEntry},
     client::StreamOnDemand,
@@ -24,82 +25,75 @@ use crate::{
     audio::{AudioReader, Mp3Reader, AdtsReader}
 };
 
-#[inline(always)]
-async fn read_with_stats(stats: &SourceStats, time: Duration, fut: impl Future<Output = std::io::Result<usize>>)
-    -> std::io::Result<usize> {
-    let r = match timeout(time, fut).await {
-        Ok(Ok(v)) => v,
-        Ok(Err(e)) => return Err(e),
-        Err(e) => return Err(e.into())
-    };
-
-    if r == 0 {
-        return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "Reached end of connection"));
-    }
-
-    stats.bytes_read.fetch_add(r as u64, Ordering::Relaxed);
-    Ok(r)
-}
-
-pub trait StreamReader: Send + Sync + PassFD {
-    fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>>;
-}
-
-pub struct SimpleReader {
+pub struct StreamReader {
     timeout: Duration,
     stream: Stream,
-    stats: Arc<SourceStats>
+    stats: Arc<SourceStats>,
+    chunked: Option<ChunkedResponseReader>,
+    sleep: Option<Pin<Box<tokio::time::Sleep>>>
 }
 
-impl SimpleReader {
-    pub fn new(stream: Stream, timeout: u64, stats: Arc<SourceStats>) -> Self {
-        SimpleReader { stream, timeout: Duration::from_millis(timeout), stats }
-    }
-}
-
-impl StreamReader for SimpleReader {
-    fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>> {
-        Box::pin(read_with_stats(
-            &self.stats,
-            self.timeout,
-            self.stream.read(buf)
-        ))
-    }
-}
-
-impl PassFD for SimpleReader {
-    fn fd(&self) -> i32 {
-        self.stream.fd()
-    }
-}
-
-pub struct ChunkedReader {
-    inner: SimpleReader,
-    chunked: ChunkedResponseReader
-}
-
-impl ChunkedReader {
-    pub fn new(inner: SimpleReader) -> Self {
+impl StreamReader {
+    pub fn new(stream: Stream, timeout: u64, stats: Arc<SourceStats>, chunked: bool) -> Self {
         Self {
-            inner,
-            chunked: ChunkedResponseReader::new()
+            stream,
+            timeout: Duration::from_millis(timeout),
+            stats,
+            chunked: if chunked { Some(ChunkedResponseReader::new()) } else { None },
+            sleep: None
         }
     }
 }
 
-impl StreamReader for ChunkedReader {
-    fn async_read<'a>(&'a mut self, buf: &'a mut [u8]) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>> {
-        Box::pin(read_with_stats(
-            &self.inner.stats,
-            self.inner.timeout,
-            self.chunked.read(&mut self.inner.stream, buf)
-        ))
-    }
-}
+impl AsyncRead for StreamReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if this.sleep.is_none() {
+            this.sleep = Some(Box::pin(tokio::time::sleep(this.timeout)));
+        }
 
-impl PassFD for ChunkedReader {
-    fn fd(&self) -> i32 {
-        self.inner.fd()
+        let unfilled = buf.initialize_unfilled();
+
+        let mut inner: Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_>> =
+            if let Some(chunked) = this.chunked.as_mut() {
+                Box::pin(chunked.read(&mut this.stream, unfilled))
+            } else {
+                Box::pin(this.stream.read(unfilled))
+            };
+
+        match inner.as_mut().poll(cx) {
+            Poll::Ready(Ok(n)) => {
+                drop(inner);
+                this.sleep = None;
+                if n == 0 {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::NotConnected,
+                        "Reached end of connection",
+                    )));
+                }
+                buf.advance(n);
+                this.stats.bytes_read.fetch_add(n as u64, Ordering::Relaxed);
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(e)) => {
+                this.sleep = None;
+                Poll::Ready(Err(e))
+            }
+            Poll::Pending => {
+                if this.sleep.as_mut().unwrap().as_mut().poll(cx).is_ready() {
+                    this.sleep = None;
+                    return Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "read timed out",
+                    )));
+                }
+                Poll::Pending
+            }
+        }
     }
 }
 
@@ -131,16 +125,12 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
         info!("Source on {} (from {}) is now active", s.mountpoint, master);
     }
 
-    let reader = SimpleReader::new(
+    let mut reader = StreamReader::new(
         s.session.stream,
         s.session.server.config.limits.source_timeout,
-        s.stats.clone()
+        s.stats.clone(),
+        s.chunked
     );
-
-    let mut reader: Box<dyn StreamReader> = match s.chunked {
-        false => Box::new(reader),
-        true  => Box::new(ChunkedReader::new(reader))
-    };
 
     let mut migrate_comm = s.session.server.migrate.clone();
     let mut data         = Vec::new();
@@ -151,7 +141,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
     }
 
     let fut = handle_relay_stream(
-        reader.as_mut(), &s.session.server,
+        &mut reader, &s.session.server,
         s.mountpoint, &mut s.broadcast,
         &mut s.queue_size, &mut relay,
         &mut chunk_size, &mut data,
@@ -238,13 +228,7 @@ pub async fn broadcast(mut s: BroadcastInfo<'_>) {
 
     let omountpoint = s.mountpoint.to_owned();
 
-    let mut reader: Box<dyn StreamReader>;
-    let base_reader = SimpleReader::new(s.session.stream, s.session.server.config.limits.source_timeout, s.stats);
-    if s.chunked {
-        reader      = Box::new(ChunkedReader::new(base_reader));
-    } else {
-        reader      = Box::new(base_reader);
-    }
+    let mut reader      = StreamReader::new(s.session.stream, s.session.server.config.limits.source_timeout, s.stats, s.chunked);
     let media_broadcast = s.broadcast.audio.clone();
     let server          = s.session.server.clone();
     // Here we either wait for source to broadcast till it disconnects
@@ -252,7 +236,7 @@ pub async fn broadcast(mut s: BroadcastInfo<'_>) {
     // Or we receive command for a migration
     let mut migrate_comm = server.migrate.clone();
     tokio::select! {
-        _ = handle_source_stream(&omountpoint, reader.as_mut(), &s.session.server, s.broadcast, &mut s.queue_size, s.kill_notifier) => (),
+        _ = handle_source_stream(&omountpoint, &mut reader, &s.session.server, s.broadcast, &mut s.queue_size, s.kill_notifier) => (),
         migrate = migrate_comm.recv() => {
             migrate_stream(
                 MigrateStreamInfo {
@@ -305,7 +289,7 @@ struct MigrateStreamInfo<'a> {
     media_broadcast: Sender<Arc<Vec<u8>>>,
     chunked: bool,
     queue_size: usize,
-    stream: Box<dyn StreamReader>,
+    stream: StreamReader,
     client_addr: String
 }
 
@@ -352,13 +336,13 @@ async fn migrate_stream(s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
         },
         client_addr: s.client_addr
     });
-    _ = migrate.source.send(MigrateEntry { info, sock: Some(s.stream) });
+    _ = migrate.source.send(MigrateEntry { info, sock: Some(s.stream.stream.0) });
 
     // We have finished all preparations for migration
     utils::hang().await;
 }
 
-async fn handle_source_stream(mountpoint: &str, st: &mut dyn StreamReader,
+async fn handle_source_stream(mountpoint: &str, st: &mut StreamReader,
                               server: &Server, mut broadcast: SourceBroadcast,
                               queue_size: &mut usize, mut kill_notifier: oneshot::Receiver<()>) {
     let mut stream: Box<dyn AudioReader + Send> = match server.sources.read().await.get(mountpoint) {
@@ -395,7 +379,7 @@ async fn handle_source_stream(mountpoint: &str, st: &mut dyn StreamReader,
     }
 }
 
-async fn handle_relay_stream(stream: &mut dyn StreamReader,
+async fn handle_relay_stream(stream: &mut StreamReader,
                              server: &Server, mountpoint: &str,
                              broadcast: &mut SourceBroadcast,
                              queue_size: &mut usize,
@@ -508,7 +492,7 @@ async fn handle_relay_stream(stream: &mut dyn StreamReader,
             } 
         }
 
-        ret = stream.async_read(&mut buf).await?;
+        ret = stream.read(&mut buf).await?;
     };
 
     Ok(())

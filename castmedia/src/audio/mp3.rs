@@ -1,6 +1,7 @@
 use anyhow::Result;
 
-use crate::{audio::AudioReader, stream::StreamReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
+use crate::audio::AudioReader;
 
 /// MPEG Audio frame header for MP3 streaming.
 ///
@@ -111,7 +112,7 @@ impl Mp3Header {
     /// streams that start with large ID3 tags, the byte-by-byte scan will
     /// eventually find the first MP3 frame. A future optimization could detect
     /// the "ID3" magic and skip the tag using its encoded size.
-    pub async fn read(stream: &mut dyn StreamReader) -> Result<Self> {
+    pub async fn read(stream: &mut (impl AsyncRead + Unpin)) -> Result<Self> {
         let mut buf = [0u8; Self::SIZE];
         read_exact(stream, &mut buf).await?;
 
@@ -209,18 +210,18 @@ impl Mp3Header {
     }
 }
 
-pub struct Mp3Reader<'a> {
-    stream: &'a mut dyn StreamReader,
+pub struct Mp3Reader<'a, R: AsyncRead + Unpin> {
+    stream: &'a mut R,
 }
 
-impl<'a> Mp3Reader<'a> {
-    pub fn new(stream: &'a mut dyn StreamReader) -> Self {
+impl<'a, R: AsyncRead + Unpin> Mp3Reader<'a, R> {
+    pub fn new(stream: &'a mut R) -> Self {
         Self { stream }
     }
 }
 
 #[async_trait::async_trait]
-impl AudioReader for Mp3Reader<'_> {
+impl<R: AsyncRead + Unpin + Send> AudioReader for Mp3Reader<'_, R> {
     async fn read(&mut self) -> Result<Vec<u8>> {
         let header = Mp3Header::read(self.stream).await?;
         let frame_size = header.frame_size();
@@ -237,10 +238,10 @@ impl AudioReader for Mp3Reader<'_> {
 /// Reads exactly `buf.len()` bytes from the stream, handling partial reads.
 /// Returns an error if the stream ends before the buffer is fully filled,
 /// or if an I/O error occurs.
-async fn read_exact(stream: &mut dyn StreamReader, buf: &mut [u8]) -> Result<()> {
+async fn read_exact(stream: &mut (impl AsyncRead + Unpin), buf: &mut [u8]) -> Result<()> {
     let mut offset = 0;
     while offset < buf.len() {
-        match stream.async_read(&mut buf[offset..]).await {
+        match stream.read(&mut buf[offset..]).await {
             Ok(0) => return Err(anyhow::Error::msg("MP3 unexpected end of stream")),
             Ok(n) => offset += n,
             Err(_) => return Err(anyhow::Error::msg("MP3 IO error")),
@@ -251,12 +252,11 @@ async fn read_exact(stream: &mut dyn StreamReader, buf: &mut [u8]) -> Result<()>
 
 #[cfg(test)]
 mod tests {
-    use crate::server::PassFD;
-
     use super::*;
-    use std::future::Future;
-    use std::io::{Cursor, Read};
+    use std::io::Cursor;
     use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::ReadBuf;
 
     struct MockStreamReader {
         data: Cursor<Vec<u8>>,
@@ -270,52 +270,32 @@ mod tests {
         }
     }
 
-    impl Read for MockStreamReader {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            self.data.read(buf)
-        }
-    }
-
-    impl PassFD for MockStreamReader {
-        fn fd(&self) -> i32 { -1 }
-    }
-
-    impl StreamReader for MockStreamReader {
-        fn async_read<'a>(
-            &'a mut self,
-            buf: &'a mut [u8],
-        ) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>> {
-            Box::pin(async move { self.data.read(buf) })
+    impl AsyncRead for MockStreamReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let this = self.get_mut();
+            let n = std::io::Read::read(&mut this.data, buf.initialize_unfilled())?;
+            buf.advance(n);
+            Poll::Ready(Ok(()))
         }
     }
 
     /// Always returns I/O errors.
     struct ErrorMockStreamReader;
 
-    impl Read for ErrorMockStreamReader {
-        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::new(
+    impl AsyncRead for ErrorMockStreamReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "mock IO error",
-            ))
-        }
-    }
-
-    impl PassFD for ErrorMockStreamReader {
-        fn fd(&self) -> i32 { -1 }
-    }
-
-    impl StreamReader for ErrorMockStreamReader {
-        fn async_read<'a>(
-            &'a mut self,
-            _buf: &'a mut [u8],
-        ) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>> {
-            Box::pin(async {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "mock IO error",
-                ))
-            })
+            )))
         }
     }
 
@@ -332,32 +312,26 @@ mod tests {
         }
     }
 
-    impl Read for ShortReadMockStreamReader {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            if buf.is_empty() {
-                return Ok(0);
+    impl AsyncRead for ShortReadMockStreamReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let this = self.get_mut();
+            if buf.remaining() == 0 {
+                return Poll::Ready(Ok(()));
             }
-            let pos = self.data.position() as usize;
-            let data = self.data.get_ref();
+            let pos = this.data.position() as usize;
+            let data = this.data.get_ref();
             if pos >= data.len() {
-                return Ok(0);
+                return Poll::Ready(Ok(()));
             }
-            buf[0] = data[pos];
-            self.data.set_position(pos as u64 + 1);
-            Ok(1)
-        }
-    }
-
-    impl PassFD for ShortReadMockStreamReader {
-        fn fd(&self) -> i32 { -1 }
-    }
-
-    impl StreamReader for ShortReadMockStreamReader {
-        fn async_read<'a>(
-            &'a mut self,
-            buf: &'a mut [u8],
-        ) -> Pin<Box<dyn Future<Output = std::io::Result<usize>> + '_ + Send>> {
-            Box::pin(async move { <Self as Read>::read(self, buf) })
+            let filled = buf.initialize_unfilled();
+            filled[0] = data[pos];
+            this.data.set_position(pos as u64 + 1);
+            buf.advance(1);
+            Poll::Ready(Ok(()))
         }
     }
 
