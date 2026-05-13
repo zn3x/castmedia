@@ -239,6 +239,46 @@ enum BroadcastStatus {
 }
 
 #[inline(always)]
+async fn write_buffer_to_stream(
+    buffer: &[Arc<Vec<u8>>],
+    session: &mut ClientSession,
+    b: &mut BroadcastInfo,
+    metadata: &MetadataMsg,
+    bytes_sent: &mut usize,
+) -> Result<()> {
+    if buffer.is_empty() {
+        return Ok(());
+    }
+    for buf in buffer {
+        if b.with_metadata {
+            if b.metaint + buf.len() >= session.server.config.metaint {
+                let diff          = (b.metaint + buf.len()) - session.server.config.metaint;
+                let first_buf_len = session.server.config.metaint - b.metaint;
+
+                if first_buf_len > 0 {
+                    session.stream.write_all(&buf[..first_buf_len]).await?;
+                }
+                session.stream.write_all(&metadata.bin).await?;
+                if diff > 0 {
+                    session.stream.write_all(&buf[first_buf_len..]).await?;
+                }
+                b.metaint   = diff;
+                *bytes_sent += metadata.bin.len() + buf.len();
+            } else {
+                session.stream.write_all(buf).await?;
+                b.metaint  += buf.len();
+                *bytes_sent += buf.len();
+            }
+        } else {
+            session.stream.write_all(buf).await?;
+            *bytes_sent += buf.len();
+        }
+    }
+    session.stream.flush().await?;
+    Ok(())
+}
+
+#[inline(always)]
 async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastInfo)
     -> Result<BroadcastStatus> {
     info!("{session} listening on {}", b.mountpoint);
@@ -260,46 +300,14 @@ async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastIn
         loop {
             tokio::select! {
                 r = read_media_broadcast(&mut b.stream, &mut buffer, &mut b.meta_stream, &mut metadata, &mut temp_metadata) => match r {
-                    Ok(()) | Err(RecvError::Closed) => {
-                        if buffer.is_empty() {
-                            break;
-                        }
-                        for buf in &buffer {
-                            // We are checking here if we need to broadcast metadata
-                            // Metadata needs to be sent inbetween ever metaint interval
-                            if b.with_metadata {
-                                if b.metaint + buf.len() >= session.server.config.metaint {
-                                    let diff          = (b.metaint + buf.len()) - session.server.config.metaint;
-                                    let first_buf_len = session.server.config.metaint - b.metaint;
-                                    
-                                    if first_buf_len > 0 {
-                                        session.stream.write_all(&buf[..first_buf_len]).await?;
-                                    }
-                                    // Now we write metadata
-                                    session.stream.write_all(&metadata.bin).await?;
-                                    // Followed by what left in buffer if there is any
-                                    if diff > 0 {
-                                        session.stream.write_all(&buf[first_buf_len..]).await?;
-                                    }
-                                    b.metaint   = diff;
-                                    bytes_sent += metadata.bin.len() + buf.len();
-                                } else {
-                                    session.stream.write_all(&buf).await?;
-                                    b.metaint  += buf.len();
-                                    bytes_sent += buf.len();
-                                }
-                            } else {
-                                session.stream.write_all(&buf).await?;
-                                bytes_sent += buf.len();
-                            }
-                        }
-                        session.stream.flush().await?;
-                    },
+                    Ok(()) | Err(RecvError::Closed) => write_buffer_to_stream(&buffer, session, b, &metadata, &mut bytes_sent).await?,
                     Err(RecvError::Lagged) => ()
                 },
                 // We increment sent bytes count with interval in order not to have degraded performance
                 // under contention if any
                 _ = stat_int.tick() => {
+                    // Cancel safety: There might be some frames to write as recv_batched may have been interrupted in middle of wait
+                    write_buffer_to_stream(&buffer, session, b, &metadata, &mut bytes_sent).await?;
                     let bytes = bytes_sent as u64;
                     b.stats.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
                     b.client_stats.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
@@ -321,7 +329,11 @@ async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastIn
                     Err(RecvError::Lagged) => (),
                     Err(RecvError::Closed) => break
                 },
-                migrate = migrate_comm.recv() => return Ok(BroadcastStatus::Migrate(migrate))
+                migrate = migrate_comm.recv() => {
+                    // Same thing here
+                    write_buffer_to_stream(&buffer, session, b, &metadata, &mut bytes_sent).await?;
+                    return Ok(BroadcastStatus::Migrate(migrate))
+                }
             }
         };
 
