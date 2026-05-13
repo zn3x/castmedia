@@ -317,6 +317,8 @@ async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastIn
                 r = b.mover.recv() => match r {
                     Ok(v) => match &v.move_type {
                         MoveClientsType::Fallback => {
+                            // Same thing here
+                            write_buffer_to_stream(&buffer, session, b, &metadata, &mut bytes_sent).await?;
                             // If it is a fallback, we put it here until we reach closed state of
                             // current mount
                             fallback = Some(v);
