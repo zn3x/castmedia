@@ -101,54 +101,34 @@ impl Mp3Header {
         [0, 144, 144, 12], // MPEG 1
     ];
 
-    /// Read an MP3 frame header from the stream.
-    ///
-    /// If the stream is not aligned to a frame boundary (e.g., after corruption
-    /// or an ID3 tag), this method scans forward byte-by-byte until a valid
-    /// header is found. This is essential for broadcast resilience — a single
-    /// corrupt frame or an ID3 preamble should not disconnect the source.
-    ///
-    /// Note: ID3v2 tag detection and skipping is not implemented here. For
-    /// streams that start with large ID3 tags, the byte-by-byte scan will
-    /// eventually find the first MP3 frame. A future optimization could detect
-    /// the "ID3" magic and skip the tag using its encoded size.
-    pub async fn read(stream: &mut (impl AsyncRead + Unpin)) -> Result<Self> {
-        let mut buf = [0u8; Self::SIZE];
-        read_exact(stream, &mut buf).await?;
+    /// Attempt to parse a valid MP3 header from a 4-byte buffer.
+    fn from_buf(buf: [u8; 4]) -> Option<Self> {
+        // Check for sync word: 11 set bits (0xFF followed by upper 3 bits set)
+        if buf[0] == 0xFF && (buf[1] & 0xE0) == 0xE0 {
+            let version = (buf[1] >> 3) & 0b11;
+            let layer = (buf[1] >> 1) & 0b11;
+            let bitrate_index = (buf[2] >> 4) & 0b1111;
+            let sampling_rate_index = (buf[2] >> 2) & 0b11;
 
-        loop {
-            // Check for sync word: 11 set bits (0xFF followed by upper 3 bits set)
-            if buf[0] == 0xFF && (buf[1] & 0xE0) == 0xE0 {
-                let version = (buf[1] >> 3) & 0b11;
-                let layer = (buf[1] >> 1) & 0b11;
-                let bitrate_index = (buf[2] >> 4) & 0b1111;
-                let sampling_rate_index = (buf[2] >> 2) & 0b11;
-
-                // Validate all critical fields for frame delimiting
-                if version != 0b01              // not reserved
-                    && layer != 0b00            // not reserved
-                    && bitrate_index != 0b1111  // not "bad" (forbidden by spec)
-                    && bitrate_index != 0b0000  // not "free format" (indeterminable frame size)
-                    && sampling_rate_index != 0b11 // not reserved
+            // Validate all critical fields for frame delimiting
+            if version != 0b01              // not reserved
+                && layer != 0b00            // not reserved
+                && bitrate_index != 0b1111  // not "bad" (forbidden by spec)
+                && bitrate_index != 0b0000  // not "free format" (indeterminable frame size)
+                && sampling_rate_index != 0b11 // not reserved
+            {
+                let header = Self { buf };
+                // Verify the bitrate/sample rate lookup yields valid values
+                // for this version/layer combination
+                if header.bitrate_kbps() != 0
+                    && header.sampling_rate_hz() != 0
+                    && header.frame_size() >= Self::SIZE
                 {
-                    let header = Self { buf };
-                    // Verify the bitrate/sample rate lookup yields valid values
-                    // for this version/layer combination
-                    if header.bitrate_kbps() != 0
-                        && header.sampling_rate_hz() != 0
-                        && header.frame_size() >= Self::SIZE
-                    {
-                        return Ok(header);
-                    }
+                    return Some(header);
                 }
             }
-
-            // Shift buffer left by 1 byte and read a new byte to continue scanning
-            buf[0] = buf[1];
-            buf[1] = buf[2];
-            buf[2] = buf[3];
-            read_exact(stream, &mut buf[3..4]).await?;
         }
+        None
     }
 
     /// MPEG Audio version ID (2 bits):
@@ -210,44 +190,113 @@ impl Mp3Header {
     }
 }
 
+/// State machine for reading MP3 frames.
+enum Mp3ReadState {
+    /// Scanning for a valid MP3 frame header using a 4-byte sliding window.
+    ///
+    /// The `window` buffer holds up to 4 bytes of the candidate header.
+    /// `filled` tracks how many bytes are valid (0..4). When `filled == 4`,
+    /// we validate the header. If invalid, we shift the window left by 1
+    /// and set `filled = 3` to read one more byte and try again.
+    HeaderSearch {
+        window: [u8; 4],
+        filled: usize,
+    },
+    /// Valid header found, reading the remaining frame payload.
+    ///
+    /// `frame` is pre-allocated to `frame_size` bytes with the 4-byte header
+    /// already filled in. `filled` tracks how many total bytes have been
+    /// written (starts at 4, goes up to `frame_size`).
+    Payload {
+        frame: Vec<u8>,
+        frame_size: usize,
+        filled: usize,
+    },
+}
+
 pub struct Mp3Reader<'a, R: AsyncRead + Unpin> {
     stream: &'a mut R,
+    state: Mp3ReadState,
 }
 
 impl<'a, R: AsyncRead + Unpin> Mp3Reader<'a, R> {
     pub fn new(stream: &'a mut R) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            state: Mp3ReadState::HeaderSearch {
+                window: [0u8; 4],
+                filled: 0,
+            },
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl<R: AsyncRead + Unpin + Send> AudioReader for Mp3Reader<'_, R> {
     async fn read(&mut self) -> Result<Vec<u8>> {
-        let header = Mp3Header::read(self.stream).await?;
-        let frame_size = header.frame_size();
+        loop {
+            match &mut self.state {
+                Mp3ReadState::HeaderSearch { window, filled } => {
+                    if *filled < Mp3Header::SIZE {
+                        // Read bytes into the sliding window until we have 4.
+                        // `stream.read()` is cancel-safe: if dropped, no bytes
+                        // are consumed. We update `filled` synchronously after
+                        // the read returns, so progress is always persisted.
+                        match self.stream.read(&mut window[*filled..Mp3Header::SIZE]).await {
+                            Ok(0) => return Err(anyhow::Error::msg("MP3 unexpected end of stream")),
+                            Ok(n) => *filled += n,
+                            Err(_) => return Err(anyhow::Error::msg("MP3 IO error")),
+                        }
+                        continue;
+                    }
 
-        // frame_size includes the 4-byte header
-        let mut frame = vec![0u8; frame_size];
-        frame[..4].copy_from_slice(&header.buf);
-        read_exact(self.stream, &mut frame[4..]).await?;
+                    // Have 4 bytes — check if they form a valid header
+                    if let Some(header) = Mp3Header::from_buf(*window) {
+                        let frame_size = header.frame_size();
+                        let mut frame = vec![0u8; frame_size];
+                        frame[..Mp3Header::SIZE].copy_from_slice(window);
+                        // Transition to Payload state synchronously.
+                        // If cancelled at the next .await, this state is preserved.
+                        self.state = Mp3ReadState::Payload {
+                            frame,
+                            frame_size,
+                            filled: Mp3Header::SIZE,
+                        };
+                        continue;
+                    }
 
-        Ok(frame)
-    }
-}
+                    // Invalid header — shift window left by 1 byte and try again.
+                    // This discards the leftmost byte and we'll read one new byte.
+                    // No .await here, so this is synchronous and cancel-safe.
+                    window[0] = window[1];
+                    window[1] = window[2];
+                    window[2] = window[3];
+                    *filled = 3;
+                }
+                Mp3ReadState::Payload { frame, frame_size, filled } => {
+                    if *filled < *frame_size {
+                        // Read payload bytes. Same cancel-safety guarantees as above:
+                        // stream.read() is cancel-safe, and we update `filled`
+                        // synchronously after each read.
+                        match self.stream.read(&mut frame[*filled..*frame_size]).await {
+                            Ok(0) => return Err(anyhow::Error::msg("MP3 unexpected end of stream")),
+                            Ok(n) => *filled += n,
+                            Err(_) => return Err(anyhow::Error::msg("MP3 IO error")),
+                        }
+                        continue;
+                    }
 
-/// Reads exactly `buf.len()` bytes from the stream, handling partial reads.
-/// Returns an error if the stream ends before the buffer is fully filled,
-/// or if an I/O error occurs.
-async fn read_exact(stream: &mut (impl AsyncRead + Unpin), buf: &mut [u8]) -> Result<()> {
-    let mut offset = 0;
-    while offset < buf.len() {
-        match stream.read(&mut buf[offset..]).await {
-            Ok(0) => return Err(anyhow::Error::msg("MP3 unexpected end of stream")),
-            Ok(n) => offset += n,
-            Err(_) => return Err(anyhow::Error::msg("MP3 IO error")),
+                    // Frame is complete — return it and reset state for next frame
+                    let result = std::mem::take(frame);
+                    self.state = Mp3ReadState::HeaderSearch {
+                        window: [0u8; 4],
+                        filled: 0,
+                    };
+                    return Ok(result);
+                }
+            }
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -579,28 +628,23 @@ mod tests {
     #[tokio::test]
     async fn test_bad_sync_word_byte0() {
         let mut header = build_valid_header();
-        header[0] = 0xFE; // corrupt upper sync bits
-        // With only 4 invalid bytes, scanning will fail with "unexpected end of stream"
-        let mut stream = MockStreamReader::new(header.to_vec());
-        let result = Mp3Header::read(&mut stream).await;
-        assert!(result.is_err());
+        header[0] = 0xFE;
+        let result = Mp3Header::from_buf(header);
+        assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_bad_sync_word_byte1_upper_bits() {
         let mut header = build_valid_header();
-        header[1] &= 0x1F; // corrupt sync bits in byte 1
-        let mut stream = MockStreamReader::new(header.to_vec());
-        let result = Mp3Header::read(&mut stream).await;
-        assert!(result.is_err());
+        header[1] &= 0x1F;
+        let result = Mp3Header::from_buf(header);
+        assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_zero_bytes() {
-        let header = vec![0x00; 4];
-        let mut stream = MockStreamReader::new(header);
-        let result = Mp3Header::read(&mut stream).await;
-        assert!(result.is_err());
+        let result = Mp3Header::from_buf([0x00; 4]);
+        assert!(result.is_none());
     }
 
     #[tokio::test]
@@ -667,47 +711,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_reserved_mpeg_version() {
-        // version = 01 (reserved) — scanner skips this and fails on empty stream
         let header = build_mp3_header(1, 1, false, 9, 0, false);
-        let mut stream = MockStreamReader::new(header.to_vec());
-        let result = Mp3Header::read(&mut stream).await;
-        assert!(result.is_err());
+        let result = Mp3Header::from_buf(header);
+        assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_reserved_layer() {
-        // layer = 00 (reserved)
         let header = build_mp3_header(3, 0, false, 9, 0, false);
-        let mut stream = MockStreamReader::new(header.to_vec());
-        let result = Mp3Header::read(&mut stream).await;
-        assert!(result.is_err());
+        let result = Mp3Header::from_buf(header);
+        assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_bad_bitrate_index() {
-        // bitrate_index = 15 (bad/forbidden)
         let header = build_mp3_header(3, 1, false, 15, 0, false);
-        let mut stream = MockStreamReader::new(header.to_vec());
-        let result = Mp3Header::read(&mut stream).await;
-        assert!(result.is_err());
+        let result = Mp3Header::from_buf(header);
+        assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_free_bitrate_index() {
-        // bitrate_index = 0 (free format — frame size indeterminable)
         let header = build_mp3_header(3, 1, false, 0, 0, false);
-        let mut stream = MockStreamReader::new(header.to_vec());
-        let result = Mp3Header::read(&mut stream).await;
-        assert!(result.is_err());
+        let result = Mp3Header::from_buf(header);
+        assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_reserved_sampling_rate() {
-        // sampling_rate_index = 3 (reserved)
         let header = build_mp3_header(3, 1, false, 9, 3, false);
-        let mut stream = MockStreamReader::new(header.to_vec());
-        let result = Mp3Header::read(&mut stream).await;
-        assert!(result.is_err());
+        let result = Mp3Header::from_buf(header);
+        assert!(result.is_none());
     }
 
     #[tokio::test]
@@ -812,14 +846,14 @@ mod tests {
     #[tokio::test]
     async fn test_io_error_on_header_read() {
         let mut stream = ErrorMockStreamReader;
-        let result = Mp3Header::read(&mut stream).await;
+        let mut reader = Mp3Reader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("IO error"));
     }
 
     #[tokio::test]
     async fn test_io_error_on_payload_read() {
-        // Header is valid but no payload data available
         let header = build_valid_header();
         let mut stream = MockStreamReader::new(header.to_vec());
         let mut reader = Mp3Reader::new(&mut stream);
@@ -844,7 +878,8 @@ mod tests {
     #[tokio::test]
     async fn test_empty_stream() {
         let mut stream = MockStreamReader::new(vec![]);
-        let result = Mp3Header::read(&mut stream).await;
+        let mut reader = Mp3Reader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unexpected end of stream"));
     }
@@ -852,7 +887,8 @@ mod tests {
     #[tokio::test]
     async fn test_partial_header_only_3_bytes() {
         let mut stream = MockStreamReader::new(vec![0xFF, 0xFB, 0x90]);
-        let result = Mp3Header::read(&mut stream).await;
+        let mut reader = Mp3Reader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unexpected end of stream"));
     }
@@ -994,50 +1030,4 @@ mod tests {
         assert_eq!(h1.frame_size(), h2.frame_size());
     }
 
-    // ===========================================================================
-    // read_exact UNIT TESTS
-    // ===========================================================================
-
-    #[tokio::test]
-    async fn test_read_exact_success() {
-        let data = vec![0x01, 0x02, 0x03, 0x04, 0x05];
-        let mut stream = MockStreamReader::new(data.clone());
-        let mut buf = vec![0u8; 5];
-        read_exact(&mut stream, &mut buf).await.unwrap();
-        assert_eq!(buf, data);
-    }
-
-    #[tokio::test]
-    async fn test_read_exact_zero_length() {
-        let mut stream = MockStreamReader::new(vec![0x01]);
-        let mut buf = vec![0u8; 0];
-        read_exact(&mut stream, &mut buf).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_read_exact_short_stream() {
-        let mut stream = MockStreamReader::new(vec![0x01, 0x02]);
-        let mut buf = vec![0u8; 5];
-        let result = read_exact(&mut stream, &mut buf).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unexpected end of stream"));
-    }
-
-    #[tokio::test]
-    async fn test_read_exact_io_error() {
-        let mut stream = ErrorMockStreamReader;
-        let mut buf = vec![0u8; 5];
-        let result = read_exact(&mut stream, &mut buf).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("IO error"));
-    }
-
-    #[tokio::test]
-    async fn test_read_exact_with_short_reads() {
-        let data = vec![0x01, 0x02, 0x03, 0x04, 0x05];
-        let mut stream = ShortReadMockStreamReader::new(data.clone());
-        let mut buf = vec![0u8; 5];
-        read_exact(&mut stream, &mut buf).await.unwrap();
-        assert_eq!(buf, data);
-    }
 }

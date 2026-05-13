@@ -41,45 +41,38 @@ pub struct AdtsHeader {
 impl AdtsHeader {
     const SIZE: usize = 7;
 
-    pub async fn read(stream: &mut (impl AsyncRead + Unpin)) -> Result<Self> {
-        let mut s = Self { buf: vec![0; Self::SIZE], header_len: Self::SIZE };
-        read_exact(stream, &mut s.buf).await?;
-
-        if s.sync_word() != 0xfff {
+    /// Validate the first 7 bytes of an ADTS header synchronously.
+    ///
+    /// Checks the sync word, layer, and sampling frequency index.
+    /// Returns a partially-constructed `AdtsHeader` with `header_len` set
+    /// to 7 (no CRC) or 9 (CRC present) based on the protection_absent bit.
+    fn validate(buf: &[u8; 7]) -> Result<Self> {
+        let sync = u16::from(buf[0]) << 4 | u16::from(buf[1] >> 4);
+        if sync != 0xfff {
             return Err(anyhow::Error::msg("ADTS Bad sync word"));
         }
 
-        if s.layer() != 0 {
+        let layer = (buf[1] >> 1) & 0b11;
+        if layer != 0 {
             return Err(anyhow::Error::msg("ADTS Invalid layer"));
         }
 
-        let sf_index = s.sampling_frequency_index();
+        let sf_index = (buf[2] >> 2) & 0b1111;
         // Indices 13 and 14 are reserved, 15 is explicitly forbidden by spec
         if sf_index >= 13 {
             return Err(anyhow::Error::msg("ADTS Invalid sampling frequency index"));
         }
 
-        if s.crc_protection_present() {
-            s.header_len += 2;
-            s.buf.extend_from_slice(&[0, 0]);
-            read_exact(stream, &mut s.buf[7..9]).await?;
-        }
+        let header_len = if buf[1] & 0b0000_0001 == 0 {
+            9 // CRC protection present
+        } else {
+            7 // No CRC
+        };
 
-        if s.frame_length() < s.header_len as u16 {
-            return Err(anyhow::Error::msg("ADTS Length of header is different than expected"));
-        }
-
-        Ok(s)
-    }
-
-    /// 12-bit sync word at the start of the ADTS frame. Must be 0xFFF.
-    fn sync_word(&self) -> u16 {
-        u16::from(self.buf[0]) << 4 | u16::from(self.buf[1] >> 4)
-    }
-
-    /// 2-bit layer field. Per spec, must always be 0.
-    fn layer(&self) -> u8 {
-        (self.buf[1] >> 1) & 0b11
+        Ok(Self {
+            header_len,
+            buf: buf.to_vec(),
+        })
     }
 
     /// Whether CRC protection is present (protection_absent bit = 0).
@@ -88,97 +81,202 @@ impl AdtsHeader {
         self.buf[1] & 0b0000_0001 == 0
     }
 
+    /// 13-bit frame length: total size of the ADTS frame including header and CRC.
+    pub fn frame_length(&self) -> u16 {
+        let buf = &self.buf;
+        u16::from(buf[3] & 0b11) << 11
+            | u16::from(buf[4]) << 3
+            | u16::from(buf[5]) >> 5
+    }
+
     /// 4-bit sampling frequency index. Values 13–14 are reserved, 15 is forbidden.
+    #[cfg(test)]
     fn sampling_frequency_index(&self) -> u8 {
         (self.buf[2] >> 2) & 0b1111
     }
 
-    /// 13-bit frame length: total size of the ADTS frame including header and CRC.
-    pub fn frame_length(&self) -> u16 {
-        u16::from(self.buf[3] & 0b11) << 11
-            | u16::from(self.buf[4]) << 3
-            | u16::from(self.buf[5]) >> 5
-    }
-
     /// Number of AAC Raw Data Blocks (RDBs) minus 1 in this frame.
-    ///
-    /// - 0 → 1 RDB (the common case, recommended by spec for max compatibility)
-    /// - 1 → 2 RDBs
-    /// - 2 → 3 RDBs
-    /// - 3 → 4 RDBs
-    ///
-    /// When multiple RDBs are present, the payload structure is:
-    /// ```text
-    /// [raw_data_block #1] [rdb_end #1] [raw_data_block #2] [rdb_end #2] ... [raw_data_block #N]
-    /// ```
-    ///
-    /// For broadcast, we forward the complete ADTS frame as-is. The listeners'
-    /// decoders parse the RDB boundaries from the AAC bitstream internally.
-    /// We do not need (and cannot reliably) split RDBs without a full AAC parser.
     #[cfg(test)]
-    pub fn number_of_raw_data_blocks(&self) -> u8 {
+    fn number_of_raw_data_blocks(&self) -> u8 {
         self.buf[6] & 0b11
     }
 
     /// Total number of AAC frames (Raw Data Blocks) in this ADTS frame.
-    /// Equal to `number_of_raw_data_blocks() + 1`.
     #[cfg(test)]
-    pub fn aac_frame_count(&self) -> u8 {
+    fn aac_frame_count(&self) -> u8 {
         self.number_of_raw_data_blocks() + 1
     }
 }
 
+/// State machine for reading ADTS frames.
+enum AdtsReadState {
+    /// Reading the fixed 7-byte ADTS header.
+    ///
+    /// `buf` accumulates header bytes and `filled` tracks how many are valid (0..7).
+    HeaderFixed {
+        buf: [u8; 7],
+        filled: usize,
+    },
+    /// Reading the 2-byte CRC after the 7-byte header has been validated.
+    ///
+    /// `buf[0..7]` contains the validated header bytes. `filled` starts at 7
+    /// and goes to 9 as CRC bytes are read into `buf[7..9]`.
+    HeaderCrc {
+        buf: [u8; 9],
+        filled: usize,
+    },
+    /// Header complete (7 or 9 bytes), reading the remaining payload.
+    ///
+    /// `buf` is pre-allocated to `frame_length` bytes with the header already
+    /// filled in. `filled` tracks total bytes written (starts at `header_len`,
+    /// goes up to `frame_length`).
+    Payload {
+        buf: Vec<u8>,
+        frame_length: usize,
+        filled: usize,
+    },
+}
+
 pub struct AdtsReader<'a, R: AsyncRead + Unpin> {
     stream: &'a mut R,
+    state: AdtsReadState,
 }
 
 impl<'a, R: AsyncRead + Unpin> AdtsReader<'a, R> {
     pub fn new(stream: &'a mut R) -> Self {
         Self {
             stream,
+            state: AdtsReadState::HeaderFixed {
+                buf: [0u8; 7],
+                filled: 0,
+            },
         }
     }
 }
 
 #[async_trait::async_trait]
 impl<R: AsyncRead + Unpin + Send> AudioReader for AdtsReader<'_, R> {
+    /// Read one complete ADTS frame from the stream.
+    ///
+    /// This method is cancel-safe: if the returned future is dropped at an
+    /// `.await` point (e.g., by `tokio::select!`), all progress is preserved
+    /// in `self.state`. The next call to `read()` will resume from exactly
+    /// where it left off — no bytes from the stream are lost.
     async fn read(&mut self) -> Result<Vec<u8>> {
-        // Read a complete ADTS frame. When number_of_raw_data_blocks > 0, the frame
-        // contains multiple AAC packets (RDBs). We forward the complete frame as-is
-        // for broadcast — the listeners' decoders handle multi-RDB frames internally.
-        // Splitting would require full AAC bitstream parsing which is not feasible here.
-        //
-        // https://wiki.multimedia.cx/index.php/ADTS recommends one AAC packet per ADTS
-        // frame for maximum compatibility, but some encoders (e.g. certain FDK-AAC configs)
-        // produce multi-RDB frames that we must accept.
-        let mut header = AdtsHeader::read(self.stream).await?;
-        let frame_len = header.frame_length() as usize;
-        if frame_len < header.header_len {
-            return Err(anyhow::Error::msg("ADTS Invalid frame length"));
+        loop {
+            match &mut self.state {
+                AdtsReadState::HeaderFixed { buf, filled } => {
+                    if *filled < AdtsHeader::SIZE {
+                        // Read bytes into the header buffer until we have 7.
+                        // `stream.read()` is cancel-safe: if dropped, no bytes
+                        // are consumed. We update `filled` synchronously after
+                        // the read returns, so progress is always persisted.
+                        match self.stream.read(&mut buf[*filled..AdtsHeader::SIZE]).await {
+                            Ok(0) => return Err(anyhow::Error::msg("ADTS unexpected end of stream")),
+                            Ok(n) => *filled += n,
+                            Err(_) => return Err(anyhow::Error::msg("ADTS IO error")),
+                        }
+                        continue;
+                    }
+
+                    // Have 7 bytes — validate the header fields
+                    let header = AdtsHeader::validate(buf)?;
+
+                    if header.crc_protection_present() {
+                        // Need 2 more CRC bytes — transition to HeaderCrc.
+                        // Copy the 7 header bytes into the 9-byte buffer.
+                        let mut crc_buf = [0u8; 9];
+                        crc_buf[..7].copy_from_slice(buf);
+                        // Transition synchronously — state is preserved if
+                        // cancelled at the next .await.
+                        self.state = AdtsReadState::HeaderCrc {
+                            buf: crc_buf,
+                            filled: 7,
+                        };
+                        continue;
+                    }
+
+                    // No CRC — validate frame length and transition to Payload
+                    let frame_length = header.frame_length() as usize;
+                    if frame_length < header.header_len {
+                        return Err(anyhow::Error::msg(
+                            "ADTS Length of header is different than expected",
+                        ));
+                    }
+
+                    let mut frame_buf = Vec::with_capacity(frame_length);
+                    frame_buf.extend_from_slice(&header.buf);
+                    frame_buf.resize(frame_length, 0);
+
+                    self.state = AdtsReadState::Payload {
+                        buf: frame_buf,
+                        frame_length,
+                        filled: header.header_len,
+                    };
+                    continue;
+                }
+                AdtsReadState::HeaderCrc { buf, filled } => {
+                    if *filled < 9 {
+                        // Read the remaining CRC bytes (buf[7..9]).
+                        // Same cancel-safety guarantees: stream.read() is
+                        // cancel-safe, and we update `filled` synchronously.
+                        match self.stream.read(&mut buf[*filled..9]).await {
+                            Ok(0) => return Err(anyhow::Error::msg("ADTS unexpected end of stream")),
+                            Ok(n) => *filled += n,
+                            Err(_) => return Err(anyhow::Error::msg("ADTS IO error")),
+                        }
+                        continue;
+                    }
+
+                    // CRC bytes read — now we have a complete 9-byte header.
+                    // Validate frame length and transition to Payload.
+                    let header = AdtsHeader {
+                        header_len: 9,
+                        buf: buf[..9].to_vec(),
+                    };
+
+                    let frame_length = header.frame_length() as usize;
+                    if frame_length < header.header_len {
+                        return Err(anyhow::Error::msg(
+                            "ADTS Length of header is different than expected",
+                        ));
+                    }
+
+                    let mut frame_buf = Vec::with_capacity(frame_length);
+                    frame_buf.extend_from_slice(&header.buf);
+                    frame_buf.resize(frame_length, 0);
+
+                    self.state = AdtsReadState::Payload {
+                        buf: frame_buf,
+                        frame_length,
+                        filled: 9,
+                    };
+                    continue;
+                }
+                AdtsReadState::Payload { buf, frame_length, filled } => {
+                    if *filled < *frame_length {
+                        // Read payload bytes. Same cancel-safety guarantees:
+                        // stream.read() is cancel-safe, and we update `filled`
+                        // synchronously after each read.
+                        match self.stream.read(&mut buf[*filled..*frame_length]).await {
+                            Ok(0) => return Err(anyhow::Error::msg("ADTS unexpected end of stream")),
+                            Ok(n) => *filled += n,
+                            Err(_) => return Err(anyhow::Error::msg("ADTS IO error")),
+                        }
+                        continue;
+                    }
+
+                    // Frame is complete — return it and reset state for next frame
+                    let result = std::mem::take(buf);
+                    self.state = AdtsReadState::HeaderFixed {
+                        buf: [0u8; 7],
+                        filled: 0,
+                    };
+                    return Ok(result);
+                }
+            }
         }
-
-        // TODO: More efficient way for allocation here
-        let mut ret = vec![0; frame_len - header.header_len];
-        read_exact(self.stream, &mut ret).await?;
-
-        header.buf.append(&mut ret);
-        Ok(header.buf)
     }
-}
-
-/// Reads exactly `buf.len()` bytes from the stream, handling partial reads.
-/// Returns an error if the stream ends before the buffer is fully filled,
-/// or if an I/O error occurs.
-async fn read_exact(stream: &mut (impl AsyncRead + Unpin), buf: &mut [u8]) -> Result<()> {
-    let mut offset = 0;
-    while offset < buf.len() {
-        match stream.read(&mut buf[offset..]).await {
-            Ok(0) => return Err(anyhow::Error::msg("ADTS unexpected end of stream")),
-            Ok(n) => offset += n,
-            Err(_) => return Err(anyhow::Error::msg("ADTS IO error")),
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -357,16 +455,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_header_without_crc_is_7_bytes() {
-        let mut stream = MockStreamReader::new(build_valid_header(20));
-        let h = AdtsHeader::read(&mut stream).await.unwrap();
+        let h = AdtsHeader::validate(&build_valid_header(20).try_into().unwrap()).unwrap();
         assert_eq!(h.header_len, 7);
     }
 
     #[tokio::test]
     async fn test_header_with_crc_is_9_bytes() {
         let header = build_adts_header(0, 0, 0, 1, 4, 0, 2, 0, 0, 0, 0, 50, 0x7FF, 0);
-        let mut stream = MockStreamReader::new(header);
-        let h = AdtsHeader::read(&mut stream).await.unwrap();
+        let h = AdtsHeader::validate(&header[..7].try_into().unwrap()).unwrap();
         assert_eq!(h.header_len, 9);
     }
 
@@ -393,9 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_frame_length_max_13bit() {
-        let header = build_valid_header(8191);
-        let mut stream = MockStreamReader::new(header);
-        let h = AdtsHeader::read(&mut stream).await.unwrap();
+        let h = AdtsHeader::validate(&build_valid_header(8191).try_into().unwrap()).unwrap();
         assert_eq!(h.frame_length(), 8191);
     }
 
@@ -423,8 +517,7 @@ mod tests {
     async fn test_all_valid_sampling_frequencies() {
         for idx in 0..=12u8 {
             let header = build_adts_header(0, 0, 1, 1, idx, 0, 2, 0, 0, 0, 0, 20, 0x7FF, 0);
-            let mut stream = MockStreamReader::new(header);
-            let h = AdtsHeader::read(&mut stream).await.unwrap();
+            let h = AdtsHeader::validate(&header.try_into().unwrap()).unwrap();
             assert_eq!(h.sampling_frequency_index(), idx);
         }
     }
@@ -464,8 +557,7 @@ mod tests {
     async fn test_bad_sync_word_byte0() {
         let mut header = build_valid_header(50);
         header[0] = 0xFE;
-        let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let result = AdtsHeader::validate(&header.try_into().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Bad sync word"));
     }
@@ -474,17 +566,14 @@ mod tests {
     async fn test_bad_sync_word_byte1_upper_nibble() {
         let mut header = build_valid_header(50);
         header[1] &= 0x0F;
-        let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let result = AdtsHeader::validate(&header.try_into().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Bad sync word"));
     }
 
     #[tokio::test]
     async fn test_zero_bytes_sync_word() {
-        let header = vec![0x00; 7];
-        let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let result = AdtsHeader::validate(&[0x00; 7]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Bad sync word"));
     }
@@ -496,8 +585,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_layer_1() {
         let header = build_adts_header(0, 1, 1, 1, 4, 0, 2, 0, 0, 0, 0, 50, 0x7FF, 0);
-        let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let result = AdtsHeader::validate(&header.try_into().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid layer"));
     }
@@ -505,8 +593,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_layer_2() {
         let header = build_adts_header(0, 2, 1, 1, 4, 0, 2, 0, 0, 0, 0, 50, 0x7FF, 0);
-        let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let result = AdtsHeader::validate(&header.try_into().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid layer"));
     }
@@ -514,8 +601,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_layer_3() {
         let header = build_adts_header(0, 3, 1, 1, 4, 0, 2, 0, 0, 0, 0, 50, 0x7FF, 0);
-        let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let result = AdtsHeader::validate(&header.try_into().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid layer"));
     }
@@ -527,8 +613,7 @@ mod tests {
     #[tokio::test]
     async fn test_forbidden_sampling_frequency_15() {
         let header = build_adts_header(0, 0, 1, 1, 15, 0, 2, 0, 0, 0, 0, 50, 0x7FF, 0);
-        let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let result = AdtsHeader::validate(&header.try_into().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid sampling frequency"));
     }
@@ -536,8 +621,7 @@ mod tests {
     #[tokio::test]
     async fn test_reserved_sampling_frequency_13() {
         let header = build_adts_header(0, 0, 1, 1, 13, 0, 2, 0, 0, 0, 0, 50, 0x7FF, 0);
-        let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let result = AdtsHeader::validate(&header.try_into().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid sampling frequency"));
     }
@@ -545,8 +629,7 @@ mod tests {
     #[tokio::test]
     async fn test_reserved_sampling_frequency_14() {
         let header = build_adts_header(0, 0, 1, 1, 14, 0, 2, 0, 0, 0, 0, 50, 0x7FF, 0);
-        let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let result = AdtsHeader::validate(&header.try_into().unwrap());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Invalid sampling frequency"));
     }
@@ -559,7 +642,8 @@ mod tests {
     async fn test_frame_length_zero() {
         let header = build_adts_header(0, 0, 1, 1, 4, 0, 2, 0, 0, 0, 0, 0, 0x7FF, 0);
         let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let mut reader = AdtsReader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Length of header is different than expected"));
     }
@@ -568,7 +652,8 @@ mod tests {
     async fn test_frame_length_less_than_7byte_header() {
         let header = build_adts_header(0, 0, 1, 1, 4, 0, 2, 0, 0, 0, 0, 5, 0x7FF, 0);
         let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let mut reader = AdtsReader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Length of header is different than expected"));
     }
@@ -577,7 +662,8 @@ mod tests {
     async fn test_frame_length_less_than_9byte_header() {
         let header = build_adts_header(0, 0, 0, 1, 4, 0, 2, 0, 0, 0, 0, 8, 0x7FF, 0);
         let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let mut reader = AdtsReader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Length of header is different than expected"));
     }
@@ -586,7 +672,8 @@ mod tests {
     async fn test_frame_length_6_with_crc() {
         let header = build_adts_header(0, 0, 0, 1, 4, 0, 2, 0, 0, 0, 0, 6, 0x7FF, 0);
         let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let mut reader = AdtsReader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Length of header is different than expected"));
     }
@@ -598,7 +685,8 @@ mod tests {
     #[tokio::test]
     async fn test_io_error_on_header_read() {
         let mut stream = ErrorMockStreamReader;
-        let result = AdtsHeader::read(&mut stream).await;
+        let mut reader = AdtsReader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("IO error"));
     }
@@ -608,7 +696,8 @@ mod tests {
         let mut header = build_adts_header(0, 0, 0, 1, 4, 0, 2, 0, 0, 0, 0, 50, 0x7FF, 0);
         header.truncate(7);
         let mut stream = MockStreamReader::new(header);
-        let result = AdtsHeader::read(&mut stream).await;
+        let mut reader = AdtsReader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unexpected end of stream"));
     }
@@ -639,7 +728,8 @@ mod tests {
     #[tokio::test]
     async fn test_empty_stream() {
         let mut stream = MockStreamReader::new(vec![]);
-        let result = AdtsHeader::read(&mut stream).await;
+        let mut reader = AdtsReader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unexpected end of stream"));
     }
@@ -647,7 +737,8 @@ mod tests {
     #[tokio::test]
     async fn test_partial_header_only_3_bytes() {
         let mut stream = MockStreamReader::new(vec![0xFF, 0xF1, 0x50]);
-        let result = AdtsHeader::read(&mut stream).await;
+        let mut reader = AdtsReader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unexpected end of stream"));
     }
@@ -656,7 +747,8 @@ mod tests {
     async fn test_partial_header_6_of_7_bytes() {
         let data = vec![0xFF, 0xF1, 0x50, 0x80, 0x02, 0x00];
         let mut stream = MockStreamReader::new(data);
-        let result = AdtsHeader::read(&mut stream).await;
+        let mut reader = AdtsReader::new(&mut stream);
+        let result = reader.read().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unexpected end of stream"));
     }
@@ -689,8 +781,7 @@ mod tests {
     async fn test_frame_length_roundtrip_odd_values() {
         for fl in [7u16, 9, 13, 42, 100, 256, 1024, 4096, 8191] {
             let header = build_valid_header(fl);
-            let mut stream = MockStreamReader::new(header);
-            let h = AdtsHeader::read(&mut stream).await.unwrap();
+            let h = AdtsHeader::validate(&header.try_into().unwrap()).unwrap();
             assert_eq!(h.frame_length(), fl, "frame_length roundtrip failed for {}", fl);
         }
     }
@@ -699,8 +790,7 @@ mod tests {
     async fn test_frame_length_with_crc_roundtrip() {
         for fl in [9u16, 13, 42, 100, 8191] {
             let header = build_adts_header(0, 0, 0, 1, 4, 0, 2, 0, 0, 0, 0, fl, 0x7FF, 0);
-            let mut stream = MockStreamReader::new(header);
-            let h = AdtsHeader::read(&mut stream).await.unwrap();
+            let h = AdtsHeader::validate(&header[..7].try_into().unwrap()).unwrap();
             assert_eq!(h.frame_length(), fl, "frame_length roundtrip (CRC) failed for {}", fl);
         }
     }
@@ -713,8 +803,7 @@ mod tests {
     async fn test_various_profiles() {
         for profile in 0..=3u8 {
             let header = build_adts_header(0, 0, 1, profile, 4, 0, 2, 0, 0, 0, 0, 20, 0x7FF, 0);
-            let mut stream = MockStreamReader::new(header);
-            let h = AdtsHeader::read(&mut stream).await.unwrap();
+            let h = AdtsHeader::validate(&header.try_into().unwrap()).unwrap();
             assert_eq!(h.frame_length(), 20, "profile {} should parse", profile);
         }
     }
@@ -723,8 +812,7 @@ mod tests {
     async fn test_various_channel_configs() {
         for ch in 0..=7u8 {
             let header = build_adts_header(0, 0, 1, 1, 4, 0, ch, 0, 0, 0, 0, 20, 0x7FF, 0);
-            let mut stream = MockStreamReader::new(header);
-            let h = AdtsHeader::read(&mut stream).await.unwrap();
+            let h = AdtsHeader::validate(&header.try_into().unwrap()).unwrap();
             assert_eq!(h.frame_length(), 20, "channel_config {} should parse", ch);
         }
     }
@@ -732,8 +820,7 @@ mod tests {
     #[tokio::test]
     async fn test_informational_bits_set() {
         let header = build_adts_header(0, 0, 1, 1, 4, 1, 2, 1, 1, 1, 1, 20, 0x7FF, 0);
-        let mut stream = MockStreamReader::new(header);
-        let h = AdtsHeader::read(&mut stream).await.unwrap();
+        let h = AdtsHeader::validate(&header.try_into().unwrap()).unwrap();
         assert_eq!(h.frame_length(), 20);
     }
 
@@ -742,8 +829,7 @@ mod tests {
         let vbr = build_adts_header(0, 0, 1, 1, 4, 0, 2, 0, 0, 0, 0, 20, 0x7FF, 0);
         let cbr = build_adts_header(0, 0, 1, 1, 4, 0, 2, 0, 0, 0, 0, 20, 0x100, 0);
         for h_bytes in [&vbr[..], &cbr[..]] {
-            let mut stream = MockStreamReader::new(h_bytes.to_vec());
-            let h = AdtsHeader::read(&mut stream).await.unwrap();
+            let h = AdtsHeader::validate(&h_bytes.try_into().unwrap()).unwrap();
             assert_eq!(h.frame_length(), 20);
         }
     }
@@ -756,8 +842,7 @@ mod tests {
     async fn test_single_rdb_nrdb_zero() {
         // nrdb=0 → 1 AAC frame (the common case)
         let header = build_adts_header(0, 0, 1, 1, 4, 0, 2, 0, 0, 0, 0, 20, 0x7FF, 0);
-        let mut stream = MockStreamReader::new(header);
-        let h = AdtsHeader::read(&mut stream).await.unwrap();
+        let h = AdtsHeader::validate(&header.try_into().unwrap()).unwrap();
         assert_eq!(h.number_of_raw_data_blocks(), 0);
         assert_eq!(h.aac_frame_count(), 1);
     }
@@ -771,7 +856,7 @@ mod tests {
         let mut reader = AdtsReader::new(&mut stream);
         let result = reader.read().await.unwrap();
         assert_eq!(result, frame);
-        let h = AdtsHeader::read(&mut MockStreamReader::new(result[..7].to_vec())).await.unwrap();
+        let h = AdtsHeader::validate(&result[..7].try_into().unwrap()).unwrap();
         assert_eq!(h.number_of_raw_data_blocks(), 1);
         assert_eq!(h.aac_frame_count(), 2);
     }
@@ -784,7 +869,7 @@ mod tests {
         let mut reader = AdtsReader::new(&mut stream);
         let result = reader.read().await.unwrap();
         assert_eq!(result, frame);
-        let h = AdtsHeader::read(&mut MockStreamReader::new(result[..7].to_vec())).await.unwrap();
+        let h = AdtsHeader::validate(&result[..7].try_into().unwrap()).unwrap();
         assert_eq!(h.number_of_raw_data_blocks(), 2);
         assert_eq!(h.aac_frame_count(), 3);
     }
@@ -797,7 +882,7 @@ mod tests {
         let mut reader = AdtsReader::new(&mut stream);
         let result = reader.read().await.unwrap();
         assert_eq!(result, frame);
-        let h = AdtsHeader::read(&mut MockStreamReader::new(result[..7].to_vec())).await.unwrap();
+        let h = AdtsHeader::validate(&result[..7].try_into().unwrap()).unwrap();
         assert_eq!(h.number_of_raw_data_blocks(), 3);
         assert_eq!(h.aac_frame_count(), 4);
     }
@@ -827,12 +912,12 @@ mod tests {
 
         let result1 = reader.read().await.unwrap();
         assert_eq!(result1, multi_frame);
-        let h1 = AdtsHeader::read(&mut MockStreamReader::new(result1[..7].to_vec())).await.unwrap();
+        let h1 = AdtsHeader::validate(&result1[..7].try_into().unwrap()).unwrap();
         assert_eq!(h1.aac_frame_count(), 2);
 
         let result2 = reader.read().await.unwrap();
         assert_eq!(result2, single_frame);
-        let h2 = AdtsHeader::read(&mut MockStreamReader::new(result2[..7].to_vec())).await.unwrap();
+        let h2 = AdtsHeader::validate(&result2[..7].try_into().unwrap()).unwrap();
         assert_eq!(h2.aac_frame_count(), 1);
     }
 
@@ -857,50 +942,4 @@ mod tests {
         assert_eq!(result, frame);
     }
 
-    // ===========================================================================
-    // read_exact UNIT TESTS
-    // ===========================================================================
-
-    #[tokio::test]
-    async fn test_read_exact_success() {
-        let data = vec![0x01, 0x02, 0x03, 0x04, 0x05];
-        let mut stream = MockStreamReader::new(data.clone());
-        let mut buf = vec![0u8; 5];
-        read_exact(&mut stream, &mut buf).await.unwrap();
-        assert_eq!(buf, data);
-    }
-
-    #[tokio::test]
-    async fn test_read_exact_zero_length() {
-        let mut stream = MockStreamReader::new(vec![0x01]);
-        let mut buf = vec![0u8; 0];
-        read_exact(&mut stream, &mut buf).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_read_exact_short_stream() {
-        let mut stream = MockStreamReader::new(vec![0x01, 0x02]);
-        let mut buf = vec![0u8; 5];
-        let result = read_exact(&mut stream, &mut buf).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unexpected end of stream"));
-    }
-
-    #[tokio::test]
-    async fn test_read_exact_io_error() {
-        let mut stream = ErrorMockStreamReader;
-        let mut buf = vec![0u8; 5];
-        let result = read_exact(&mut stream, &mut buf).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("IO error"));
-    }
-
-    #[tokio::test]
-    async fn test_read_exact_with_short_reads() {
-        let data = vec![0x01, 0x02, 0x03, 0x04, 0x05];
-        let mut stream = ShortReadMockStreamReader::new(data.clone());
-        let mut buf = vec![0u8; 5];
-        read_exact(&mut stream, &mut buf).await.unwrap();
-        assert_eq!(buf, data);
-    }
 }
