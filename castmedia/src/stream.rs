@@ -227,32 +227,61 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
 pub async fn broadcast(mut s: BroadcastInfo<'_>) { 
     info!("Mounted source on {}", s.mountpoint);
 
-    let omountpoint = s.mountpoint.to_owned();
-
     let mut reader      = StreamReader::new(s.session.stream, s.session.server.config.limits.source_timeout, s.stats, s.chunked);
     let media_broadcast = s.broadcast.audio.clone();
     let server          = s.session.server.clone();
+    let mut migrate_comm = server.migrate.clone();
+
+    let mut stream: Box<dyn AudioReader + Send> = match server.sources.read().await.get(s.mountpoint) {
+        Some(v) => match v.properties.content_type.as_str() {
+            "audio/mpeg" => Box::new(Mp3Reader::new(&mut reader)),
+            "audio/aac" => Box::new(AdtsReader::new(&mut reader)),
+            _ => unreachable!()
+        },
+        None => Box::new(Mp3Reader::new(&mut reader))
+    };
+    // Size of every chunk in broadcast queue
+    let mut chunk_size = VecDeque::new();
+    for i in s.broadcast.audio.snapshot().0 {
+        chunk_size.push_front(i.1.len());
+    }
+
     // Here we either wait for source to broadcast till it disconnects
     // Or we receive a command to kill it from admin
     // Or we receive command for a migration
-    let mut migrate_comm = server.migrate.clone();
-    tokio::select! {
-        _ = handle_source_stream(&omountpoint, &mut reader, &s.session.server, s.broadcast, &mut s.queue_size, s.kill_notifier) => (),
-        migrate = migrate_comm.recv() => {
-            migrate_stream(
-                MigrateStreamInfo {
-                    server: &server,
-                    migrate,
-                    mountpoint: s.mountpoint,
-                    media_broadcast,
-                    chunked: s.chunked,
-                    queue_size: s.queue_size,
-                    stream: reader,
-                    client_addr: s.session.addr
+    loop {
+        tokio::select! {
+            // Get the next packet from the media format.
+            r = stream.read() => match r {
+                Ok(slice) => {
+                    if let Err(e) = push_to_queue(&mut s.broadcast, s.mountpoint, &mut s.queue_size, &mut chunk_size, &s.session.server, slice) {
+                        error!("Failed pushing media block to queue for {}: {e}", s.mountpoint);
+                        break;
+                    }
                 },
-                None,
-                false
-            ).await;
+                Err(e) => {
+                    error!("Failed to read media stream for {}: {e}", s.mountpoint);
+                    break;
+                }
+            },
+            r = s.kill_notifier.recv() => if r.is_ok() { break },
+            migrate = migrate_comm.recv() => {
+                drop(stream);
+                migrate_stream(
+                    MigrateStreamInfo {
+                        server: &server,
+                        migrate,
+                        mountpoint: s.mountpoint,
+                        media_broadcast,
+                        chunked: s.chunked,
+                        queue_size: s.queue_size,
+                        stream: reader,
+                        client_addr: s.session.addr
+                    },
+                    None,
+                    false
+                ).await;
+            }
         }
     }
 
@@ -340,43 +369,6 @@ async fn migrate_stream(mut s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>
 
     // We have finished all preparations for migration
     utils::hang().await;
-}
-
-async fn handle_source_stream(mountpoint: &str, st: &mut StreamReader,
-                              server: &Server, mut broadcast: SourceBroadcast,
-                              queue_size: &mut usize, mut kill_notifier: oneshot::Receiver<()>) {
-    let mut stream: Box<dyn AudioReader + Send> = match server.sources.read().await.get(mountpoint) {
-        Some(v) => match v.properties.content_type.as_str() {
-            "audio/mpeg" => Box::new(Mp3Reader::new(st)),
-            "audio/aac" => Box::new(AdtsReader::new(st)),
-            _ => unreachable!()
-        },
-        None => Box::new(Mp3Reader::new(st))
-    };
-    // Size of every chunk in broadcast queue
-    let mut chunk_size = VecDeque::new();
-    for i in broadcast.audio.snapshot().0 {
-        chunk_size.push_front(i.1.len());
-    }
-
-    loop {
-        tokio::select! {
-            // Get the next packet from the media format.
-            r = stream.read() => match r {
-                Ok(slice) => {
-                    if let Err(e) = push_to_queue(&mut broadcast, mountpoint, queue_size, &mut chunk_size, server, slice) {
-                        error!("Failed pushing media block to queue for {mountpoint}: {e}");
-                        break;
-                    }
-                },
-                Err(e) => {
-                    error!("Failed to read media stream for {mountpoint}: {e}");
-                    break;
-                }
-            },
-            r = kill_notifier.recv() => if r.is_ok() { break }
-        }
-    }
 }
 
 async fn handle_relay_stream(stream: &mut StreamReader,
