@@ -163,6 +163,7 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
         _ = s.kill_notifier.recv() => killed = true,
         migrate = migrate_comm.recv() => {
             // We should broadcast all media data currently held before migrating
+            // This makes our read cancel safe as we don't drop any read data froms stream
             if !data.is_empty() {
                 _ = push_to_queue(
                     &mut s.broadcast, s.mountpoint,
