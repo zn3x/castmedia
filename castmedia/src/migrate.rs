@@ -24,7 +24,14 @@ use crate::{
 
 pub struct MigrateEntry {
     pub info: MigrateConnection,
-    pub sock: Option<(Stream, SocketAddr)>
+    pub sock: Option<(Stream, SocketAddr)>,
+    pub drained_buffer: Option<Vec<u8>>
+}
+
+impl MigrateEntry {
+    pub fn new(info: MigrateConnection, sock: Option<(Stream, SocketAddr)>) -> Self {
+        Self { info, sock, drained_buffer: None }
+    }
 }
 
 pub struct MigrateCommand {
@@ -183,6 +190,10 @@ fn send_connection(successor: &mut UnixStream, entry: MigrateEntry) -> Result<()
     successor.write_all(&ser)?;
     if let Some(sock) = entry.sock {
         let (s, read_buffer) = sock.0.prepare_for_migration();
+        let read_buffer = match entry.drained_buffer {
+            Some(mut v) => { v.extend(read_buffer); v },
+            None => read_buffer,
+        };
         successor.send_fd(s.as_raw_fd())?;
         let ser = serde_json::to_vec(&MigrateSocket {
             read_buffer,

@@ -297,6 +297,13 @@ impl<R: AsyncRead + Unpin + Send> AudioReader for Mp3Reader<'_, R> {
             }
         }
     }
+
+    fn into_partial_frame(self: Box<Self>) -> Vec<u8> {
+        match self.state {
+            Mp3ReadState::HeaderSearch { window, filled } => window[..filled].to_vec(),
+            Mp3ReadState::Payload { frame, filled, .. } => frame[..filled].to_vec(),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -277,6 +277,14 @@ impl<R: AsyncRead + Unpin + Send> AudioReader for AdtsReader<'_, R> {
             }
         }
     }
+
+    fn into_partial_frame(self: Box<Self>) -> Vec<u8> {
+        match self.state {
+            AdtsReadState::HeaderFixed { buf, filled } => buf[..filled].to_vec(),
+            AdtsReadState::HeaderCrc { buf, filled } => buf[..filled].to_vec(),
+            AdtsReadState::Payload { buf, filled, .. } => buf[..filled].to_vec(),
+        }
+    }
 }
 
 #[cfg(test)]

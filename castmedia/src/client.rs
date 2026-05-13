@@ -355,7 +355,7 @@ async fn migrate_listener(mut session: ClientSession,
     });
 
     match session.stream.flush().await {
-        Ok(()) => _ = migrate.listener.send(MigrateEntry { info, sock: Some((session.stream, session.addr)) }),
+        Ok(()) => _ = migrate.listener.send(MigrateEntry::new(info, Some((session.stream, session.addr)))),
         Err(e) => tracing::error!("Failed migrating listener: {e}")
     }
 }

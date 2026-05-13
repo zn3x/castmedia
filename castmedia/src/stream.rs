@@ -180,7 +180,8 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
                     chunked: s.chunked,
                     queue_size: s.queue_size,
                     stream: reader,
-                    client_addr: s.session.addr
+                    client_addr: s.session.addr,
+                    drained_buffer: None
                 },
                 Some(relay),
                 s.on_demand
@@ -266,7 +267,8 @@ pub async fn broadcast(mut s: BroadcastInfo<'_>) {
             },
             r = s.kill_notifier.recv() => if r.is_ok() { break },
             migrate = migrate_comm.recv() => {
-                drop(stream);
+                // Draining reader as it still may retain partial frame from it's internal buffer
+                let drained_buffer = Some(stream.into_partial_frame());
                 migrate_stream(
                     MigrateStreamInfo {
                         server: &server,
@@ -276,7 +278,8 @@ pub async fn broadcast(mut s: BroadcastInfo<'_>) {
                         chunked: s.chunked,
                         queue_size: s.queue_size,
                         stream: reader,
-                        client_addr: s.session.addr
+                        client_addr: s.session.addr,
+                        drained_buffer
                     },
                     None,
                     false
@@ -320,7 +323,8 @@ struct MigrateStreamInfo<'a> {
     chunked: bool,
     queue_size: usize,
     stream: StreamReader,
-    client_addr: SocketAddr
+    client_addr: SocketAddr,
+    drained_buffer: Option<Vec<u8>>
 }
 
 async fn migrate_stream(mut s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>,
@@ -363,7 +367,7 @@ async fn migrate_stream(mut s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>
     });
 
     match s.stream.stream.flush().await {
-        Ok(()) => _ = migrate.source.send(MigrateEntry { info, sock: Some((s.stream.stream, s.client_addr)) }),
+        Ok(()) => _ = migrate.source.send(MigrateEntry { info, sock: Some((s.stream.stream, s.client_addr)), drained_buffer: s.drained_buffer }),
         Err(e) => tracing::error!("Failed migrating source stream: {e}")
     }
 

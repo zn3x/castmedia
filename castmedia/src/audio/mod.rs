@@ -15,4 +15,10 @@ pub trait AudioReader {
     /// in `self.state`. The next call to `read()` will resume from exactly
     /// where it left off, no bytes from the stream are lost.
     async fn read(&mut self) -> Result<Vec<u8>>;
+
+    /// Consume the reader and return the partial frame buffer.
+    ///
+    /// Returns all bytes that have been read from the stream but not yet
+    /// delivered as a complete frame.
+    fn into_partial_frame(self: Box<Self>) -> Vec<u8>;
 }

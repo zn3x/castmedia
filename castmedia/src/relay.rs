@@ -229,7 +229,7 @@ async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat
     });
 
     match session.stream.flush().await {
-        Ok(()) => _ = migrate.master_mountupdates.send(MigrateEntry { info, sock: Some((session.stream, session.addr)) }),
+        Ok(()) => _ = migrate.master_mountupdates.send(MigrateEntry::new(info, Some((session.stream, session.addr)))),
         Err(e) => tracing::error!("Failed migrating master mount updates: {e}")
     }
 
@@ -527,7 +527,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
             });
             match (stream.peer_addr(), stream.flush().await) {
                 (Ok(client_addr), Ok(())) => {
-                    _ = migrate.slave_mountupdates.send(Some(MigrateEntry { info, sock: Some((stream, client_addr)) }));
+                    _ = migrate.slave_mountupdates.send(Some(MigrateEntry::new(info, Some((stream, client_addr)))));
                 },
                 (Err(e), _) => error!("Failed migrating relaying connection: {e}"),
                 (_, Err(e)) => error!("Failed migrating relaying connection: {e}")
@@ -769,10 +769,7 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
                     });
                     _ = migrate
                         .source
-                        .send(MigrateEntry {
-                            info,
-                            sock: None
-                        });
+                        .send(MigrateEntry::new(info, None));
                 }
 
                 utils::hang().await;
