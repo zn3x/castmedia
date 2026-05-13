@@ -10,7 +10,7 @@ pub struct MigrateSource {
     /// Contains (id + elements, channel size, last index)
     pub broadcast_snapshot: (Vec<(u64, Arc<Vec<u8>>)>, u64, u64),
     pub fallback: Option<String>,
-    pub metadata: Vec<u8>,
+    pub metadata: IcyMetadata,
     pub chunked: bool,
     pub queue_size: u64,
     pub is_relay: MigrateSourceConnectionType
@@ -32,6 +32,7 @@ pub enum MigrateSourceConnectionType {
 pub struct MigrateInactiveOnDemandSource {
     pub mountpoint: String,
     pub properties: IcyProperties,
+    pub metadata: IcyMetadata,
     pub master_url: String
 }
 
@@ -149,6 +150,12 @@ pub struct ClientProperties {
     pub user_agent: Option<String>,
     pub metadata: bool,
     pub addr: String
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct IcyMetadata {
+    pub title: String,
+    pub url: String
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]

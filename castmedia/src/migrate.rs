@@ -428,7 +428,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                     for master in &mut slave_tx {
                         if master.url.host_str().eq(&url.host_str())
                             && master.url.port().eq(&url.port()) {
-                            _ = master.tx.send(RelaySourceMigrate::OnDemandIdle { mount: info.mountpoint, properties: info.properties });
+                            _ = master.tx.send(RelaySourceMigrate::OnDemandIdle { mount: info.mountpoint, properties: info.properties, metadata: Some(info.metadata) });
                             continue 'OUTER;
                         }
                     }

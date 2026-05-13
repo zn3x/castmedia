@@ -15,11 +15,11 @@ use uuid::Uuid;
 use crate::{
     server::{ClientSession, Stream, Server, Session, AddrType},
     request::{read_request, Request, RequestType, ListenRequest},
-    source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast, SourceAccessType},
+    source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast, SourceAccessType, MetadataMsg},
     response, utils, admin, api,
     migrate::{MigrateEntry, MigrateCommand},
     broadcast::read_media_broadcast,
-    internal_api::v1::{RelayedInfo, ClientProperties, MigrateClient, MigrateConnection}
+    internal_api::v1::{RelayedInfo, ClientProperties, MigrateClient, MigrateConnection, IcyMetadata}
 };
 
 pub struct Client {
@@ -222,7 +222,7 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
 
 struct BroadcastInfo {
     stream: Receiver<Arc<Vec<u8>>>,
-    meta_stream: Receiver<Arc<(u64, Vec<u8>)>>,
+    meta_stream: Receiver<Arc<MetadataMsg>>,
     mover: Receiver<Arc<MoveClientsCommand>>,
     stats: Arc<SourceStats>,
     with_metadata: bool,
@@ -276,13 +276,13 @@ async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastIn
                                         session.stream.write_all(&buf[..first_buf_len]).await?;
                                     }
                                     // Now we write metadata
-                                    session.stream.write_all(&metadata.1).await?;
+                                    session.stream.write_all(&metadata.bin).await?;
                                     // Followed by what left in buffer if there is any
                                     if diff > 0 {
                                         session.stream.write_all(&buf[first_buf_len..]).await?;
                                     }
                                     b.metaint   = diff;
-                                    bytes_sent += metadata.1.len() + buf.len();
+                                    bytes_sent += metadata.bin.len() + buf.len();
                                 } else {
                                     session.stream.write_all(&buf).await?;
                                     b.metaint  += buf.len();
@@ -445,7 +445,7 @@ pub struct SourceInfo {
     pub fallback: Option<String>,
     pub queue_size: usize,
     pub broadcast: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,
-    pub metadata: Option<Vec<u8>>,
+    pub metadata: Option<IcyMetadata>,
     pub relayed: Option<RelayStream>,
     pub access: SourceAccessType
 }

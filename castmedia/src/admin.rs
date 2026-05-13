@@ -12,7 +12,8 @@ use crate::{
     response::{self, ChunkedResponse},
     auth::{self, RequiredRole},
     broadcast::broadcast_metadata,
-    source::{MoveClientsCommand, MoveClientsType, SourceAccessType}
+    source::{MoveClientsCommand, MoveClientsType, SourceAccessType},
+    internal_api::v1::IcyMetadata
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
@@ -26,8 +27,12 @@ async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Resu
                 return Ok(());
             }
 
+            let metadata = Some(IcyMetadata {
+                title: song.map(|s| s.to_string()).unwrap_or_default(),
+                url: url.map(|s| s.to_string()).unwrap_or_default()
+            });
             let success = if let Some(source) = session.server.sources.read().await.get(mount) {
-                broadcast_metadata(source, &song.map(|s| s.as_str()), &url.map(|s| s.as_str())).await;
+                broadcast_metadata(source, metadata).await;
                 true
             } else {
                 false
@@ -90,10 +95,10 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
         let mut list = lock.iter().peekable();
         while let Some(source) = list.next() {
             let prop_ref  = source.1.properties.as_ref();
-            let metadata  = source.1.metadata.read().await;
+            let metadata  = &*source.1.metadata.read().await;
             let mut sinfo = json!({
                 "fallback": source.1.fallback,
-                "metadata": metadata.as_ref(),
+                "metadata": metadata,
                 "properties": prop_ref,
                 "stats": {
                     "active_listeners": source.1.stats.active_listeners.load(Ordering::Relaxed),

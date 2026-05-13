@@ -229,7 +229,7 @@ async fn relaying() {
     let mut metadata_buf = vec![0u8; metadata_len];
     r.read_exact(&mut metadata_buf).await.unwrap();
     let metadata = std::str::from_utf8(&metadata_buf).unwrap();
-    assert_eq!((Some("1".to_owned()), Some("1".to_owned())), metadata_decode(metadata).unwrap());
+    assert_eq!(("1".to_owned(), "1".to_owned()), metadata_decode(metadata).unwrap());
 
     // Restarting master, but we also add a slave user
     let master_server1 = spawn_server(TEST_DIR, CONFIG_MASTER1, "relay_master.yaml").await;
@@ -255,7 +255,7 @@ async fn relaying() {
     let mut metadata_buf = vec![0u8; metadata_len];
     r.read_exact(&mut metadata_buf).await.unwrap();
     let metadata = std::str::from_utf8(&metadata_buf).unwrap();
-    assert_eq!((Some("2".to_owned()), Some("2".to_owned())), metadata_decode(metadata).unwrap());
+    assert_eq!(("2".to_owned(), "2".to_owned()), metadata_decode(metadata).unwrap());
 
     // Now we want slave to run in authenticated mode
     

@@ -4,7 +4,7 @@ mod state;
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
-use castmedia::{broadcast::metadata_decode, http::{ChunkedResponseReader, HttpClient}, relay::MountUpdate, source::IcyProperties, utils::basic_auth};
+use castmedia::{http::{ChunkedResponseReader, HttpClient}, relay::MountUpdate, source::IcyProperties, utils::basic_auth};
 use config::{Config, Directory};
 use hashbrown::HashMap;
 use qanat::{broadcast, mpsc};
@@ -139,7 +139,7 @@ async fn persist_state(config: &Config, state: &State) {
 
 async fn mountupdates_event_reader(config: &Arc<Config>, state: &mut State, client: &Client, event: MountUpdate) {
     match event {
-        MountUpdate::New { mount, properties } => {
+        MountUpdate::New { mount, properties, .. } => {
             match state.state.get_mut(&mount) {
                 Some(v) => if !v.properties.eq(&properties) {
                     // We must have skipped when stream was unmounted
@@ -177,7 +177,7 @@ async fn mountupdates_event_reader(config: &Arc<Config>, state: &mut State, clie
                 Some(v) => v.tx.clone()
             };
 
-            tx.send(Arc::new(MountUpdate::New { mount, properties }));
+            tx.send(Arc::new(MountUpdate::New { mount, properties, metadata: None }));
         },
         MountUpdate::Metadata { mount, metadata } => if let Some(v) = state.channel.get_mut(&mount) {
             v.tx.send(Arc::new(MountUpdate::Metadata { mount, metadata }));
@@ -212,9 +212,7 @@ async fn stream_update_task(config: Arc<Config>, client: Client, dir: Url, mount
                 Ok(v) => match v.as_ref() {
                     MountUpdate::New { properties, .. } => if sid.is_none() { add_action(&config, conf, &client, &dir, &mount, properties, &mut sid, &mut tick, &mut tx).await },
                     MountUpdate::Metadata { metadata, .. } => {
-                        if let Some((Some(t), Some(_))) = std::str::from_utf8(&metadata[1..]).ok().and_then(|m| metadata_decode(m).ok()) {
-                            metadata_ref = Some(t);
-                        }
+                        metadata_ref = Some(metadata.title.clone());
                         touch_action(&config, conf, &client, &dir, &mount, &state, metadata_ref.as_ref(), &mut sid, &mut tick, &mut tx).await
                     },
                     MountUpdate::Unmounted { .. } => {

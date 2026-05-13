@@ -3,7 +3,6 @@ use std::{
     num::NonZeroUsize
 };
 use hashbrown::HashMap;
-use serde::{Serialize, Deserialize};
 use qanat::{
     broadcast::{Receiver, Sender},
     oneshot
@@ -17,15 +16,10 @@ use crate::{
     server::{ClientSession, Session},
     request::{SourceRequest, Request},
     response, utils, stream::{self, BroadcastInfo, RelayBroadcastStatus}, auth,
-    client::{Client, SourceInfo}, config::Role
+    client::{Client, SourceInfo}, config::Role,
+    internal_api::v1::IcyMetadata
 };
 pub use crate::internal_api::v1::IcyProperties;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct IcyMetadata {
-    pub title: String,
-    pub url: String
-}
 
 pub struct SourceStats {
     /// Time when source last mounted mountpoint as utc timestamp
@@ -67,7 +61,7 @@ pub enum SourceAccessType {
 
 pub struct Source {
     pub properties: Arc<IcyProperties>,
-    pub metadata: Arc<RwLock<Option<IcyMetadata>>>,
+    pub metadata: Arc<RwLock<IcyMetadata>>,
     /// List of currently connected listeners to mount
     pub clients: Arc<RwLock<HashMap<Uuid, Client>>>,
     pub stats: Arc<SourceStats>,
@@ -80,11 +74,11 @@ pub struct Source {
     /// The stream broadcast receiver
     pub broadcast: Receiver<Arc<Vec<u8>>>,
     /// Receiver stream for metadata broadcast
-    pub meta_broadcast: Receiver<Arc<(u64, Vec<u8>)>>,
+    pub meta_broadcast: Receiver<Arc<MetadataMsg>>,
     /// Sender stream for metadata broadcast
     /// Needed so we don't create a new sender every time
     /// we get metadata update
-    pub meta_broadcast_sender: Sender<Arc<(u64, Vec<u8>)>>,
+    pub meta_broadcast_sender: Sender<Arc<MetadataMsg>>,
     /// Broadcast to move all clients in mountpoint to another one
     pub move_listeners_receiver: Receiver<Arc<MoveClientsCommand>>,
     pub move_listeners_sender: Sender<Arc<MoveClientsCommand>>,
@@ -94,13 +88,19 @@ pub struct Source {
 
 pub struct SourceBroadcast {
     pub audio: Sender<Arc<Vec<u8>>>,
-    pub metadata: Sender<Arc<(u64, Vec<u8>)>>
+    pub metadata: Sender<Arc<MetadataMsg>>
+}
+
+pub struct MetadataMsg {
+    pub pos: u64,
+    pub bin: Vec<u8>,
+    pub obj: IcyMetadata
 }
 
 /// We can remotely command clients to change mountpoint using a variant of move commands
 pub struct MoveClientsCommand {
     pub broadcast: Receiver<Arc<Vec<u8>>>,
-    pub meta_broadcast: Receiver<Arc<(u64, Vec<u8>)>>,
+    pub meta_broadcast: Receiver<Arc<MetadataMsg>>,
     pub move_listeners_receiver: Receiver<Arc<MoveClientsCommand>>,
     pub clients: Arc<RwLock<HashMap<Uuid, Client>>>,
     pub move_type: MoveClientsType
@@ -119,7 +119,8 @@ impl Source {
     pub fn new(properties: IcyProperties,
                fallback: Option<String>,
                access: SourceAccessType,
-               migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
+               migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,
+               metadata: Option<IcyMetadata>) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
         let size: NonZeroUsize  = NonZeroUsize::MIN;
         let (tx, rx)            = match migrated {
             Some(v)            => v,
@@ -130,7 +131,7 @@ impl Source {
         let (tx3, rx3)         = oneshot::channel();
         (Source {
             properties: Arc::new(properties),
-            metadata: Arc::new(RwLock::new(None)),
+            metadata: Arc::new(RwLock::new(metadata.unwrap_or_default())),
             clients: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(SourceStats::default()),
             fallback,
@@ -279,7 +280,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
 
     let mut on_demand_notify = None;
     let source_stats;
-    let mut broadcast;
+    let broadcast;
     let kill_notifier;
     let on_demand_flag;
 
@@ -293,18 +294,17 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
         on_demand_flag   = false;
         let not_migrated = info.broadcast.is_none();
         let source;
-        (source, broadcast, kill_notifier) = Source::new(info.properties, info.fallback,
-                                                         info.access, info.broadcast);
+        (source, broadcast, kill_notifier) = Source::new(
+            info.properties, info.fallback,
+            info.access, info.broadcast, info.metadata.clone()
+        );
 
         // Handling two cases here
         // 1. On migration, we need to push metadata here with 0 height so any listener
         // can get latest metadata
         // 2. If source never ever broadcasts metadata
         // we do this to respect metadata interval for reader
-        match info.metadata {
-            Some(metadata) => broadcast.metadata.send(Arc::new((0, metadata))),
-            None           => crate::broadcast::broadcast_metadata(&source, &None, &None).await
-        }
+        crate::broadcast::broadcast_metadata(&source, info.metadata).await;
 
         // We only ever need to keep track of media
         // keeping this here just for the looks

@@ -3,14 +3,16 @@ use qanat::broadcast::{Sender, Receiver, RecvError};
 use tokio::sync::RwLock;
 use anyhow::Result;
 
-use crate::source::{IcyMetadata, Source};
+use crate::{
+    source::{Source, MetadataMsg}, internal_api::v1::IcyMetadata
+};
 
-pub fn metadata_encode(title: &Option<&str>, url: &Option<&str>) -> Vec<u8> {
+pub fn metadata_encode(title: &str, url: &str) -> Vec<u8> {
     let mut vec = vec![0];
     vec.extend_from_slice(b"StreamTitle='");
-    vec.extend_from_slice(title.unwrap_or("").as_bytes());
+    vec.extend_from_slice(title.as_bytes());
     vec.extend_from_slice(b"';StreamUrl='");
-    vec.extend_from_slice(url.unwrap_or("").as_bytes());
+    vec.extend_from_slice(url.as_bytes());
     vec.extend_from_slice(b"';");
 
     // Black magic format https://thecodeartist.blogspot.com/2013/02/shoutcast-internet-radio-protocol.html
@@ -30,7 +32,7 @@ pub fn metadata_encode(title: &Option<&str>, url: &Option<&str>) -> Vec<u8> {
     vec
 }
 
-pub fn metadata_decode(metadata: &str) -> Result<(Option<String>, Option<String>)> {
+pub fn metadata_decode(metadata: &str) -> Result<(String, String)> {
     let mut title = None;
     let mut url   = None;
 
@@ -56,49 +58,51 @@ pub fn metadata_decode(metadata: &str) -> Result<(Option<String>, Option<String>
         }
     }
 
-    Ok((title, url))
+    Ok((title.unwrap_or_default(), url.unwrap_or_default()))
 }
 
-pub async fn broadcast_metadata<'a>(source: &Source, title: &Option<&str>, url: &Option<&str>) {
-    source.metadata.write().await.replace(IcyMetadata {
-        title: title.unwrap_or("").to_string(),
-        url: url.unwrap_or("").to_string()
-    });
-    
+pub async fn broadcast_metadata(source: &Source, metadata: Option<IcyMetadata>) {
+    let (title, url) = match metadata.as_ref() {
+        Some(v) => (v.title.as_str(), v.url.as_str()),
+        None => ("", "")
+    };
     source.meta_broadcast_sender
         .clone()
-        .send(Arc::new((
-            source.broadcast.last_index(),
-            metadata_encode(title, url))
-        ));
+        .send(Arc::new(MetadataMsg {
+            pos: source.broadcast.last_index(),
+            bin: metadata_encode(title, url),
+            obj: metadata.clone().unwrap_or_default()
+        }));
+
+    *source.metadata.write().await = metadata.unwrap_or_default();
 }
 
-pub async fn relay_broadcast_metadata<'a>(src_metadata: &RwLock<Option<IcyMetadata>>,
-                                          broadcast: &mut Sender<Arc<(u64, Vec<u8>)>>,
-                                          media_last_index: u64,
-                                          metadatabuf: Vec<u8>) {
+pub async fn relay_broadcast_metadata(src_metadata: &RwLock<IcyMetadata>,
+                                      broadcast: &mut Sender<Arc<MetadataMsg>>,
+                                      media_last_index: u64,
+                                      metadatabuf: Vec<u8>) {
     let metadata = match std::str::from_utf8(&metadatabuf[1..]) {
         Ok(v) => v,
         Err(_) => return
     };
 
     if let Ok((title, url)) = metadata_decode(metadata) {
-        src_metadata.write().await.replace(IcyMetadata {
-            title: title.unwrap_or("".to_string()),
-            url: url.unwrap_or("".to_string())
-        });
-
-
+        let metadata = IcyMetadata { title, url };
         broadcast
-            .send(Arc::new((media_last_index, metadatabuf)));
+            .send(Arc::new(MetadataMsg {
+                pos: media_last_index,
+                bin: metadatabuf,
+                obj: metadata.clone()
+            }));
+        *src_metadata.write().await = metadata;
     }
 }
 
 pub async fn read_media_broadcast(stream: &mut Receiver<Arc<Vec<u8>>>,
                                   media_buf: &mut Vec<Arc<Vec<u8>>>,
-                                  meta_stream: &mut Receiver<Arc<(u64, Vec<u8>)>>,
-                                  metadata: &mut Arc<(u64, Vec<u8>)>,
-                                  temp_metadata: &mut Option<Arc<(u64, Vec<u8>)>>)
+                                  meta_stream: &mut Receiver<Arc<MetadataMsg>>,
+                                  metadata: &mut Arc<MetadataMsg>,
+                                  temp_metadata: &mut Option<Arc<MetadataMsg>>)
     -> Result<(), RecvError> {
     let ret = stream.recv_batched(media_buf, 32, false).await;
     
@@ -111,7 +115,7 @@ pub async fn read_media_broadcast(stream: &mut Receiver<Arc<Vec<u8>>>,
         Err(qanat::broadcast::TryRecvError::Lagged) => return Err(qanat::broadcast::RecvError::Lagged),
     }
 
-    if temp_metadata.as_ref().is_some_and(|x| stream.read_position() >= x.0) {
+    if temp_metadata.as_ref().is_some_and(|x| stream.read_position() >= x.pos) {
         *metadata = temp_metadata
             .take()
             .unwrap();

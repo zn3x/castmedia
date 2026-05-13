@@ -18,14 +18,14 @@ use url::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    broadcast::relay_broadcast_metadata, client::{RelayStream, SourceInfo, StreamOnDemand},
+    broadcast::broadcast_metadata, client::{RelayStream, SourceInfo, StreamOnDemand},
     config::MasterServerRelayScheme, http::{self, ChunkedResponseReader, HttpClient},
     internal_api::v1::{
-        IcyProperties, MigrateConnection, MigrateInactiveOnDemandSource, MigrateMasterMountUpdates, MigrateSlaveMountUpdates, RelayedInfo
+        IcyMetadata, IcyProperties, MigrateConnection, MigrateInactiveOnDemandSource, MigrateMasterMountUpdates, MigrateSlaveMountUpdates, RelayedInfo
     },
     migrate::{MigrateCommand, MigrateEntry}, response::ChunkedResponse,
     server::{ClientSession, Server, Session, Stream},
-    source::{Source, SourceAccessType},
+    source::{Source, SourceAccessType, MetadataMsg},
     stream::RelayBroadcastStatus,
     utils::{self, basic_auth, concat_path, get_header}
 };
@@ -41,11 +41,12 @@ struct MasterMounts {
 pub enum MountUpdate {
     New {
         mount: String,
-        properties: IcyProperties
+        properties: IcyProperties,
+        metadata: Option<IcyMetadata>
     },
     Metadata {
         mount: String,
-        metadata: Vec<u8>
+        metadata: IcyMetadata
     },
     Unmounted {
         mount: String
@@ -55,7 +56,7 @@ pub enum MountUpdate {
 
 pub async fn master_mount_updates(mut session: ClientSession,
                                   // map holding all mounts as tuple (mount, metadata_channel)
-                                  mut mounts: HashMap<String, Receiver<Arc<(u64, Vec<u8>)>>>) -> Result<()> {
+                                  mut mounts: HashMap<String, Receiver<Arc<MetadataMsg>>>) -> Result<()> {
     info!("Mount updates stream initialized for {}", session);
 
     let user_id = session.user
@@ -178,7 +179,7 @@ pub async fn master_mount_updates(mut session: ClientSession,
                                 // We need to re-add recv future for this channel
                                 serde_json::to_vec(&json!({
                                     "mount": mount,
-                                    "metadata": &v.1,
+                                    "metadata": &v.obj,
                                     "type": "metadata"
                                 }))?
                             },
@@ -218,7 +219,7 @@ pub async fn master_mount_updates(mut session: ClientSession,
 
 async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>,
                                       user_id: String, mut session: ClientSession, 
-                                      mounts: HashMap<String, Receiver<Arc<(u64, Vec<u8>)>>>) -> ! {
+                                      mounts: HashMap<String, Receiver<Arc<MetadataMsg>>>) -> ! {
     let migrate = migrate
         .expect("Got migrate notice with closed mpsc");
 
@@ -367,7 +368,8 @@ async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, master_ind:
 pub enum RelaySourceMigrate {
     OnDemandIdle {
         mount: String,
-        properties: IcyProperties
+        properties: IcyProperties,
+        metadata: Option<IcyMetadata>
     },
     OnDemandActive {
         stream: Stream,
@@ -430,11 +432,11 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                     });
                     sources.insert(mount, RelaySourceTask { handle: task, just_migrated: true });
                 },
-                RelaySourceMigrate::OnDemandIdle { mount, properties } => {
+                RelaySourceMigrate::OnDemandIdle { mount, properties, metadata } => {
                     handle_mount_update(
                         &mut sources, serv,
                         master_ind, on_demand,
-                        MountUpdate::New { mount, properties },
+                        MountUpdate::New { mount, properties, metadata },
                         &auth
                     ).await;
                 },
@@ -445,7 +447,8 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                          kill_notifier)            = Source::new(
                              info.properties.clone(), info.fallback.clone(),
                              info.access.clone(),
-                             info.broadcast.take());
+                             info.broadcast.take(),
+                             info.metadata.clone());
                     source.on_demand_notify_reader = Some(wake_src);
 
                     let stats = source.stats.clone();
@@ -459,7 +462,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                         })
                     }
 
-                    crate::broadcast::broadcast_metadata(&source, &None, &None).await;
+                    crate::broadcast::broadcast_metadata(&source, info.metadata.clone()).await;
 
                     if serv.sources.write().await.try_insert(info.mountpoint.clone(), source).is_err() {
                         continue;
@@ -561,7 +564,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
     // Now handling events for every source
     match event {
         MountUpdate::Heartbeat => (),
-        MountUpdate::New { mount, properties } => {
+        MountUpdate::New { mount, properties, metadata } => {
             if let Some(mut task) = sources.remove(&mount) {
                 if task.just_migrated {
                     task.just_migrated = false;
@@ -632,12 +635,12 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
                  kill_notifier)            = Source::new(
                      properties, None,
                      SourceAccessType::RelayedSource { relayed_source: url },
-                     None);
+                     None, metadata.clone());
             source.on_demand_notify_reader = Some(wake_src);
 
             let stats = source.stats.clone();
 
-            crate::broadcast::broadcast_metadata(&source, &None, &None).await;
+            crate::broadcast::broadcast_metadata(&source, metadata).await;
 
             if lock.try_insert(mount.clone(), source).is_err() {
                 panic!("Should be able to add relay source as we have lock");
@@ -673,24 +676,17 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
                 return;
             }
 
-            let (icymeta, mut metadata_broadcast, last) = match serv.sources.read().await.get(&mount) {
+            let m = match serv.sources.read().await.get(&mount) {
                 Some(source) => if on_demand && source.stats.active_listeners.load(Ordering::Acquire) != 0 {
                     return;
                 } else {
-                    (
-                        source.metadata.clone(),
-                        source.meta_broadcast_sender.clone(),
-                        source.broadcast.last_index()
-                    )
+                    broadcast_metadata(source, Some(metadata.clone())).await;
+                    source.metadata.clone()
                 }
                 None => return
             };
-            relay_broadcast_metadata(
-                &icymeta,
-                &mut metadata_broadcast,
-                last,
-                metadata
-            ).await;
+
+            *m.write().await = metadata;
         },
         MountUpdate::Unmounted { mount } => {
             // If source disconnects from master then we should do the same
@@ -764,11 +760,12 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
                     .expect("Got migrate notice with closed mpsc");
 
                 let master = &serv.config.master[master_ind];
-                if let Some(properties) = serv.sources.read().await.get(&mount).map(|x| (*x.properties).to_owned()) {
+                if let Some((properties, metadata)) = serv.sources.read().await.get(&mount).map(|x| ((*x.properties).to_owned(), x.metadata.clone())) {
                     let info = MigrateConnection::SlaveInactiveOnDemandSource(MigrateInactiveOnDemandSource {
                         master_url: master.url.to_string(),
                         mountpoint: mount,
-                        properties
+                        properties,
+                        metadata: metadata.read().await.clone()
                     });
                     _ = migrate
                         .source

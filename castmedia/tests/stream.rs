@@ -163,9 +163,9 @@ async fn stream_general() {
             let metadata = std::str::from_utf8(&metadata_buf).unwrap();
             
             if i <= 2 && c < 2 {
-                assert_eq!((Some("".to_owned()), Some("".to_owned())), metadata_decode(metadata).unwrap());
+                assert_eq!(("".to_owned(), "".to_owned()), metadata_decode(metadata).unwrap());
             } else {
-                assert_eq!((Some("title_here".to_owned()), Some("url_here".to_owned())), metadata_decode(metadata).unwrap());
+                assert_eq!(("title_here".to_owned(), "url_here".to_owned()), metadata_decode(metadata).unwrap());
             }
             
             if c == i {

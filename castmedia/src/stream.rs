@@ -21,7 +21,7 @@ use crate::{
     migrate::{MigrateCommand, MigrateEntry},
     client::StreamOnDemand,
     http::ChunkedResponseReader,
-    broadcast::{metadata_encode, relay_broadcast_metadata},
+    broadcast::relay_broadcast_metadata,
     internal_api::v1::{MigrateConnection, MigrateSource, MigrateSourceConnectionType, RelayedInfo},
     audio::{AudioReader, Mp3Reader, AdtsReader}
 };
@@ -300,20 +300,16 @@ async fn migrate_stream(mut s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>
     let migrate = s.migrate
         .expect("Got migrate notice with closed mpsc");
     // Now we fetch all info needed
-    let (properties, fallback, mut metadata_ch, access) = s.server.sources.read().await
+    let (properties, fallback, metadata, access) = s.server.sources.read().await
         .get(s.mountpoint)
         .map(|x| (
             x.properties.as_ref().clone(),
             x.fallback.clone(),
-            x.meta_broadcast.clone(),
+            x.metadata.clone(),
             x.access.clone()
         ))
         .expect("Source should still exist at this point");
-    let metadata = match metadata_ch.try_recv().ok() {
-        Some(v) => v.as_ref().clone().1,
-        None    => metadata_encode(&None, &None)
-    };
-    drop(metadata_ch);
+    let metadata = metadata.read().await.clone();
 
     let mountpoint = s.mountpoint.to_owned();
     // We need to first take a snapshot of media channel
@@ -438,7 +434,7 @@ async fn handle_relay_stream(stream: &mut StreamReader,
                         if metadatabuf.ne(&old_metadata) {
                             old_metadata = metadatabuf.clone();
                             relay_broadcast_metadata(
-                                &src_metadata, &mut broadcast.metadata,
+                                src_metadata.as_ref(), &mut broadcast.metadata,
                                 broadcast.audio.last_index(), metadatabuf
                             ).await;
                         }
