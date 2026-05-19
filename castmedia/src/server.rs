@@ -12,7 +12,7 @@ use tokio::{
     task::JoinSet, io::{AsyncRead, AsyncWrite, BufReader, BufWriter, ReadBuf},
     sync::{Semaphore, RwLock}, signal
 };
-use tokio_native_tls::{native_tls, TlsStream, TlsAcceptor};
+use tokio_rustls::{TlsAcceptor, TlsStream, rustls::{self, pki_types::pem::PemObject}};
 use tracing::{info, error, warn};
 use hashbrown::{HashMap, hash_map::DefaultHashBuilder};
 use inotify::{Inotify, WatchMask};
@@ -57,11 +57,11 @@ impl Socket for BufReader<BufWriter<TlsStream<TcpStream>>> {
     fn fd(&self) -> i32 { unreachable!("Can't migrate Tls connection") }
 
     fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.get_ref().get_ref().get_ref().get_ref().get_ref().local_addr()?)
+        Ok(self.get_ref().get_ref().get_ref().0.local_addr()?)
     }
 
     fn peer_addr(&self) -> Result<SocketAddr> {
-        Ok(self.get_ref().get_ref().get_ref().get_ref().get_ref().peer_addr()?)
+        Ok(self.get_ref().get_ref().get_ref().0.peer_addr()?)
     }
 
     fn consume(self: Box<Self>) -> (TcpStream, Vec<u8>) { unreachable!("Can't migrate Tls connection") }
@@ -302,14 +302,14 @@ async fn accept_loop(serv: Arc<Server>, listener: &TcpListener, addr_type: AddrT
                     Some(tls) => {
                         let tls = tls.clone();
                         tokio::spawn(async move {
-                            let tls_stream = match tls.accept(stream).await {
+                            let tls_stream = match crate::utils::tls_accept(stream, &tls).await {
                                 Ok(v) => v,
                                 Err(e) => {
                                     error!("Tls connection failed with {}: {}", addr, e);
                                     return;
                                 }
                             };
-                            handle_accepted(serv_clone, addr_type, Stream::new_tls(tls_stream), addr).await;
+                            handle_accepted(serv_clone, addr_type, tls_stream, addr).await;
                         });
                     },
                     None => {
@@ -337,8 +337,10 @@ async fn tls_accept_connections(serv: Arc<Server>, listener: TcpListener, addr_t
     
     let inotify = Inotify::init()
         .expect("Should be able to initialize inotify");
-    inotify.watches().add(std::path::Path::new(&tls_identity.cert), WatchMask::CREATE | WatchMask::MODIFY)
-        .expect("Couldn't create inotify watch for tls identity file");
+    inotify.watches().add(tls_identity.cert.as_path(), WatchMask::CREATE | WatchMask::MODIFY)
+        .expect("Couldn't create inotify watch for tls cert file");
+    inotify.watches().add(tls_identity.key.as_path(), WatchMask::CREATE | WatchMask::MODIFY)
+        .expect("Couldn't create inotify watch for tls key file");
     let mut tls_update_stream = inotify.into_event_stream([0u8; 1024])
         .expect("Couldn't create inotify tls identity update stream");
 
@@ -357,7 +359,7 @@ async fn tls_accept_connections(serv: Arc<Server>, listener: TcpListener, addr_t
                 if u.is_none() {
                     panic!("Inotify notifications suddenly stopped.");
                 } else if let Some(Err(e)) = u {
-                    error!("Tls identity {} inotify error: {}", tls_identity.cert, e);
+                    error!("Tls identity {:?} inotify error: {}", tls_identity.cert, e);
                     continue;
                 }
             }
@@ -367,11 +369,11 @@ async fn tls_accept_connections(serv: Arc<Server>, listener: TcpListener, addr_t
             Ok(Some(v)) => {
                 tls_id_hash  = v.0;
                 tls_acceptor = v.1;
-                info!("Tls identity from {} reloaded", tls_identity.cert);
+                info!("Tls identity from {:?} reloaded", tls_identity.cert);
             },
             Ok(None) => {},
             Err(e) => {
-                error!("Couldn't reload Tls identity from {}, sticking to old identity. Reason: {}", tls_identity.cert, e);
+                error!("Couldn't reload Tls identity from cert:{:?} and key:{:?}, sticking to old identity. Reason: {}", tls_identity.cert, tls_identity.key, e);
             }
         }
     }
@@ -384,11 +386,23 @@ async fn load_cert(tls_identity: &TlsIdentity, old_hash: u64) -> Result<Option<(
     if hash.eq(&old_hash) {
         return Ok(None);
     }
-    let tls_id    = native_tls::Identity::from_pkcs12(tls_slurp.as_slice(), &tls_identity.pass)?;
-    
+    let certs   = rustls::pki_types::CertificateDer::pem_file_iter(&tls_identity.cert)?.collect::<Result<Vec<_>, _>>()?;
+    let key     = rustls::pki_types::PrivateKeyDer::from_pem_file(&tls_identity.key)?;
+    let builder = match crate::utils::tls_cyphers().await.as_ref() {
+        Some(v) => rustls::ServerConfig::builder_with_provider(v.clone()).with_safe_default_protocol_versions()?,
+        None    => rustls::ServerConfig::builder()
+    };
+    let mut tls_id = builder
+        .with_no_client_auth()
+        .with_single_cert(certs, key)?;
+    tls_id.alpn_protocols = vec![b"http/1.1".to_vec()];
+    #[cfg(target_os = "linux")]
+    {
+        tls_id.enable_secret_extraction = true;
+    }
     Ok(Some((
         hash,
-        tokio_native_tls::TlsAcceptor::from(native_tls::TlsAcceptor::new(tls_id)?)
+        TlsAcceptor::from(Arc::new(tls_id))
     )))
 }
 
@@ -494,7 +508,7 @@ pub async fn listener(config: ServerSettings) {
                     serv.clone(),
                     listener,
                     is_auth,
-                    serv.config.admin_access.address.tls.clone()
+                    addr.tls.clone()
                 )
             );
         } else {
@@ -515,9 +529,10 @@ pub async fn listener(config: ServerSettings) {
         let uses_tls = serv.config.address
             .iter()
             .any(|x| x.tls.is_some() && x.tls.as_ref().unwrap().enabled);
-        if uses_tls || (serv.config.admin_access.address.tls.is_some()
-            && serv.config.admin_access.address.tls.as_ref().unwrap().enabled) {
-            warn!("Migration listener won't be started because Tls migration is not supported!");
+        if (uses_tls || (serv.config.admin_access.address.tls.is_some()
+            && serv.config.admin_access.address.tls.as_ref().unwrap().enabled))
+            && (cfg!(target_os = "linux") && crate::utils::tls_cyphers().await.is_none()) {
+            warn!("Migration listener won't be started because TLS migration is not supported without a KTLS enabled linux machine!");
         } else {
             crate::migrate::spawn_listener(serv.clone()).await;
         }

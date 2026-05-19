@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf};
 use anyhow::Result;
 
 use hashbrown::HashMap;
@@ -168,8 +168,8 @@ pub struct ServerAddress {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TlsIdentity {
     pub enabled: bool, 
-    pub cert: String,
-    pub pass: String
+    pub cert: PathBuf,
+    pub key: PathBuf
 }
 
 #[derive(Serialize, Deserialize)]
@@ -441,14 +441,14 @@ impl ServerSettings {
             }
             if let Some(tls) = address.tls.as_ref() {
                 with_tls = true;
-                if !std::path::Path::new(&tls.cert).is_file() {
-                    error!("Tls identity {} for [{}] not found.", tls.cert, address.bind);
+                if !tls.cert.exists() || !tls.cert.exists() {
+                    error!("Tls identity cert:{:?} or key:{:?} for [{}] not found.", tls.cert, tls.key, address.bind);
                     errors += 1;
                 }
             }
         }
 
-        if with_tls && config.migrate.enabled {
+        if with_tls && config.migrate.enabled && !cfg!(target_os = "linux") {
             error!("Migration not supported with tls, a tls termination proxy must be set if needed");
             errors += 1;
         }

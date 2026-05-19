@@ -6,7 +6,8 @@ edition = "2021"
 [dependencies]
 qanat.workspace = true
 tokio.workspace = true
-tokio-native-tls.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
 inotify.workspace = true
 futures.workspace = true
 hashbrown.workspace = true
@@ -32,8 +33,12 @@ clean-path.workspace = true
 async-trait.workspace = true
 pin-project.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+ktls.workspace = true
+
 [dev-dependencies]
 symphonia.workspace = true
 tokio = { version = "*", features = [ "full" ] }
 test-utils = { path = "../test-utils" }
 futures.workspace = true
+rcgen = { workspace = true, features = ["ring"] }

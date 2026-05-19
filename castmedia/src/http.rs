@@ -1,10 +1,10 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 use anyhow::Result;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream
 };
-use tokio_native_tls::native_tls::TlsConnector;
+use tokio_rustls::{rustls::{self, pki_types::ServerName}};
 use url::Url;
 
 use crate::{server::Stream, utils};
@@ -28,8 +28,25 @@ impl<'a> HttpClient<'a> {
             .expect("Should be able to fetch master port");
         let stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
         let stream = if url.scheme().eq("https") {
-            let cx = tokio_native_tls::TlsConnector::from(TlsConnector::builder().build()?);
-            Stream::new_tls(cx.connect(&host, stream).await?)
+            let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+            let builder = match utils::tls_cyphers().await.as_ref() {
+                Some(v) => rustls::ClientConfig::builder_with_provider(v.clone()).with_safe_default_protocol_versions()?,
+                None    => rustls::ClientConfig::builder()
+            };
+            let mut builder = builder.with_root_certificates(roots).with_no_client_auth();
+            builder.enable_secret_extraction = true;
+            builder.resumption = tokio_rustls::rustls::client::Resumption::disabled();
+            let cx = tokio_rustls::TlsConnector::from(Arc::new(builder));
+            if cfg!(target_os = "linux") && utils::tls_cyphers().await.is_some() {
+                let corked          = ktls::CorkStream::new(stream);
+                let s               = cx.connect(ServerName::try_from(host.clone())?, corked).await?;
+                let ktls_stream     = ktls::config_ktls_client(s).await?;
+                let (drain, stream) = ktls_stream.into_raw();
+                Stream::new_migrated(stream, drain.unwrap_or_default())
+            } else {
+                let s = tokio_rustls::TlsStream::from(cx.connect(ServerName::try_from(host.clone())?, stream).await?);
+                Stream::new_tls(s)
+            }
         } else {
             Stream::new(stream)
         };

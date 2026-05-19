@@ -1,6 +1,41 @@
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::fs;
+use std::io::{Read, Write};
+use tokio::io::{AsyncReadExt as TokioAsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use castmedia::server::Stream;
+use futures::{StreamExt, TryStreamExt};
+use futures::io::AsyncReadExt as FuturesAsyncReadExt;
+use rcgen::generate_simple_self_signed;
+
+static TEST_DIR: &str = env!("CARGO_TARGET_TMPDIR");
+
+const CONFIG_KTLS_TEMPLATE: &str = "
+address:
+  - bind: 127.0.0.1:9010
+    tls:
+      enabled: true
+      cert: /tmp/ktls_server.cert
+      key: /tmp/ktls_server.key
+admin_access:
+  enabled: true
+  address:
+    bind: 127.0.0.1:9110
+metaint: 3000
+misc:
+  unsafe_pass: true
+migrate:
+  enabled: true
+  bind: /tmp/migration_ktls.sock
+account:
+  admin:
+    pass: 0$pass
+    role: admin
+  source:
+    pass: 0$pass
+    role: source
+    mount:
+      - path: '/stream.mp3'
+";
 
 async fn connected_pair() -> (TcpStream, TcpStream) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -148,4 +183,59 @@ async fn prefixed_stream_migration_roundtrip() {
     let mut big_buf = [0u8; 14];
     restored.read_exact(&mut big_buf).await.unwrap();
     assert_eq!(&big_buf, b"remaining_data");
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn ktls_migration_tls_listener() {
+    let ck = generate_simple_self_signed(vec!["127.0.0.1".into(), "localhost".into()]).unwrap();
+    let cert_pem = ck.cert.pem();
+    let key_pem = ck.signing_key.serialize_pem();
+    fs::write("/tmp/ktls_server.cert", cert_pem).unwrap();
+    fs::write("/tmp/ktls_server.key", key_pem).unwrap();
+
+    let mut server1 = test_utils::spawn_server(TEST_DIR, &CONFIG_KTLS_TEMPLATE, "ktls_server.yaml").await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Spawn source connecting to admin interface and get ffmpeg stdout to feed
+    let (mut source_sock, media) = test_utils::spawn_source_manual("source:pass", "127.0.0.1:9110", "/stream.mp3").unwrap();
+    let mut stdout = media.stdout.unwrap();
+    let mut feed_buf = [0u8; 4096];
+    let n = stdout.read(&mut feed_buf).unwrap_or(0);
+    if n > 0 { let _ = source_sock.write_all(&feed_buf[..n]); }
+
+    // Connect as HTTPS listener to public port using reqwest that accepts invalid certs
+    let client = test_utils::reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+
+    let resp = client
+        .get("https://127.0.0.1:9010/stream.mp3")
+        .header("Icy-Metadata", "1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let mut r = resp
+        .bytes_stream()
+        .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
+        .into_async_read();
+
+    // Trigger migration by starting successor instance
+    let server2 = test_utils::spawn_server(TEST_DIR, CONFIG_KTLS_TEMPLATE, "ktls_server.yaml").await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // Original should exit after migration
+    let status = server1.child.try_wait();
+    assert!(matches!(status, Ok(Some(_))));
+    server1 = server2;
+
+    // Feed more data and ensure the HTTPS listener can still read
+    let n = stdout.read(&mut feed_buf).unwrap_or(0);
+    if n > 0 { let _ = source_sock.write_all(&feed_buf[..n]); }
+    let mut outbuf = [0u8; 1024];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), r.read(&mut outbuf)).await.expect("Should read after migration");
+
+    drop(server1);
 }

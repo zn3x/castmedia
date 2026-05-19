@@ -1,14 +1,18 @@
-use std::os::{unix::net::UnixStream, fd::FromRawFd};
+use std::{os::{fd::FromRawFd, unix::net::UnixStream}, sync::Arc};
 
 use anyhow::Result;
 use base64::Engine;
+use ktls::CompatibleCiphers;
 use passfd::FdPassingExt;
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, sync::OnceCell};
 use hashbrown::HashMap;
+use tokio_rustls::rustls::crypto::CryptoProvider;
 use url::Url;
 
 use crate::server::Stream;
 use tokio::io::AsyncReadExt;
+
+static COMPATIBLE_CIPHERS: OnceCell<Option<Arc<CryptoProvider>>> = OnceCell::const_new();
 
 pub fn get_queries(path: &str) -> Result<HashMap<String, String>> {
     let parsed_url = Url::parse(&format!("s://h{}", path))?;
@@ -89,6 +93,46 @@ pub fn read_stream_from_unix_socket(unixsock: &mut UnixStream) -> Result<TcpStre
     std_sock.set_nonblocking(true)?;
 
     Ok(TcpStream::from_std(std_sock)?)
+}
+
+#[inline(always)]
+pub async fn tls_accept(stream: TcpStream, acceptor: &tokio_rustls::TlsAcceptor) -> Result<Stream> {
+    let final_stream;
+    if cfg!(target_os = "linux") && tls_cyphers().await.is_some() {
+        let corked          = ktls::CorkStream::new(stream);
+        let tls_stream      = acceptor.accept(corked).await?;
+        let ktls_stream     = ktls::config_ktls_server(tls_stream).await?;
+        let (drain, stream) = ktls_stream.into_raw();
+        final_stream        = Stream::new_migrated(stream, drain.unwrap_or_default());
+    } else {
+        final_stream        = Stream::new_tls(tokio_rustls::TlsStream::Server(acceptor.accept(stream).await?));
+    }
+    Ok(final_stream)
+}
+
+pub async fn tls_cyphers() -> &'static Option<Arc<CryptoProvider>> {
+    COMPATIBLE_CIPHERS.get_or_init(|| async {
+        if cfg!(target_os = "linux") {
+            let ciphers = CompatibleCiphers::new().await
+                .map_err(|e| tracing::warn!("KTLS setup failed, migration won't be supported. Reason: {e}"))
+                .ok();
+            if let Some(ciphers) = ciphers {
+                let mut provider = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider();
+                // Filter to only ciphers the kernel actually supports
+                provider.cipher_suites = provider
+                    .cipher_suites
+                    .into_iter()
+                    .filter(|suite| ciphers.is_compatible(*suite))
+                    .collect();
+                if provider.cipher_suites.is_empty() {
+                    tracing::warn!("KTLS setup failed, migration won't be supported. Check if KTLS kernel module is enabled");
+                    return None
+                }
+                return Some(Arc::new(provider))
+            }
+        }
+        None
+    }).await
 }
 
 #[cfg(test)]
