@@ -9,7 +9,10 @@ members = [
 qanat = { git = "https://codeberg.org/zesty/qanat" }
 
 tokio = { version = "1.29.0", features = [ "net", "fs", "io-util", "time", "sync", "rt-multi-thread", "macros", "signal" ] }
-tokio-native-tls = { version = "0.3.1", features = [ "vendored" ] }
+tokio-rustls = "0.26"
+webpki-roots = "1"
+ktls = "6"
+rcgen = "0.14"
 
 inotify = "0.10"
 
