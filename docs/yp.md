@@ -1,4 +1,3 @@
-
 # YellowPages directories
 
 A YP (Yellow Pages) directory is a listing of broadcast streams.
@@ -38,7 +37,7 @@ timeout: 20000
 directories:
   - yp_url: http://icecast-yp.internet-radio.com
     # Periodic heartbeat timeout when idle
-    # Must consult YP diectory recommendation for this value
+    # Must consult YP directory recommendation for this value
     timeout: 15000
 # Where to save castmediayp state
 state: yp_state.json
