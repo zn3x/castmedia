@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::{Arc, OnceLock}};
 use anyhow::Result;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -18,6 +18,8 @@ pub struct HttpClient<'a> {
     http_max_len: usize
 }
 
+static ROOTS: OnceLock<Arc<rustls::RootCertStore>> = OnceLock::new();
+
 impl<'a> HttpClient<'a> {
     pub async fn connect(url: &Url, path: &'a str, http_max_len: usize) -> Result<Self> {
         // Host and port should have been verified before
@@ -28,12 +30,12 @@ impl<'a> HttpClient<'a> {
             .expect("Should be able to fetch master port");
         let stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
         let stream = if url.scheme().eq("https") {
-            let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+            let roots   = ROOTS.get_or_init(|| Arc::new(rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() }));
             let builder = match utils::tls_cyphers().await.as_ref() {
                 Some(v) => rustls::ClientConfig::builder_with_provider(v.clone()).with_safe_default_protocol_versions()?,
                 None    => rustls::ClientConfig::builder()
             };
-            let mut builder = builder.with_root_certificates(roots).with_no_client_auth();
+            let mut builder = builder.with_root_certificates(roots.clone()).with_no_client_auth();
             builder.enable_secret_extraction = true;
             builder.resumption = tokio_rustls::rustls::client::Resumption::disabled();
             let cx = tokio_rustls::TlsConnector::from(Arc::new(builder));

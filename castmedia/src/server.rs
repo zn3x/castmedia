@@ -396,10 +396,7 @@ async fn load_cert(tls_identity: &TlsIdentity, old_hash: u64) -> Result<Option<(
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
     tls_id.alpn_protocols = vec![b"http/1.1".to_vec()];
-    #[cfg(target_os = "linux")]
-    {
-        tls_id.enable_secret_extraction = true;
-    }
+    tls_id.enable_secret_extraction = true;
     Ok(Some((
         hash,
         TlsAcceptor::from(Arc::new(tls_id))
