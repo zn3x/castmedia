@@ -1,8 +1,8 @@
-use std::{time::Duration, net::TcpStream, io::{Read, Write}};
-use castmedia::broadcast::metadata_decode;
-use futures::{AsyncRead, AsyncReadExt, StreamExt, TryStreamExt};
-use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, probe::Hint, formats::FormatOptions, meta::MetadataOptions};
+use std::time::Duration;
+use castmedia::{audio::AudioReader, broadcast::metadata_decode};
+use futures::{AsyncRead, AsyncReadExt as FutAsyncReadExt, StreamExt, TryStreamExt};
 use test_utils::{spawn_source, spawn_source_manual, spawn_source_manual_aac, spawn_server};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 
 const CONFIG: &str = "
 address:
@@ -106,21 +106,10 @@ async fn stream_general() {
     let mut buf = [0u8; 100000];
     let mut len = [8u8; 1];
 
-    let (mut source_sock, media) = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE).unwrap();
-    let stdout                   = media.stdout.unwrap();
+    let (mut source_sock, media) = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE).await.unwrap();
+    let mut stdout               = media.stdout.unwrap();
 
-    let mss  = MediaSourceStream::new(Box::new(ReadOnlySource::new(stdout)), Default::default());
-    let hint = Hint::new();
-
-    // Use the default options for metadata and format readers.
-    let meta_opts: MetadataOptions  = Default::default();
-    let fmt_opts: FormatOptions     = Default::default();
-
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &fmt_opts, &meta_opts)
-        .unwrap();
-
-    let mut format = probed.format;
+    let mut reader = castmedia::audio::Mp3Reader::new(&mut stdout);
 
     let mut total_written = 0;
 
@@ -146,9 +135,9 @@ async fn stream_general() {
             }
 
             loop {
-                let packet = format.next_packet().expect("Should be no end of stream");
-                source_sock.write_all(packet.buf()).expect("Should be able to write to source socket");
-                total_written += packet.buf().len();
+                let packet = reader.read().await.expect("Should be no end of stream");
+                source_sock.write_all(&packet).await.expect("Should be able to write to source socket");
+                total_written += packet.len();
                 if total_written >= 100000 {
                     total_written -= 100000;
                     break;
@@ -191,7 +180,7 @@ async fn stream_general() {
 
     tokio::time::sleep(Duration::from_secs(4)).await;
 
-    let (mut source_sock, media) = spawn_source_manual_aac(AUTH_SOURCE, ADMIN, MOUNT_AAC).unwrap();
+    let (mut source_sock, media) = spawn_source_manual_aac(AUTH_SOURCE, ADMIN, MOUNT_AAC).await.unwrap();
     let mut stdout = media.stdout.unwrap();
 
     let mut ffmpeg_buf = [0u8; 4096];
@@ -199,11 +188,11 @@ async fn stream_general() {
 
     // Feed some AAC data first so listeners have something to connect to
     loop {
-        let n = stdout.read(&mut ffmpeg_buf).expect("Should read from ffmpeg");
+        let n = stdout.read(&mut ffmpeg_buf).await.expect("Should read from ffmpeg");
         if n == 0 {
             break;
         }
-        source_sock.write_all(&ffmpeg_buf[..n]).expect("Should write to source socket");
+        source_sock.write_all(&ffmpeg_buf[..n]).await.expect("Should write to source socket");
         total_written += n;
         if total_written >= 50000 {
             break;
@@ -231,9 +220,9 @@ async fn stream_general() {
     let mut data_read = 0;
 
     loop {
-        let n = stdout.read(&mut ffmpeg_buf).unwrap_or(0);
+        let n = stdout.read(&mut ffmpeg_buf).await.unwrap_or(0);
         if n > 0 {
-            source_sock.write_all(&ffmpeg_buf[..n]).expect("Should write to source socket");
+            source_sock.write_all(&ffmpeg_buf[..n]).await.expect("Should write to source socket");
         }
 
         match tokio::time::timeout(Duration::from_secs(2), r.read(&mut read_buf)).await {
@@ -312,14 +301,14 @@ async fn source_stream() {
     drop(server);
 }
 
-async fn feed_source_data(source_sock: &mut TcpStream, stdout: &mut impl Read, ffmpeg_buf: &mut [u8; 4096]) {
+async fn feed_source_data(source_sock: &mut TcpStream, stdout: &mut tokio::process::ChildStdout, ffmpeg_buf: &mut [u8; 4096]) {
     let mut total_written = 0;
     loop {
-        let n = stdout.read(ffmpeg_buf).expect("Should read from ffmpeg");
+        let n = stdout.read(ffmpeg_buf).await.expect("Should read from ffmpeg");
         if n == 0 {
             break;
         }
-        source_sock.write_all(&ffmpeg_buf[..n]).expect("Should write to source socket");
+        source_sock.write_all(&ffmpeg_buf[..n]).await.expect("Should write to source socket");
         total_written += n;
         if total_written >= 50000 {
             break;
@@ -384,7 +373,7 @@ async fn metaint_test() {
     let mut server = spawn_server(TEST_DIR, CONFIG_METAINT, "metaint.yaml").await;
     tokio::time::sleep(Duration::from_secs(4)).await;
 
-    let (mut source_sock, media) = spawn_source_manual(AUTH_SOURCE, ADMIN3, MOUNT_SOURCE).unwrap();
+    let (mut source_sock, media) = spawn_source_manual(AUTH_SOURCE, ADMIN3, MOUNT_SOURCE).await.unwrap();
     let mut stdout = media.stdout.unwrap();
     let mut ffmpeg_buf = [0u8; 4096];
 

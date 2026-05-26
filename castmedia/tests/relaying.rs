@@ -1,9 +1,8 @@
-use std::{io::Write, time::Duration};
-
+use std::time::Duration;
 use futures::{AsyncReadExt, StreamExt, TryStreamExt};
 use test_utils::{spawn_server, spawn_source_manual};
-use castmedia::broadcast::metadata_decode;
-use symphonia::core::{io::{MediaSourceStream, ReadOnlySource}, probe::Hint, formats::FormatOptions, meta::MetadataOptions};
+use castmedia::{audio::AudioReader, broadcast::metadata_decode};
+use tokio::io::AsyncWriteExt;
 
 
 const CONFIG_MASTER: &str = "
@@ -157,27 +156,16 @@ async fn relaying() {
 
     tokio::time::sleep(Duration::from_secs(4)).await;
 
-    let (mut source_sock, media) = spawn_source_manual(AUTH_SOURCE, ADMIN_MASTER, MOUNT_SOURCE).unwrap();
-    let stdout                   = media.stdout.unwrap();
+    let (mut source_sock, media) = spawn_source_manual(AUTH_SOURCE, ADMIN_MASTER, MOUNT_SOURCE).await.unwrap();
+    let mut stdout               = media.stdout.unwrap();
 
-    let mss  = MediaSourceStream::new(Box::new(ReadOnlySource::new(stdout)), Default::default());
-    let hint = Hint::new();
-
-    // Use the default options for metadata and format readers.
-    let meta_opts: MetadataOptions  = Default::default();
-    let fmt_opts: FormatOptions     = Default::default();
-
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &fmt_opts, &meta_opts)
-        .unwrap();
-
-    let mut format = probed.format;
+    let mut reader = castmedia::audio::Mp3Reader::new(&mut stdout);
 
     let r = test_utils::get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=1&song=1", AUTH_SOURCE, ADMIN_MASTER, MOUNT_SOURCE)).await;
     assert_eq!(r, 200);
 
-    let packet1 = format.next_packet().unwrap();
-    assert!(source_sock.write_all(packet1.buf()).is_ok());
+    let packet1 = reader.read().await.unwrap();
+    assert!(source_sock.write_all(&packet1).await.is_ok());
 
     // Mount should not be present in slave
     let mounts = test_utils::get_response(&format!("http://{}@{}/admin/listmounts", AUTH_ADMIN, ADMIN_SLAVE)).await
@@ -189,8 +177,8 @@ async fn relaying() {
     // Waiting for next mount poll by slave server
     tokio::time::sleep(Duration::from_secs(5)).await;
 
-    let packet2 = format.next_packet().unwrap();
-    assert!(source_sock.write_all(packet2.buf()).is_ok());
+    let packet2 = reader.read().await.unwrap();
+    assert!(source_sock.write_all(&packet2).await.is_ok());
 
     tokio::time::sleep(Duration::from_secs(5)).await;
 
@@ -213,17 +201,17 @@ async fn relaying() {
         .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)))
         .into_async_read();
 
-    let packet3 = format.next_packet().unwrap();
-    assert!(source_sock.write_all(packet3.buf()).is_ok());
+    let packet3 = reader.read().await.unwrap();
+    assert!(source_sock.write_all(&packet3).await.is_ok());
 
     let mut buf = [0u8; 3000];
     let mut len = [0u8; 1];
     r.read_exact(&mut buf).await.unwrap();
     r.read_exact(&mut len).await.unwrap();
 
-    assert_eq!(&buf[0..packet1.buf().len()], packet1.buf());
-    assert_eq!(&buf[packet1.buf().len()..packet1.buf().len()+packet2.buf().len()], packet2.buf());
-    assert_eq!(&buf[packet1.buf().len()+packet2.buf().len()..], &packet3.buf()[..3000-(packet1.buf().len()+packet2.buf().len())]);
+    assert_eq!(&buf[0..packet1.len()], packet1);
+    assert_eq!(&buf[packet1.len()..packet1.len()+packet2.len()], packet2);
+    assert_eq!(&buf[packet1.len()+packet2.len()..], &packet3[..3000-(packet1.len()+packet2.len())]);
 
     let metadata_len = (len[0] as usize) << 4;
     let mut metadata_buf = vec![0u8; metadata_len];
@@ -239,14 +227,14 @@ async fn relaying() {
     let ret = test_utils::get_status_code(&format!("http://{}@{}/admin/metadata?mode=updinfo&mount={}&url=2&song=2", AUTH_SOURCE, ADMIN_MASTER, MOUNT_SOURCE)).await;
     assert_eq!(ret, 200);
 
-    let packet4 = format.next_packet().unwrap();
-    assert!(source_sock.write_all(packet4.buf()).is_ok());
+    let packet4 = reader.read().await.unwrap();
+    assert!(source_sock.write_all(&packet4).await.is_ok());
 
-    let packet5 = format.next_packet().unwrap();
-    assert!(source_sock.write_all(packet5.buf()).is_ok());
+    let packet5 = reader.read().await.unwrap();
+    assert!(source_sock.write_all(&packet5).await.is_ok());
 
-    let packet6 = format.next_packet().unwrap();
-    assert!(source_sock.write_all(packet6.buf()).is_ok());
+    let packet6 = reader.read().await.unwrap();
+    assert!(source_sock.write_all(&packet6).await.is_ok());
 
     let mut buf = [0u8; 3000];
     let mut len = [0u8; 1];
@@ -264,8 +252,8 @@ async fn relaying() {
     slave_server = slave_server1;
 
     for _ in 0..3 {
-        let packet = format.next_packet().unwrap();
-        assert!(source_sock.write_all(packet.buf()).is_ok());
+        let packet = reader.read().await.unwrap();
+        assert!(source_sock.write_all(&packet).await.is_ok());
     }
 
     let mut buf = [0u8; 3000];
@@ -275,22 +263,22 @@ async fn relaying() {
     // Now enabling on_demand mode
 
     for _ in 0..3 {
-        let packet = format.next_packet().unwrap();
-        assert!(source_sock.write_all(packet.buf()).is_ok());
+        let packet = reader.read().await.unwrap();
+        assert!(source_sock.write_all(&packet).await.is_ok());
     }
 
     let slave_server1 = spawn_server(TEST_DIR, CONFIG_SLAVE2, "relay_slave.yaml").await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     slave_server = slave_server1;
 
-    let packet = format.next_packet().unwrap();
-    assert!(source_sock.write_all(packet.buf()).is_ok());
+    let packet = reader.read().await.unwrap();
+    assert!(source_sock.write_all(&packet).await.is_ok());
 
     // Waiting until source becomes inactive
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let packet = format.next_packet().unwrap();
-    assert!(source_sock.write_all(packet.buf()).is_ok());
+    let packet = reader.read().await.unwrap();
+    assert!(source_sock.write_all(&packet).await.is_ok());
 
     let resp = test_utils::reqwest::Client::new()
         .get(&format!("http://{}{}", BASE_SLAVE, MOUNT_SOURCE))
@@ -309,7 +297,7 @@ async fn relaying() {
     let mut len = [0u8; 1];
     r.read_exact(&mut buf).await.unwrap();
     r.read_exact(&mut len).await.unwrap();
-    assert_eq!(&buf[0..packet1.buf().len()], packet1.buf());
+    assert_eq!(&buf[0..packet1.len()], packet1);
 
     // Now we want to return back from authenticated to transparent
     let slave_server1 = spawn_server(TEST_DIR, CONFIG_SLAVE, "relay_slave.yaml").await;
@@ -328,8 +316,8 @@ async fn relaying() {
     master_server = master_server1;
 
     for _ in 0..3 {
-        let packet = format.next_packet().unwrap();
-        assert!(source_sock.write_all(packet.buf()).is_ok());
+        let packet = reader.read().await.unwrap();
+        assert!(source_sock.write_all(&packet).await.is_ok());
     }
     
     let r = test_utils::get_status_code(&format!("http://{}{}", BASE_SLAVE, MOUNT_SOURCE)).await;

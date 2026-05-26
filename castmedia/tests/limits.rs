@@ -1,6 +1,7 @@
-use std::{io::{Read, Write}, net::TcpStream, time::Duration};
+use std::time::Duration;
 
 use test_utils::{spawn_server, spawn_source_manual};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 
 
 const CONFIG: &str = "
@@ -48,34 +49,33 @@ async fn limits() {
     // Checking if server respects header_timeout
     let mut tasks = Vec::new();
     for _ in 0..4 {
-        tasks.push(std::thread::spawn(move || {
-            let mut con = TcpStream::connect(BASE).unwrap();
-            assert!(con.write_all(b"PUT /stream HTTP/1.1\r\n").is_ok());
-            std::thread::sleep(Duration::from_secs(6));
+        tasks.push(tokio::spawn(async move {
+            let mut con = TcpStream::connect(BASE).await.unwrap();
+            assert!(con.write_all(b"PUT /stream HTTP/1.1\r\n").await.is_ok());
+            tokio::time::sleep(Duration::from_secs(6)).await;
             let mut buf = [0u8; 1];
-            assert!(con.read_exact(&mut buf).is_err());
+            assert!(con.read_exact(&mut buf).await.is_err());
         }));
     }
     for task in tasks {
-        _ = task.join();
+        _ = task.await;
     }
 
     // Max clients
     let mut tasks = Vec::new();
     for _ in 0..20 {
-        tasks.push(std::thread::spawn(move || {
-            let mut con = TcpStream::connect(BASE).unwrap();
-            con.set_nonblocking(true).unwrap();
-            std::thread::sleep(Duration::from_secs(3));
-            _ = con.write_all(format!("GET /api/serverinfo HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", BASE).as_bytes());
-            std::thread::sleep(Duration::from_secs(1));
+        tasks.push(tokio::spawn(async move {
+            let mut con = TcpStream::connect(BASE).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            _ = con.write_all(format!("GET /api/serverinfo HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", BASE).as_bytes()).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
             let mut buf = [0u8; 1];
-            con.read(&mut buf)
+            con.read(&mut buf).await
         }));
     }
     let mut ok = 0;
     for task in tasks {
-        if task.join().is_ok_and(|x| x.unwrap() == 1) {
+        if task.await.is_ok_and(|x| x.unwrap() == 1) {
             ok += 1;
         }
     }
@@ -83,9 +83,9 @@ async fn limits() {
 
     // Sources limit
     {
-        let source1 = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE1);
-        let source2 = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE2);
-        let source3 = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE3);
+        let source1 = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE1).await;
+        let source2 = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE2).await;
+        let source3 = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE3).await;
         assert!(source1.is_ok());
         assert!(source2.is_ok());
         assert!(source3.is_err());
@@ -93,14 +93,14 @@ async fn limits() {
         // Testing source timeout
         std::thread::sleep(Duration::from_secs(10));
         let mut s1 = source1.unwrap();
-        _ = s1.0.write_all(b"b");
+        _ = s1.0.write_all(b"b").await;
         let mut s2 = source2.unwrap();
-        _ = s2.0.write_all(b"b");
+        _ = s2.0.write_all(b"b").await;
     }
 
     // Listener limit
     {
-        let source1 = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE1);
+        let source1 = spawn_source_manual(AUTH_SOURCE, ADMIN, MOUNT_SOURCE1).await;
         assert!(source1.is_ok());
 
         let r1 = test_utils::get_response(&format!("http://{}{}", BASE, MOUNT_SOURCE1)).await;
@@ -114,11 +114,11 @@ async fn limits() {
     }
 
     // Http header max len
-    let mut con = TcpStream::connect(BASE).unwrap();
+    let mut con = TcpStream::connect(BASE).await.unwrap();
     let buf     = [b'H'; 8193];
-    _ = con.write_all(&buf);
+    _ = con.write_all(&buf).await;
     let mut buf = [0u8; 1];
-    assert!(con.read_exact(&mut buf).is_err());
+    assert!(con.read_exact(&mut buf).await.is_err());
 
 
     drop(server);

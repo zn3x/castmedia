@@ -37,7 +37,6 @@ pin-project.workspace = true
 ktls.workspace = true
 
 [dev-dependencies]
-symphonia.workspace = true
 tokio = { version = "*", features = [ "full" ] }
 test-utils = { path = "../test-utils" }
 futures.workspace = true

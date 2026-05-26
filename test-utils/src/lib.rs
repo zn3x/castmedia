@@ -1,8 +1,10 @@
-use std::{net::TcpStream, io::{Write, Read}, process::Stdio};
+use std::process::Stdio;
 use anyhow::Result;
 
 use base64::Engine;
 pub use reqwest;
+use tokio::{io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader}, net::TcpStream, sync::oneshot};
+use tokio_stream::{StreamExt, wrappers::LinesStream};
 
 pub struct Server {
     pub child: tokio::process::Child
@@ -22,15 +24,36 @@ pub async fn spawn_server(test_dir: &str, conf: &str, conf_name: &str) -> Server
     tokio::fs::write(&conf_file, conf).await
         .expect("Failed to write config file");
     
-    let server = tokio::process::Command::new("cargo")
+    let mut server = tokio::process::Command::new("cargo")
         .args([
               "run",
               "--package", "castmedia",
               "--",
               &conf_file
         ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("failed to start castmedia");
+
+    let stdout     = server.stdout.take().unwrap();
+    let stderr     = server.stderr.take().unwrap();
+    let stdout     = LinesStream::new(BufReader::new(stdout).lines());
+    let stderr     = LinesStream::new(BufReader::new(stderr).lines());
+    let mut merged = StreamExt::merge(stdout, stderr);
+    let (tx, rx)   = oneshot::channel();    
+    tokio::spawn(async move {
+        let mut tx = Some(tx);
+        while let Some(Ok(line)) = merged.next().await {
+            if line.contains("castmedia::server") {
+                if let Some(tx) = tx.take() {
+                    tx.send(()).unwrap();
+                }
+            }
+            println!("{line}");
+        }
+    });
+    rx.await.unwrap();
 
     Server {
         child: server
@@ -63,29 +86,30 @@ pub async fn spawn_source(auth: &str, addr: &str, mount: &str) -> tokio::process
         .expect("ffmpeg missing")
 }
 
-pub fn spawn_source_manual(auth: &str, addr: &str, mount: &str) -> Result<(TcpStream, std::process::Child)> {
-    spawn_source_manual_with_content_type(auth, addr, mount, "audio/mpeg")
+pub async fn spawn_source_manual(auth: &str, addr: &str, mount: &str) -> Result<(TcpStream, tokio::process::Child)> {
+    spawn_source_manual_with_content_type(auth, addr, mount, "audio/mpeg").await
 }
 
-pub fn spawn_source_manual_aac(auth: &str, addr: &str, mount: &str) -> Result<(TcpStream, std::process::Child)> {
-    spawn_source_manual_with_content_type(auth, addr, mount, "audio/aac")
+pub async fn spawn_source_manual_aac(auth: &str, addr: &str, mount: &str) -> Result<(TcpStream, tokio::process::Child)> {
+    spawn_source_manual_with_content_type(auth, addr, mount, "audio/aac").await
 }
 
-pub fn spawn_source_manual_with_content_type(auth: &str, addr: &str, mount: &str, content_type: &str) -> Result<(TcpStream, std::process::Child)> {
-    let mut sock = TcpStream::connect(addr)
+pub async fn spawn_source_manual_with_content_type(auth: &str, addr: &str, mount: &str, content_type: &str) -> Result<(TcpStream, tokio::process::Child)> {
+    let mut sock = TcpStream::connect(addr).await
         .expect("Should be able to connect");
 
     let bs64 = base64::engine::general_purpose::URL_SAFE;
 
     sock.write_all(format!("SOURCE {} HTTP/1.1\r\nHost: {}\r\nContent-Type: {}\r\nAuthorization: Basic {}\r\nConnection: close\r\nIcy-Metadata: 1\r\nIce-Public: 1\r\n\r\n",
                        mount, addr, content_type, bs64.encode(auth)).as_bytes())
+        .await
         .expect("Should be able to write");
 
 
     let mut buf     = [0u8; 1];
     let mut headers = Vec::new();
     loop {
-        sock.read_exact(&mut buf).expect("Can't read");
+        sock.read_exact(&mut buf).await.expect("Can't read");
         headers.push(buf[0]);
 
         if headers.windows(4).last() == Some(b"\r\n\r\n") {
@@ -102,7 +126,7 @@ pub fn spawn_source_manual_with_content_type(auth: &str, addr: &str, mount: &str
         _           => ("mp3",  "320k"),
     };
 
-    let media = std::process::Command::new("ffmpeg")
+    let media = tokio::process::Command::new("ffmpeg")
         .args([
               "-loglevel", "panic",
               "-f", "lavfi",

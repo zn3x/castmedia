@@ -1,7 +1,7 @@
-use std::{io::Write, time::Duration};
-
-use futures::{AsyncReadExt, StreamExt, TryStreamExt};
+use std::time::Duration;
+use futures::{AsyncReadExt as FutAyncReadExt, StreamExt, TryStreamExt};
 use test_utils::{spawn_server, spawn_source_manual, spawn_source_manual_aac};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const CONFIG_FALLBACK: &str = "
 address:
@@ -224,18 +224,19 @@ const AUTH_SOURCE: &str = "source:pass";
 const AUTH_SOURCEFB: &str = "sourcefb:pass";
 
 async fn feed_source_data(
-    source_sock: &mut std::net::TcpStream,
-    stdout: &mut impl std::io::Read,
+    source_sock: &mut tokio::net::TcpStream,
+    stdout: &mut tokio::process::ChildStdout,
     ffmpeg_buf: &mut [u8; 4096],
 ) {
     let mut total_written = 0;
     loop {
-        let n = stdout.read(ffmpeg_buf).expect("Should read from ffmpeg");
+        let n = stdout.read(ffmpeg_buf).await.expect("Should read from ffmpeg");
         if n == 0 {
             break;
         }
         source_sock
             .write_all(&ffmpeg_buf[..n])
+            .await
             .expect("Should write to source socket");
         total_written += n;
         if total_written >= 50000 {
@@ -322,13 +323,13 @@ async fn migration_fallback_mount() {
 
     // Mount both main and fallback sources
     let (mut main_sock, main_media) =
-        spawn_source_manual(AUTH_SOURCE, "127.0.0.1:9120", "/stream.mp3").unwrap();
+        spawn_source_manual(AUTH_SOURCE, "127.0.0.1:9120", "/stream.mp3").await.unwrap();
     let mut main_stdout = main_media.stdout.unwrap();
     let mut ffmpeg_buf = [0u8; 4096];
     feed_source_data(&mut main_sock, &mut main_stdout, &mut ffmpeg_buf).await;
 
     let (mut fb_sock, fb_media) =
-        spawn_source_manual(AUTH_SOURCEFB, "127.0.0.1:9120", "/fallback.mp3").unwrap();
+        spawn_source_manual(AUTH_SOURCEFB, "127.0.0.1:9120", "/fallback.mp3").await.unwrap();
     let mut fb_stdout = fb_media.stdout.unwrap();
     feed_source_data(&mut fb_sock, &mut fb_stdout, &mut ffmpeg_buf).await;
 
@@ -435,13 +436,13 @@ async fn migration_multiple_mounts() {
 
     // Mount two sources
     let (mut sock1, media1) =
-        spawn_source_manual(AUTH_SOURCE, "127.0.0.1:9121", "/stream1.mp3").unwrap();
+        spawn_source_manual(AUTH_SOURCE, "127.0.0.1:9121", "/stream1.mp3").await.unwrap();
     let mut stdout1 = media1.stdout.unwrap();
     let mut ffmpeg_buf = [0u8; 4096];
     feed_source_data(&mut sock1, &mut stdout1, &mut ffmpeg_buf).await;
 
     let (mut sock2, media2) =
-        spawn_source_manual(AUTH_SOURCE, "127.0.0.1:9121", "/stream2.mp3").unwrap();
+        spawn_source_manual(AUTH_SOURCE, "127.0.0.1:9121", "/stream2.mp3").await.unwrap();
     let mut stdout2 = media2.stdout.unwrap();
     feed_source_data(&mut sock2, &mut stdout2, &mut ffmpeg_buf).await;
 
@@ -550,7 +551,7 @@ async fn migration_metadata_persistence() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     let (mut source_sock, media) =
-        spawn_source_manual(AUTH_SOURCE, "127.0.0.1:9123", "/stream.mp3").unwrap();
+        spawn_source_manual(AUTH_SOURCE, "127.0.0.1:9123", "/stream.mp3").await.unwrap();
     let mut stdout = media.stdout.unwrap();
     let mut ffmpeg_buf = [0u8; 4096];
     feed_source_data(&mut source_sock, &mut stdout, &mut ffmpeg_buf).await;
@@ -654,12 +655,12 @@ async fn moveclients_then_migration() {
     let admin = "127.0.0.1:9125";
 
     // Mount two sources
-    let (mut sock1, media1) = spawn_source_manual(AUTH_SOURCE, admin, "/stream1.mp3").unwrap();
+    let (mut sock1, media1) = spawn_source_manual(AUTH_SOURCE, admin, "/stream1.mp3").await.unwrap();
     let mut stdout1 = media1.stdout.unwrap();
     let mut ffmpeg_buf = [0u8; 4096];
     feed_source_data(&mut sock1, &mut stdout1, &mut ffmpeg_buf).await;
 
-    let (mut sock2, media2) = spawn_source_manual(AUTH_SOURCE, admin, "/stream2.mp3").unwrap();
+    let (mut sock2, media2) = spawn_source_manual(AUTH_SOURCE, admin, "/stream2.mp3").await.unwrap();
     let mut stdout2 = media2.stdout.unwrap();
     feed_source_data(&mut sock2, &mut stdout2, &mut ffmpeg_buf).await;
 
@@ -740,7 +741,7 @@ async fn rapid_successive_migrations() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     let (mut source_sock, media) =
-        spawn_source_manual(AUTH_SOURCE, "127.0.0.1:9127", "/stream.mp3").unwrap();
+        spawn_source_manual(AUTH_SOURCE, "127.0.0.1:9127", "/stream.mp3").await.unwrap();
     let mut stdout = media.stdout.unwrap();
     let mut ffmpeg_buf = [0u8; 4096];
     feed_source_data(&mut source_sock, &mut stdout, &mut ffmpeg_buf).await;
@@ -814,7 +815,7 @@ async fn migration_aac_stream() {
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     let (mut source_sock, media) =
-        spawn_source_manual_aac(AUTH_SOURCE, "127.0.0.1:9126", "/stream.aac").unwrap();
+        spawn_source_manual_aac(AUTH_SOURCE, "127.0.0.1:9126", "/stream.aac").await.unwrap();
     let mut stdout = media.stdout.unwrap();
     let mut ffmpeg_buf = [0u8; 4096];
     feed_source_data(&mut source_sock, &mut stdout, &mut ffmpeg_buf).await;

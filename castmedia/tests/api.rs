@@ -472,29 +472,29 @@ async fn source_mount_reserved_paths() {
     let admin = "127.0.0.1:9123";
 
     // Try to mount on /admin - should be forbidden
-    let result = spawn_source_manual(AUTH_SOURCE, admin, "/admin");
+    let result = spawn_source_manual(AUTH_SOURCE, admin, "/admin").await;
     assert!(result.is_err(), "Mounting on /admin should be forbidden");
 
     // Try to mount on /admin/something - should be forbidden
-    let result = spawn_source_manual(AUTH_SOURCE, admin, "/admin/test");
+    let result = spawn_source_manual(AUTH_SOURCE, admin, "/admin/test").await;
     assert!(
         result.is_err(),
         "Mounting on /admin/ subpath should be forbidden"
     );
 
     // Try to mount on /api - should be forbidden
-    let result = spawn_source_manual(AUTH_SOURCE, admin, "/api");
+    let result = spawn_source_manual(AUTH_SOURCE, admin, "/api").await;
     assert!(result.is_err(), "Mounting on /api should be forbidden");
 
     // Try to mount on /api/something - should be forbidden
-    let result = spawn_source_manual(AUTH_SOURCE, admin, "/api/test");
+    let result = spawn_source_manual(AUTH_SOURCE, admin, "/api/test").await;
     assert!(
         result.is_err(),
         "Mounting on /api/ subpath should be forbidden"
     );
 
     // Mounting on a normal path should succeed
-    let result = spawn_source_manual(AUTH_SOURCE, admin, "/mystream.mp3");
+    let result = spawn_source_manual(AUTH_SOURCE, admin, "/mystream.mp3").await;
     assert!(
         result.is_ok(),
         "Mounting on a normal path should succeed"

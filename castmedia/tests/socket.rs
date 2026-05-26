@@ -1,5 +1,3 @@
-use std::fs;
-use std::io::{Read, Write};
 use tokio::io::{AsyncReadExt as TokioAsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use castmedia::server::Stream;
@@ -188,21 +186,22 @@ async fn prefixed_stream_migration_roundtrip() {
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn ktls_migration_tls_listener() {
-    let ck = generate_simple_self_signed(vec!["127.0.0.1".into(), "localhost".into()]).unwrap();
-    let cert_pem = ck.cert.pem();
-    let key_pem = ck.signing_key.serialize_pem();
-    fs::write("/tmp/ktls_server.cert", cert_pem).unwrap();
-    fs::write("/tmp/ktls_server.key", key_pem).unwrap();
+    let (cert_pem, key_pem) = tokio::task::spawn_blocking(move || {
+        let ck = generate_simple_self_signed(vec!["127.0.0.1".into(), "localhost".into()]).unwrap();
+        (ck.cert.pem(), ck.signing_key.serialize_pem())
+    }).await.unwrap();
+    tokio::fs::write("/tmp/ktls_server.cert", cert_pem).await.unwrap();
+    tokio::fs::write("/tmp/ktls_server.key", key_pem).await.unwrap();
 
     let mut server1 = test_utils::spawn_server(TEST_DIR, &CONFIG_KTLS_TEMPLATE, "ktls_server.yaml").await;
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // Spawn source connecting to admin interface and get ffmpeg stdout to feed
-    let (mut source_sock, media) = test_utils::spawn_source_manual("source:pass", "127.0.0.1:9110", "/stream.mp3").unwrap();
+    let (mut source_sock, media) = test_utils::spawn_source_manual("source:pass", "127.0.0.1:9110", "/stream.mp3").await.unwrap();
     let mut stdout = media.stdout.unwrap();
     let mut feed_buf = [0u8; 4096];
-    let n = stdout.read(&mut feed_buf).unwrap_or(0);
-    if n > 0 { let _ = source_sock.write_all(&feed_buf[..n]); }
+    let n = stdout.read(&mut feed_buf).await.unwrap_or(0);
+    if n > 0 { let _ = source_sock.write_all(&feed_buf[..n]).await; }
 
     // Connect as HTTPS listener to public port using reqwest that accepts invalid certs
     let client = test_utils::reqwest::Client::builder()
@@ -232,8 +231,8 @@ async fn ktls_migration_tls_listener() {
     server1 = server2;
 
     // Feed more data and ensure the HTTPS listener can still read
-    let n = stdout.read(&mut feed_buf).unwrap_or(0);
-    if n > 0 { let _ = source_sock.write_all(&feed_buf[..n]); }
+    let n = stdout.read(&mut feed_buf).await.unwrap_or(0);
+    if n > 0 { let _ = source_sock.write_all(&feed_buf[..n]).await; }
     let mut outbuf = [0u8; 1024];
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), r.read(&mut outbuf)).await.expect("Should read after migration");
 
