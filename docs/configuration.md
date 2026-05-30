@@ -90,8 +90,8 @@ misc:
   check_forwardedfor: false
 ```
 
-Although castmedia supports TLS by default for listener addresses, it is not recommended as it is not compatible with migration.
-If you still want to configure TLS for a port, you can configure it like the following:
+Although castmedia supports TLS by default for listener addresses, it is not recommended unless you are using Linux with TLS kernel module enabled.
+You can configure TLS like the following:
 ```yaml
 tls:
 address:
@@ -103,6 +103,15 @@ address:
     # Password of identity
     pass: password
 ```
+
+You will get warned if migration is enabled with TLS in an unsupported environment with a log like the following:
+```
+2026-05-30T15:34:48.855481Z  WARN            main castmedia::utils: KTLS setup failed, migration won't be supported. Check if KTLS kernel module is enabled
+2026-05-30T15:34:48.855542Z  WARN            main castmedia::server: Migration listener won't be started because TLS migration is not supported without a KTLS enabled linux machine!
+```
+
+If you need to have TLS support in a non Linux KTLS enabled environment you are recommended to setup a reverse proxy with TLS termination.
+
 
 castmedia does not auto-detect configuration changes and will need a restart for the new configuration to be applied, we discuss more about this in [migration and zero-downtime](./migration.md).
 

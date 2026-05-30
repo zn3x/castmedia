@@ -15,7 +15,7 @@ migrate:
 
 An already running instance with migration disabled won't be migrated. If you run castmedia with migration disabled you will get a warning notice.
 
-It is also worth noting that having listeners with TLS is not supported with migration.
+It is also worth noting that TLS connection migration is only supported in a Linux environment with TLS kernel module enabled.
 
 To migrate to new instance, you simply run another castmedia instance with same `migrate.bind` unix socket file location. It can even be the same configuration file of old instance with updates to it.
 
@@ -40,4 +40,4 @@ Migration for relaying has multiple scenarios in which migration will cause down
 ## Caveats
 
 - During migration, connections that do not respect new configuration constraints will be dropped even if they were allowed previously.
-- TLS migration is not supported and will probably never be supported due to challenges that comes with passing TLS connection to another process.
+- TLS migration is supported only in Linux with TLS kernel module enabled.
