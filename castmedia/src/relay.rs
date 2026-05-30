@@ -11,7 +11,7 @@ use qanat::{
 };
 use serde_json::json;
 use tokio::{
-    io::AsyncWriteExt, task::JoinHandle
+    io::{AsyncReadExt, AsyncWriteExt}, task::JoinHandle
 };
 use tracing::{info, error};
 use url::Url;
@@ -19,11 +19,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     broadcast::broadcast_metadata, client::{RelayStream, SourceInfo, StreamOnDemand},
-    config::MasterServerRelayScheme, http::{self, ChunkedResponseReader, HttpClient},
+    config::MasterServerRelayScheme, http::{self, HttpClient},
     internal_api::v1::{
-        IcyMetadata, IcyProperties, MigrateConnection, MigrateInactiveOnDemandSource, MigrateMasterMountUpdates, MigrateSlaveMountUpdates, RelayedInfo
+        IcyMetadata, IcyProperties, MigrateConnection, MigrateInactiveOnDemandSource, MigrateMasterMountUpdates, MigrateSlaveMountUpdates, RelayedInfo,
+        ChunkedReadState
     },
-    migrate::{MigrateCommand, MigrateEntry}, response::ChunkedResponse,
+    migrate::{MigrateCommand, MigrateEntry},
     server::{ClientSession, Server, Session, Stream},
     source::{Source, SourceAccessType, MetadataMsg},
     stream::RelayBroadcastStatus,
@@ -64,7 +65,6 @@ pub async fn master_mount_updates(mut session: ClientSession,
         .expect("Should be identified at this point")
         .id
         .clone();
-    let chunked_writer = ChunkedResponse::new_ready();
 
     let mut new_source_notify = session.server
         .relay_params
@@ -95,8 +95,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
 
         tokio::select! {
             _ = heartbeat_tick.tick() => {
-                chunked_writer.send(&mut session.stream, &heartbeat_len).await?;
-                chunked_writer.send(&mut session.stream, &heartbeat_msg).await?;
+                session.stream.write_all(&heartbeat_len).await?;
+                session.stream.write_all(&heartbeat_msg).await?;
                 session.stream.flush().await?;
                 continue;
             },
@@ -141,8 +141,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
                     "type": "new"
                 }))?;
 
-                chunked_writer.send(&mut session.stream, &(ser.len() as u32).to_be_bytes()).await?;
-                chunked_writer.send(&mut session.stream, &ser).await?;
+                session.stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
+                session.stream.write_all(&ser).await?;
                 session.stream.flush().await?;
                 
                 heartbeat_tick.reset();
@@ -167,8 +167,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
                 // already listening to that source
                 tokio::select! {
                     _ = heartbeat_tick.tick() => {
-                        chunked_writer.send(&mut session.stream, &heartbeat_len).await?;
-                        chunked_writer.send(&mut session.stream, &heartbeat_msg).await?;
+                        session.stream.write_all(&heartbeat_len).await?;
+                        session.stream.write_all(&heartbeat_msg).await?;
                         session.stream.flush().await?;
                     },
                     ((mount, metadata), _, _) = select_all(reads) => {
@@ -196,9 +196,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
                                 ser
                             }
                         };
-                        
-                        chunked_writer.send(&mut session.stream, &(ser.len() as u32).to_be_bytes()).await?;
-                        chunked_writer.send(&mut session.stream, &ser).await?;
+                        session.stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
+                        session.stream.write_all(&ser).await?;
                         session.stream.flush().await?;
 
                         heartbeat_tick.reset();
@@ -255,7 +254,7 @@ async fn fetch_available_mounts(server: &Server, url: &Url) -> Result<MasterMoun
 
 async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
                     auth: Option<&str>)
-    -> Result<(Stream, SocketAddr, usize, usize, IcyProperties, bool)> {
+    -> Result<(Stream, SocketAddr, usize, usize, IcyProperties, Option<ChunkedReadState>)> {
     // Fetching media stream from master
     let mut client = HttpClient::connect(url, mount, serv.config.limits.http_max_len).await?;
     let addr       = client.peer_addr()?;
@@ -278,8 +277,8 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
 
     let chunked = match get_header("transfer-encoding", resp.headers) {
         // If nothing is set then it's identity
-        Some(b"identity") | None => false,
-        Some(b"chunked") => true,
+        Some(b"identity") | None => None,
+        Some(b"chunked") => Some(ChunkedReadState::default()),
         _ => return Err(anyhow::Error::msg("Unsupported transfer encoding"))
     };
 
@@ -361,6 +360,10 @@ async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, master_ind:
     let mut resp    = httparse::Response::new(&mut headers);
 
     http::parse_http_response(&headers_buf, &mut resp)?;
+
+    if resp.code.ne(&Some(200)) {
+        return Err(anyhow::anyhow!("Received {} status code", resp.code.unwrap_or(0)));
+    }
     
     Ok(reader.get_inner_stream())
 }
@@ -499,40 +502,47 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
 
     serv.stats.active_relay.fetch_add(1, Ordering::Relaxed);
 
-    let mut len_enc = [0u8; 4];
-    let mut buf     = vec![0u8; 1024];
-    let mut chunked = ChunkedResponseReader::new();
+    let mut len_enc        = [0u8; 4];
+    let mut buf            = vec![0u8; 1024];
+    let mut len_enc_filled = 0;
+    let mut buf_filled     = 0;
+    let mut migrate_comm   = serv.migrate.clone();
+    loop {
+        tokio::select! {
+            r = authenticated_mode_reader(&mut stream, &mut len_enc, &mut len_enc_filled, &mut buf, &mut buf_filled) => {
+                len_enc_filled = 0;
+                buf_filled = 0;
+                match r {
+                    Ok(event) => handle_mount_update(&mut sources, serv, master_ind, on_demand, event, &auth).await,
+                    Err(e)    => {
+                        error!("Mount updates from {master} stopped: {e}");
+                        break;
+                    }
+                }
+            },
+            migrate = migrate_comm.recv() => {
+                let migrate = migrate
+                    .expect("Got migrate notice with closed mpsc");
 
-    let mut migrate_comm = serv.migrate.clone();
-    let fut              = async {
-        loop {
-            match authenticated_mode_reader(&mut stream, &mut len_enc, &mut buf, &mut chunked).await {
-                Err(e)    => {
-                    error!("Mount updates from {} stopped: {}", master, e);
-                    return;
-                },
-                Ok(event) => handle_mount_update(&mut sources, serv, master_ind, on_demand, event, &auth).await
+                let info = MigrateConnection::SlaveMountUpdates(MigrateSlaveMountUpdates {
+                    master_url: master.url.to_string()
+                });
+                let mut drain_buffer = Vec::new();
+                if len_enc_filled > 0 {
+                    drain_buffer.extend_from_slice(&len_enc[..len_enc_filled]);
+                    if buf_filled > 0 {
+                        drain_buffer.extend_from_slice(&buf[..buf_filled]);
+                    }
+                }
+                match (stream.peer_addr(), stream.flush().await) {
+                    (Ok(client_addr), Ok(())) => _ = migrate.slave_mountupdates.send(
+                        Some(MigrateEntry::new(info, Some((stream, client_addr))).with_drained_buffer(drain_buffer))
+                    ),
+                    (Err(e), _) => error!("Failed migrating relaying connection: {e}"),
+                    (_, Err(e)) => error!("Failed migrating relaying connection: {e}")
+                }
+                utils::hang().await;
             }
-        }
-    };
-
-    tokio::select! {
-        _ = fut => (),
-        migrate = migrate_comm.recv() => {
-            let migrate = migrate
-                .expect("Got migrate notice with closed mpsc");
-
-            let info = MigrateConnection::SlaveMountUpdates(MigrateSlaveMountUpdates {
-                master_url: master.url.to_string()
-            });
-            match (stream.peer_addr(), stream.flush().await) {
-                (Ok(client_addr), Ok(())) => {
-                    _ = migrate.slave_mountupdates.send(Some(MigrateEntry::new(info, Some((stream, client_addr)))));
-                },
-                (Err(e), _) => error!("Failed migrating relaying connection: {e}"),
-                (_, Err(e)) => error!("Failed migrating relaying connection: {e}")
-            }
-            utils::hang().await;
         }
     }
     
@@ -540,19 +550,31 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
 }
 
 async fn authenticated_mode_reader(stream: &mut Stream, len_enc: &mut [u8; 4],
-                                   buf: &mut Vec<u8>, chunked: &mut ChunkedResponseReader) -> Result<MountUpdate> {
-    // Reading message first from stream
-    chunked.read_exact(stream, len_enc).await?;
+                                   len_enc_filled: &mut usize,
+                                   buf: &mut Vec<u8>, buf_filled: &mut usize) -> Result<MountUpdate> {
+    // Read length prefix one byte at a time
+    while *len_enc_filled < 4 {
+        let b = stream.read_u8().await?;
+        len_enc[*len_enc_filled] = b;
+        *len_enc_filled += 1;
+    }
+
     let len = u32::from_be_bytes(*len_enc) as usize;
     if len > buf.len() {
         buf.resize(len, 0);
     }
-    chunked.read_exact(stream, &mut buf[..len]).await?;
-
+    // Read body using read so we can handle partial reads and update external counter
+    while *buf_filled < len {
+        let read_len = std::cmp::min(buf.len() - *buf_filled, len - *buf_filled);
+        let n = stream.read(&mut buf[*buf_filled..*buf_filled + read_len]).await?;
+        if n == 0 {
+            // EOF
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "EOF while reading mount update").into());
+        }
+        *buf_filled += n;
+    }
     // Now we deserialize it
     let event: MountUpdate = serde_json::from_slice(&buf[..len])?;
-
-
     Ok(event)
 }
 

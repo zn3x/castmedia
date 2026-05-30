@@ -19,7 +19,7 @@ use crate::{
     client::{Client, SourceInfo}, config::Role,
     internal_api::v1::IcyMetadata
 };
-pub use crate::internal_api::v1::IcyProperties;
+pub use crate::internal_api::v1::{IcyProperties, ChunkedReadState};
 
 pub struct SourceStats {
     /// Time when source last mounted mountpoint as utc timestamp
@@ -193,12 +193,12 @@ pub async fn handle_request(mut session: ClientSession, request: Request<'_>, re
 
     let chunked;
     if request.method == "SOURCE" {
-        chunked = false;
+        chunked = None;
     } else {
         // PUT METHOD
         chunked = match utils::get_header("transfer-encoding", &request.headers) {
-            Some(b"identity") | None => false,
-            Some(b"chunked") => true,
+            Some(b"identity") | None => None,
+            Some(b"chunked") => Some(ChunkedReadState::default()),
             _ => {
                 response::bad_request(&mut session.stream, sid, "Invalid transfer encoding").await?;
                 return Ok(());

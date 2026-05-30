@@ -11,9 +11,22 @@ pub struct MigrateSource {
     pub broadcast_snapshot: (Vec<(u64, Arc<Vec<u8>>)>, u64, u64),
     pub fallback: Option<String>,
     pub metadata: IcyMetadata,
-    pub chunked: bool,
+    pub chunked: Option<ChunkedReadState>,
     pub queue_size: u64,
     pub is_relay: MigrateSourceConnectionType
+}
+
+#[derive(PartialEq, Serialize, Deserialize, Clone)]
+pub enum ChunkedReadState {
+    Header { header: [u8; 12], fill_len: usize },
+    Chunk { bytes_left: usize },
+    CRLF { bytes_left: usize }
+}
+
+impl Default for ChunkedReadState {
+    fn default() -> Self {
+        Self::Header { header: [0; 12], fill_len: 0 }
+    }
 }
 
 #[derive(Serialize, Deserialize)]

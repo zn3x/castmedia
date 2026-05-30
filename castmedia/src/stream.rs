@@ -22,7 +22,7 @@ use crate::{
     client::StreamOnDemand,
     http::ChunkedResponseReader,
     broadcast::relay_broadcast_metadata,
-    internal_api::v1::{MigrateConnection, MigrateSource, MigrateSourceConnectionType, RelayedInfo},
+    internal_api::v1::{MigrateConnection, MigrateSource, MigrateSourceConnectionType, RelayedInfo, ChunkedReadState},
     audio::{AudioReader, Mp3Reader, AdtsReader}
 };
 
@@ -35,12 +35,12 @@ pub struct StreamReader {
 }
 
 impl StreamReader {
-    pub fn new(stream: Stream, timeout: u64, stats: Arc<SourceStats>, chunked: bool) -> Self {
+    pub fn new(stream: Stream, timeout: u64, stats: Arc<SourceStats>, chunked: Option<ChunkedReadState>) -> Self {
         Self {
             stream,
             timeout: Duration::from_millis(timeout),
             stats,
-            chunked: if chunked { Some(ChunkedResponseReader::new()) } else { None },
+            chunked: if let Some(chunked) = chunked { Some(ChunkedResponseReader::new(chunked)) } else { None },
             sleep: None
         }
     }
@@ -103,7 +103,7 @@ pub struct BroadcastInfo<'a> {
     pub session: Session,
     pub stats: Arc<SourceStats>,
     pub queue_size: usize,
-    pub chunked: bool,
+    pub chunked: Option<ChunkedReadState>,
     pub broadcast: SourceBroadcast,
     pub kill_notifier: oneshot::Receiver<()>,
     pub on_demand: bool
@@ -178,7 +178,6 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
                     migrate,
                     mountpoint: s.mountpoint,
                     media_broadcast: s.broadcast.audio,
-                    chunked: s.chunked,
                     queue_size: s.queue_size,
                     stream: reader,
                     client_addr: s.session.addr,
@@ -276,7 +275,6 @@ pub async fn broadcast(mut s: BroadcastInfo<'_>) {
                         migrate,
                         mountpoint: s.mountpoint,
                         media_broadcast,
-                        chunked: s.chunked,
                         queue_size: s.queue_size,
                         stream: reader,
                         client_addr: s.session.addr,
@@ -321,7 +319,6 @@ struct MigrateStreamInfo<'a> {
     migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>,
     mountpoint: &'a str,
     media_broadcast: Sender<Arc<Vec<u8>>>,
-    chunked: bool,
     queue_size: usize,
     stream: StreamReader,
     client_addr: SocketAddr,
@@ -356,7 +353,7 @@ async fn migrate_stream(mut s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>
         fallback,
         metadata,
         queue_size: s.queue_size as u64,
-        chunked: s.chunked,
+        chunked: s.stream.chunked.and_then(|x| Some(x.state.clone())),
         is_relay: match access {
             SourceAccessType::SourceClient { username } => MigrateSourceConnectionType::SourceClient { username },
             SourceAccessType::RelayedSource { relayed_source } => MigrateSourceConnectionType::RelayedSource {

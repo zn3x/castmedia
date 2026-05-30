@@ -19,7 +19,7 @@ use crate::{
     response, utils, admin, api,
     migrate::{MigrateEntry, MigrateCommand},
     broadcast::read_media_broadcast,
-    internal_api::v1::{RelayedInfo, ClientProperties, MigrateClient, MigrateConnection, IcyMetadata}
+    internal_api::v1::{RelayedInfo, ClientProperties, MigrateClient, MigrateConnection, IcyMetadata, ChunkedReadState}
 };
 
 pub struct Client {
@@ -455,7 +455,7 @@ pub struct SourceInfo {
     pub mountpoint: String,
     pub properties: IcyProperties,
     pub initial_bytes_read: usize,
-    pub chunked: bool,
+    pub chunked: Option<ChunkedReadState>,
     pub fallback: Option<String>,
     pub queue_size: usize,
     pub broadcast: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,

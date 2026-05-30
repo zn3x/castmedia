@@ -4,12 +4,13 @@ mod state;
 use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
-use castmedia::{http::{ChunkedResponseReader, HttpClient}, relay::MountUpdate, source::IcyProperties, utils::basic_auth};
+use castmedia::{http::HttpClient, relay::MountUpdate, source::IcyProperties, utils::basic_auth};
 use config::{Config, Directory};
 use hashbrown::HashMap;
 use qanat::{broadcast, mpsc};
 use reqwest::Client;
 use state::{DirProperties, State, StreamState, Update};
+use tokio::io::AsyncReadExt;
 use tracing::{error, info};
 use url::Url;
 
@@ -79,18 +80,17 @@ async fn server_mountupdates_listener_inner(config: &Arc<Config>, state: &mut St
         Ok(reader.get_inner_stream())
     }).await??;
 
-    let mut chunked = ChunkedResponseReader::new();
     let mut len_enc = [0u8; 4];
     let mut buf     = Vec::new();
 
     loop {
         tokio::select! {
-            _ = chunked.read_exact(&mut stream, &mut len_enc) => {
+            _ = stream.read_exact(&mut len_enc) => {
                 let len = u32::from_be_bytes(len_enc) as usize;
                 if len > buf.len() {
                     buf.resize(len, 0);
                 }
-                chunked.read_exact(&mut stream, &mut buf[..len]).await?;
+                stream.read_exact(&mut buf[..len]).await?;
 
                 let event: MountUpdate = serde_json::from_slice(&buf[..len])?;
 

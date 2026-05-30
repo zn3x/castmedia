@@ -374,8 +374,9 @@ async fn server_shutdown(session: &mut ClientSession, req: AdminRequest) -> Resu
 
 async fn mount_updates(mut session: ClientSession, req: AdminRequest) -> Result<()> {
     auth::authenticate(&mut session, req.auth, RequiredRole::SlaveOrYP).await?;
+    let sid = &session.server.config.info.id;
 
-    ChunkedResponse::new(&mut session.stream, &session.server.config.info.id).await?;
+    _ = response::ok_200(&mut session.stream, sid).await;
 
     crate::relay::master_mount_updates(session, HashMap::new()).await
 }

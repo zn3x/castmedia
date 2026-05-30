@@ -32,6 +32,11 @@ impl MigrateEntry {
     pub fn new(info: MigrateConnection, sock: Option<(Stream, SocketAddr)>) -> Self {
         Self { info, sock, drained_buffer: None }
     }
+
+    pub fn with_drained_buffer(mut self, buffer: Vec<u8>) -> Self {
+        self.drained_buffer.replace(buffer);
+        self
+    }
 }
 
 pub struct MigrateCommand {

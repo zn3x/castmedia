@@ -7,7 +7,7 @@ use tokio::{
 use tokio_rustls::{rustls::{self, pki_types::ServerName}};
 use url::Url;
 
-use crate::{server::Stream, utils};
+use crate::{internal_api::v1::ChunkedReadState, server::Stream, utils};
 
 pub struct HttpClient<'a> {
     stream: Stream,
@@ -164,78 +164,74 @@ impl ResponseReader {
     }
 }
 
-#[derive(Default)]
 pub struct ChunkedResponseReader {
-    bytes_left: usize,
-    reader: [u8; 1]
+    pub state: ChunkedReadState
 }
 
 impl ChunkedResponseReader {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub async fn read_exact(&mut self, stream: &mut Stream, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut r = 0;
-        loop {
-            r += self.read(stream, buf).await?;
-            if r == buf.len() {
-                return Ok(r);
-            }
-        }
+    pub fn new(state: ChunkedReadState) -> Self {
+        Self { state }
     }
 
     pub async fn read(&mut self, stream: &mut Stream, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let ChunkedReadState::CRLF { bytes_left } = &mut self.state {
+            // reading crlf at end
+            for _ in 0..*bytes_left {
+                stream.read_u8().await?;
+                *bytes_left -= 1;
+                if *bytes_left == 0 {
+                    self.state = ChunkedReadState::Header { header: [0; 12], fill_len: 0 };
+                    break;
+                }
+            }
+        }
         // We first need to read chunk length that is encoded as hex followed by \r\n
-        if self.bytes_left == 0 {
-            let mut hex_len = Vec::new();
+        if let ChunkedReadState::Header { header, fill_len } = &mut self.state {
             loop {
-                match stream.read(&mut self.reader).await {
-                    Ok(_) => {
-                        hex_len.push(self.reader[0]);
+                match stream.read_u8().await {
+                    Ok(byte) => {
                         // Avoiding a ddos here
-                        if hex_len.len() > 12 {
+                        if *fill_len >= 11 {
                             return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Peer trying to send a big size chunk"))
-                        } else if hex_len.ends_with(&[b'\r', b'\n']) {
+                        }
+                        header[*fill_len] = byte;
+                        *fill_len += 1;
+                        if header[..*fill_len].ends_with(&[b'\r', b'\n']) {
                             break;
                         }
                     },
                     Err(e) => return Err(e)
                 }
             }
-
-            self.bytes_left = match std::str::from_utf8(&hex_len[..hex_len.len()-2]) {
+            let bytes_left = match std::str::from_utf8(&header[..*fill_len-2]) {
                 Ok(v) => match usize::from_str_radix(v, 16) {
                     Ok(v) => v,
                     Err(_) => return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Chunk length is not a valid number"))
                 },
                 Err(_) => return std::io::Result::Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "Chunk length is not a valid string"))
             };
-
+            self.state = ChunkedReadState::Chunk { bytes_left };
             // if we get 0, this means it's the end
-            if self.bytes_left == 0 {
+            if bytes_left == 0 {
                 return Ok(0)
             }
         }
-
-        // Now we read actual chunk
-        // We make sure we are not reading more than bytes_left
-        let read_len = if buf.len() > self.bytes_left {
-            self.bytes_left
+        if let ChunkedReadState::Chunk { bytes_left } = &mut self.state {
+            // Now we read actual chunk
+            // We make sure we are not reading more than bytes_left
+            let read_len = std::cmp::min(buf.len(), *bytes_left);
+            match stream.read(&mut buf[..read_len]).await {
+                Ok(r) => {
+                    *bytes_left -= r;
+                    if *bytes_left == 0 {
+                        self.state = ChunkedReadState::CRLF { bytes_left: 2 };
+                    }
+                    Ok(r)
+                },
+                Err(e) => Err(e)
+            }
         } else {
-            buf.len()
-        };
-
-        match stream.read_exact(&mut buf[..read_len]).await {
-            Ok(r) => {
-                self.bytes_left -= r;
-                if self.bytes_left == 0 {
-                    // reading crlf at end
-                    stream.read_u16().await?;
-                }
-                Ok(r)
-            },
-            Err(e) => Err(e)
+            unreachable!()
         }
     }
 }
