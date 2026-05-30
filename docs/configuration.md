@@ -93,15 +93,12 @@ misc:
 Although castmedia supports TLS by default for listener addresses, it is not recommended unless you are using Linux with TLS kernel module enabled.
 You can configure TLS like the following:
 ```yaml
-tls:
 address:
   bind: 127.0.0.1:9000
   tls:
     enabled: true
-    # Identity in pkcs12 format
-    cert: identity.p12
-    # Password of identity
-    pass: password
+    cert: server.cert
+    key: server.key
 ```
 
 You will get warned if migration is enabled with TLS in an unsupported environment with a log like the following:
