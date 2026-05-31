@@ -22,7 +22,6 @@ hashbrown = { version = "0.14.0", features = [ "serde" ] }
 
 url = { version = "2.4.1", features = [ "serde" ] }
 httparse = "1.8.0"
-urlencoding = "2.1.2"
 base64 = "0.21.2"
 uuid = { version = "1.4.1", features = ["v4", "serde"] }
 
@@ -48,7 +47,7 @@ scrypt = "0.11.0"
 
 diatomic-waker = "0.1.0"
 
-reqwest = { version = "0.11.24", features = [ "json", "blocking" ] }
+reqwest = { version = "0.11.24", features = [ "json" ] }
 
 clean-path = "0.2"
 async-trait = "0.1.89"
