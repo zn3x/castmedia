@@ -144,9 +144,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
                 session.stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
                 session.stream.write_all(&ser).await?;
                 session.stream.flush().await?;
-                
-                heartbeat_tick.reset();
             }
+            heartbeat_tick.reset();
 
             loop {
                 reads = Vec::new();
