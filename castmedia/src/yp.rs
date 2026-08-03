@@ -83,10 +83,14 @@ pub async fn mount_events(
         };
 
         if ds.sid.is_none() {
-            add_action(&server, directory, &client, &directory.yp_url, &mount, &properties, &mut ds, &mut state, &state_path).await;
+            add_action(&server, directory, &client, &mount, &properties, &mut ds).await;
         }
 
         dirs.insert(directory.yp_url.clone(), ds);
+    }
+
+    if dirs.values().any(|d| d.sid.is_some()) {
+        persist_dirs(&mut state, &properties, &dirs, &state_path).await;
     }
 
     let mut metadata_ref = None;
@@ -100,24 +104,30 @@ pub async fn mount_events(
             r = metadata_rx.recv() => match r {
                 Ok(v) => {
                     metadata_ref = Some(v.obj.title.clone());
-                    for (dir, ds) in &mut dirs {
-                        if ds.sid.is_some() {
-                            let directory = yp.directories.iter()
-                                .find(|x| x.yp_url.eq(dir))
-                                .expect("Should find YP url in config");
-                            touch_action(&server, directory, &client, dir, &mount, &properties, metadata_ref.as_ref(), ds, &mut state, &state_path).await;
-                            ds.next_touch = Instant::now() + touch_interval(ds.touch_freq);
-                        }
+                    let changed = touch_all(server.clone(), yp, &mut dirs, &client, &mount, &properties, metadata_ref.clone(), None).await;
+                    if changed {
+                        persist_dirs(&mut state, &properties, &dirs, &state_path).await;
                     }
                 },
                 Err(RecvError::Lagged) => continue,
                 Err(RecvError::Closed) => {
-                    for (dir, ds) in &mut dirs {
-                        if ds.sid.is_some() {
+                    let mut tasks = Vec::new();
+                    for (dir, ds) in std::mem::take(&mut dirs) {
+                        if let Some(sid) = ds.sid {
                             let directory = yp.directories.iter()
-                                .find(|x| x.yp_url.eq(dir))
-                                .expect("Should find YP url in config");
-                            remove_action(directory, &client, dir, &mount, &ds.sid).await;
+                                .find(|x| x.yp_url.eq(&dir))
+                                .expect("Should find YP url in config")
+                                .clone();
+                            let client = client.clone();
+                            let mount = mount.clone();
+                            tasks.push(tokio::spawn(async move {
+                                remove_action(&directory, &client, &dir, &mount, &Some(sid)).await;
+                            }));
+                        }
+                    }
+                    for task in tasks {
+                        if let Err(e) = task.await {
+                            error!("Remove task failed: {e}");
                         }
                     }
                     _ = tokio::fs::remove_file(&state_path).await;
@@ -131,14 +141,9 @@ pub async fn mount_events(
                 }
             } => {
                 let now = Instant::now();
-                for (dir, ds) in &mut dirs {
-                    if ds.sid.is_some() && ds.next_touch <= now {
-                        let directory = yp.directories.iter()
-                            .find(|x| x.yp_url.eq(dir))
-                            .expect("Should find YP url in config");
-                        touch_action(&server, directory, &client, dir, &mount, &properties, metadata_ref.as_ref(), ds, &mut state, &state_path).await;
-                        ds.next_touch = Instant::now() + touch_interval(ds.touch_freq);
-                    }
+                let changed = touch_all(server.clone(), yp, &mut dirs, &client, &mount, &properties, metadata_ref.clone(), Some(now)).await;
+                if changed {
+                    persist_dirs(&mut state, &properties, &dirs, &state_path).await;
                 }
             }
         }
@@ -146,9 +151,7 @@ pub async fn mount_events(
 }
 
 async fn add_action(server: &Server, directory: &YPDirectory, client: &Client,
-                    dir: &Url, mount: &str, properties: &IcyProperties,
-                    ds: &mut DirState, state: &mut Option<StreamState>,
-                    state_path: &PathBuf) {
+                    mount: &str, properties: &IcyProperties, ds: &mut DirState) {
     let yp = server.config.yellow_pages.as_ref()
         .expect("Should have yellow pages config");
 
@@ -179,7 +182,7 @@ async fn add_action(server: &Server, directory: &YPDirectory, client: &Client,
     form.insert("listenurl", listenurl.to_string());
 
     for _ in 0..10 {
-        let resp = client.post(dir.clone())
+        let resp = client.post(directory.yp_url.clone())
             .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .form(&form)
             .timeout(Duration::from_secs(directory.timeout))
@@ -195,33 +198,27 @@ async fn add_action(server: &Server, directory: &YPDirectory, client: &Client,
                     headers.get("touchfreq").and_then(|x| x.to_str().ok().and_then(|x| x.parse::<u64>().ok()))
                 ) {
                     (Some(_), Some(e), None, None) => {
-                        error!("{dir} not accepting Add request due to: {e}");
+                        error!("{} not accepting Add request due to: {e}", directory.yp_url);
                     },
                     (Some(v), Some(e), Some(new_sid), Some(touch_freq)) => match v.eq("1") {
                         true => {
                             ds.sid        = Some(new_sid.to_string());
                             ds.touch_freq = touch_freq;
                             ds.next_touch = Instant::now() + touch_interval(touch_freq);
-                            let st = state.get_or_insert_with(|| StreamState {
-                                properties: properties.clone(),
-                                dirs: HashMap::new()
-                            });
-                            st.dirs.insert(dir.clone(), ds.clone());
-                            persist_state(state_path, st).await;
-                            info!("Stream {mount} added to {dir}");
+                            info!("Stream {mount} added to {}", directory.yp_url);
                             break;
                         },
                         false => {
-                            error!("{dir} not accepting Add request due to: {e}");
+                            error!("{} not accepting Add request due to: {e}", directory.yp_url);
                         }
                     },
                     _ => {
-                        error!("{dir} did not return valid reply headers for Add");
+                        error!("{} did not return valid reply headers for Add", directory.yp_url);
                     }
                 }
             },
             Err(e) => {
-                error!("Can't contact {dir}: {e}");
+                error!("Can't contact {}: {e}", directory.yp_url);
             }
         }
         tokio::time::sleep(Duration::from_secs(20)).await;
@@ -229,9 +226,8 @@ async fn add_action(server: &Server, directory: &YPDirectory, client: &Client,
 }
 
 async fn touch_action(server: &Server, directory: &YPDirectory, client: &Client,
-                      dir: &Url, mount: &str, properties: &IcyProperties,
-                      metadata: Option<&String>, ds: &mut DirState,
-                      state: &mut Option<StreamState>, state_path: &PathBuf) {
+                      mount: &str, properties: &IcyProperties,
+                      metadata: Option<&String>, ds: &mut DirState) {
     let mut sid = match &ds.sid {
         Some(v) => v.to_owned(),
         None => return
@@ -245,13 +241,13 @@ async fn touch_action(server: &Server, directory: &YPDirectory, client: &Client,
     }
 
     for _ in 0..3 {
-        match post_req(directory, client, dir, &form).await {
+        match post_req(directory, client, &directory.yp_url, &form).await {
             PostReqStatus::Ok => {
-                info!("Stream {mount} on {dir} was touched");
+                info!("Stream {mount} on {} was touched", directory.yp_url);
                 break;
             },
             PostReqStatus::WrongResp => {
-                add_action(server, directory, client, dir, mount, properties, ds, state, state_path).await;
+                add_action(server, directory, client, mount, properties, ds).await;
                 if let Some(v) = &ds.sid {
                     sid = v.clone();
                     form.insert("sid", sid.clone());
@@ -260,6 +256,64 @@ async fn touch_action(server: &Server, directory: &YPDirectory, client: &Client,
             PostReqStatus::Unreachable => tokio::time::sleep(Duration::from_secs(20)).await
         }
     }
+}
+
+/// Run `touch_action` for every registered directory concurrently, awaiting all
+/// spawned tasks before returning. Returns whether any directory got a new sid
+/// (i.e. it was re-registered) and thus the persisted state should be refreshed.
+async fn touch_all(server: Arc<Server>, yp: &YP, dirs: &mut HashMap<Url, DirState>,
+                   client: &Client, mount: &str, properties: &IcyProperties,
+                   metadata: Option<String>, due_only: Option<Instant>) -> bool {
+    let mut tasks = Vec::new();
+    for (dir, mut ds) in std::mem::take(dirs) {
+        let due = match due_only {
+            Some(now) => ds.sid.is_some() && ds.next_touch <= now,
+            None => ds.sid.is_some()
+        };
+        if !due {
+            dirs.insert(dir, ds);
+            continue;
+        }
+        let directory = yp.directories.iter()
+            .find(|x| x.yp_url.eq(&dir))
+            .expect("Should find YP url in config")
+            .clone();
+        let client = client.clone();
+        let server = server.clone();
+        let mount = mount.to_owned();
+        let properties = properties.clone();
+        let metadata = metadata.clone();
+        let prev_sid = ds.sid.clone();
+        tasks.push((dir, prev_sid, tokio::spawn(async move {
+            touch_action(&server, &directory, &client, &mount, &properties, metadata.as_ref(), &mut ds).await;
+            ds.next_touch = Instant::now() + touch_interval(ds.touch_freq);
+            ds
+        })));
+    }
+
+    let mut changed = false;
+    for (dir, prev_sid, task) in tasks {
+        match task.await {
+            Ok(ds) => {
+                if ds.sid != prev_sid {
+                    changed = true;
+                }
+                dirs.insert(dir, ds);
+            },
+            Err(e) => error!("Touch task failed: {e}")
+        }
+    }
+    changed
+}
+
+async fn persist_dirs(state: &mut Option<StreamState>, properties: &IcyProperties,
+                      dirs: &HashMap<Url, DirState>, state_path: &PathBuf) {
+    let st = state.get_or_insert_with(|| StreamState {
+        properties: properties.clone(),
+        dirs: HashMap::new()
+    });
+    st.dirs = dirs.clone();
+    persist_state(state_path, st).await;
 }
 
 async fn persist_state(state_path: &PathBuf, state: &StreamState) {
