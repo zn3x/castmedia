@@ -77,7 +77,7 @@ pub async fn authenticate(
                             password_hash = Some(account.pass.clone());
                         }
                     }
-                    RequiredRole::SlaveOrYP => if matches!(account.role, Role::Slave | Role::YP) {
+                    RequiredRole::SlaveOrYP => if matches!(account.role, Role::Slave) {
                         has_permission = true;
                         password_hash = Some(account.pass.clone());
                     }

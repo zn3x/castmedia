@@ -31,6 +31,7 @@ diatomic-waker.workspace = true
 clean-path.workspace = true
 async-trait.workspace = true
 pin-project.workspace = true
+reqwest.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ktls.workspace = true

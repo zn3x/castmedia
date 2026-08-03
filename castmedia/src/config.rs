@@ -106,8 +106,7 @@ pub struct MiscSettings {
 pub enum Role {
     Admin,
     Source,
-    Slave,
-    YP,
+    Slave
 }
 
 #[derive(Serialize, Deserialize, Debug)]

@@ -226,6 +226,7 @@ dependencies = [
  "pin-project",
  "qanat",
  "rcgen",
+ "reqwest",
  "scrypt",
  "serde",
  "serde_json",
