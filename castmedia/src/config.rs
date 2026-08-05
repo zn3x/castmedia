@@ -249,7 +249,7 @@ pub struct YP {
     pub state: PathBuf
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct YPDirectory {
     /// Url of YP directory
     pub yp_url: Url,
