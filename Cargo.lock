@@ -220,6 +220,7 @@ dependencies = [
  "futures",
  "hashbrown 0.14.5",
  "httparse",
+ "hyper",
  "inotify",
  "ktls",
  "passfd",
