@@ -11,7 +11,7 @@ use crate::{
     config::{YP, YPDirectory},
     internal_api::v1::IcyProperties,
     server::Server,
-    source::MetadataMsg
+    source::MetadataMsg, stream::BroadcastInfo
 };
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -37,16 +37,36 @@ fn state_file(yp: &YP, mount: &str) -> PathBuf {
     yp.state.join(format!("{}.json", mount.trim_start_matches('/').replace('/', "_")))
 }
 
+pub async fn start_mount_events(s: &BroadcastInfo<'_>) {
+    if s.session.server.config.yellow_pages.is_some() {
+        let mut ctx = None;
+        {
+            let sources = s.session.server.sources.read().await;
+            let source  = sources.get(s.mountpoint);
+            if let Some(source) = source {
+                ctx = Some((source.meta_broadcast.clone(), source.properties.clone()));
+            }
+        }
+        let server = s.session.server.clone();
+        let mount  = s.mountpoint.to_string();
+        if let Some((metadata_rx, properties)) = ctx {
+            tokio::spawn(async move {
+                crate::yp::mount_events(server, mount, properties, metadata_rx).await;
+            });
+        }
+    }
+}
+
 /// Event loop handling a single mounted stream against every configured YP directory.
 ///
 /// It subscribes to the mount metadata broadcast channel: every metadata update is
 /// pushed to the directories with a touch, and a closed channel means the mount was
 /// unmounted and its listing should be removed. Persisted stream state is kept in the
 /// yellow pages state directory and removed once the mount is unmounted.
-pub async fn mount_events(
+async fn mount_events(
     server: Arc<Server>,
     mount: String,
-    properties: IcyProperties,
+    properties: Arc<IcyProperties>,
     mut metadata_rx: Receiver<Arc<MetadataMsg>>,
 ) {
     let yp = match &server.config.yellow_pages {
