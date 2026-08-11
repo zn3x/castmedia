@@ -9,6 +9,7 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use test_utils::{get_status_code, spawn_server, spawn_source};
 use tokio::time::Instant;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
 use hashbrown::HashMap;
 
@@ -121,6 +122,11 @@ async fn wait_until_file(path: &str, exists: bool) {
     }
 }
 
+/// Path of the persisted state file for a mount, mirroring `yp::state_file`
+fn state_file_path(state_dir: &str, mount: &str) -> String {
+    format!("{}/{}.json", state_dir, URL_SAFE_NO_PAD.encode(mount))
+}
+
 fn parse_form(body: &[u8]) -> HashMap<String, String> {
     url::form_urlencoded::parse(body).into_owned().collect()
 }
@@ -222,8 +228,8 @@ async fn yp_add_touch_remove() {
     assert_eq!(format!("{PUBLIC_SERVER}{MOUNT_SOURCE}"), listenurl);
 
     // State file must be persisted after registration
-    let state_file = "/tmp/yp_state_mount_events/stream.mp3.json";
-    wait_until_file(state_file, true).await;
+    let state_file = state_file_path("/tmp/yp_state_mount_events", MOUNT_SOURCE);
+    wait_until_file(&state_file, true).await;
 
     // Metadata update triggers a touch carrying the new song title
     let r = get_status_code(&format!(
@@ -262,7 +268,7 @@ async fn yp_add_touch_remove() {
     assert_eq!(sid, remove_sid);
 
     // State file must be removed on unmount
-    wait_until_file(state_file, false).await;
+    wait_until_file(&state_file, false).await;
 
     drop(server);
 }
@@ -284,8 +290,8 @@ async fn yp_resumes_persisted_state() {
     wait_until(|| events.lock().unwrap().iter().any(|e| matches!(e, YpEvent::Add { .. }))).await;
 
     // State file must be persisted after registration
-    let state_file = "/tmp/yp_state_persisted/stream.mp3.json";
-    wait_until_file(state_file, true).await;
+    let state_file = state_file_path("/tmp/yp_state_persisted", MOUNT_SOURCE);
+    wait_until_file(&state_file, true).await;
 
     // Trigger migration by starting a new instance with the same config
     let server1 = spawn_server(TEST_DIR, CONFIG_YP_RESUMES_PERSISTED_STATE, "yp_persisted.yaml").await;
@@ -327,7 +333,7 @@ async fn yp_resumes_persisted_state() {
     wait_until(|| {
         events.lock().unwrap().iter().any(|e| matches!(e, YpEvent::Remove { sid: v } if v == &sid))
     }).await;
-    wait_until_file(state_file, false).await;
+    wait_until_file(&state_file, false).await;
 
     drop(server);
 }
