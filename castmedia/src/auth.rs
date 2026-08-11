@@ -12,7 +12,7 @@ pub enum RequiredRole {
     Admin,
     SourceApi { mount: String },
     SourceMount { mount: String },
-    SlaveOrYP,
+    Slave,
 }
 
 pub struct UserRef {
@@ -77,7 +77,7 @@ pub async fn authenticate(
                             password_hash = Some(account.pass.clone());
                         }
                     }
-                    RequiredRole::SlaveOrYP => if matches!(account.role, Role::Slave) {
+                    RequiredRole::Slave => if matches!(account.role, Role::Slave) {
                         has_permission = true;
                         password_hash = Some(account.pass.clone());
                     }
