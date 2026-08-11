@@ -246,6 +246,7 @@ async fn add_action(server: &Server, directory: &YPDirectory, client: &Client,
     }
     form.insert("url", yp.url.to_string());
     form.insert("listenurl", listenurl.to_string());
+    form.insert("public", if properties.public { "1".to_owned() } else { "0".to_owned() });
 
     let resp = client.post(directory.yp_url.clone())
         .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")

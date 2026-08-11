@@ -93,7 +93,7 @@ const MOUNT_SOURCE: &str = "/stream.mp3";
 
 #[derive(Debug, Clone)]
 enum YpEvent {
-    Add { sn: String, ct: String, listenurl: String },
+    Add { sn: String, ct: String, listenurl: String, public: String },
     Touch { sid: String, st: Option<String> },
     Remove { sid: String }
 }
@@ -150,7 +150,8 @@ async fn handle(
             events.lock().unwrap().push(YpEvent::Add {
                 sn: form.get("sn").cloned().unwrap_or_default(),
                 ct: form.get("type").cloned().unwrap_or_default(),
-                listenurl: form.get("listenurl").cloned().unwrap_or_default()
+                listenurl: form.get("listenurl").cloned().unwrap_or_default(),
+                public: form.get("public").cloned().unwrap_or_default()
             });
             headers.insert("sid", HeaderValue::from_str(&new_sid.to_string()).unwrap());
             headers.insert("touchfreq", HeaderValue::from_str(&YP_TOUCHFREQ.to_string()).unwrap());
@@ -215,10 +216,10 @@ async fn yp_add_touch_remove() {
 
     // Registration: add request must reach the YP dir carrying the stream info
     wait_until(|| events.lock().unwrap().iter().any(|e| matches!(e, YpEvent::Add { .. }))).await;
-    let (sn, ct, listenurl) = {
+    let (sn, ct, listenurl, public) = {
         let evs = events.lock().unwrap();
         let add = evs.iter().find_map(|e| match e {
-            YpEvent::Add { sn, ct, listenurl } => Some((sn.clone(), ct.clone(), listenurl.clone())),
+            YpEvent::Add { sn, ct, listenurl, public } => Some((sn.clone(), ct.clone(), listenurl.clone(), public.clone())),
             _ => None
         }).unwrap();
         add
@@ -226,6 +227,7 @@ async fn yp_add_touch_remove() {
     assert_eq!("", sn);
     assert_eq!("audio/mpeg", ct);
     assert_eq!(format!("{PUBLIC_SERVER}{MOUNT_SOURCE}"), listenurl);
+    assert_eq!("0", public);
 
     // State file must be persisted after registration
     let state_file = state_file_path("/tmp/yp_state_mount_events", MOUNT_SOURCE);
