@@ -18,6 +18,5 @@ Documentation can be found [here](./docs/getting_started.md).
 
 ## Todo
 
-- Move YellowPages to server instead of current standalone approach
 - Add per mount configuration
 - Add support for HLS
