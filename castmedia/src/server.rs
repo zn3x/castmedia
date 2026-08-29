@@ -241,8 +241,8 @@ impl ServerStats {
 /// for relaying when master server is expected to receive
 /// authenticated slave connection
 pub struct RelayParams {
-    /// Flag used to check if there is a slave/yp auth configured
-    pub slave_or_yp_auth_present: bool,
+    /// Flag used to check if there is a slave auth configured
+    pub slave_auth_present: bool,
     /// Notification for new source (sender)
     pub new_source_event_tx: Sender<()>,
     /// Notification for new source (receiver)
@@ -454,9 +454,9 @@ pub async fn listener(config: ServerSettings) {
         max_clients: Arc::new(Semaphore::new(config.limits.clients)),
         sources: RwLock::new(HashMap::new()),
         relay_params: RelayParams {
-            slave_or_yp_auth_present: config.account
+            slave_auth_present: config.account
                 .iter()
-                .any(|x| matches!(x.1.role, Role::Slave | Role::YP)),
+                .any(|x| matches!(x.1.role, Role::Slave)),
             new_source_event_tx: tx2,
             new_source_event_rx: rx2
         },

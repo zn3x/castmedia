@@ -220,12 +220,14 @@ dependencies = [
  "futures",
  "hashbrown 0.14.5",
  "httparse",
+ "hyper",
  "inotify",
  "ktls",
  "passfd",
  "pin-project",
  "qanat",
  "rcgen",
+ "reqwest",
  "scrypt",
  "serde",
  "serde_json",
@@ -241,27 +243,6 @@ dependencies = [
  "uuid",
  "webpki-roots",
  "zxcvbn",
-]
-
-[[package]]
-name = "castmediayp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "castmedia",
- "chrono",
- "futures",
- "hashbrown 0.14.5",
- "httparse",
- "qanat",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "url",
 ]
 
 [[package]]

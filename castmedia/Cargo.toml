@@ -31,6 +31,7 @@ diatomic-waker.workspace = true
 clean-path.workspace = true
 async-trait.workspace = true
 pin-project.workspace = true
+reqwest.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ktls.workspace = true
@@ -40,3 +41,4 @@ tokio = { version = "*", features = [ "full" ] }
 test-utils = { path = "../test-utils" }
 futures.workspace = true
 rcgen = { workspace = true, features = ["ring"] }
+hyper = { version = "0.14.32", features = [ "http1", "server", "tcp" ] }

@@ -79,7 +79,8 @@ pub struct ServerSettings {
     pub account: HashMap<String, Account>,
     /// Master server relaying for slave instance
     #[serde(default = "default_val_master")]
-    pub master: Vec<MasterServer>
+    pub master: Vec<MasterServer>,
+    pub yellow_pages: Option<YP>
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -105,8 +106,7 @@ pub struct MiscSettings {
 pub enum Role {
     Admin,
     Source,
-    Slave,
-    YP,
+    Slave
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -235,6 +235,28 @@ pub struct AdminAccess {
     pub address: ServerAddress,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct YP {
+    pub enabled: bool,
+    /// Public url where clients will be able to reach streams
+    /// It is worth to note that the stream mount is appended to the end of this url
+    pub public_server: Url,
+    /// Radio website mainpage
+    pub url: Url,
+    /// List of directories when streams will be published
+    pub directories: Vec<YPDirectory>,
+    /// Directory where to store yellow page directories state info
+    pub state: PathBuf
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct YPDirectory {
+    /// Url of YP directory
+    pub yp_url: Url,
+    /// Timeout in millis to send request to the YP directory
+    pub timeout: u64
+}
+
 impl Default for ServerSettings {
     fn default() -> Self {
         ServerSettings {
@@ -246,7 +268,8 @@ impl Default for ServerSettings {
             admin_access: default_val_admin_access(),
             account: default_val_accounts(),
             master: default_val_master(),
-            misc: default_val_misc()
+            misc: default_val_misc(),
+            yellow_pages: None
         }
     }
 }
@@ -575,6 +598,19 @@ impl ServerSettings {
 
         if config.misc.check_forwardedfor {
             warn!("check_forwardedfor is enabled!! make sure only reverse proxy can access listeners");
+        }
+
+        if let Some(yp) = config.yellow_pages.as_ref() {
+            if yp.enabled && yp.directories.is_empty() {
+                warn!("YellowPages enabled but no directory is defined");
+            }
+            if !yp.state.exists() {
+                info!("YellowPages state directory doesn't exist, creating it");
+                if let Err(e) = std::fs::create_dir_all(&yp.state) {
+                    error!("Failed creating YellowPages state directory: {e}");
+                    errors += 1;
+                }
+            }
         }
 
         errors

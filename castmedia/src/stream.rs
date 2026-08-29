@@ -227,7 +227,8 @@ pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
 
 pub async fn broadcast(mut s: BroadcastInfo<'_>) { 
     info!("Mounted source on {}", s.mountpoint);
-
+    // Yellow page for each stream directly mounted to castmedia (no relay!)
+    crate::yp::start_mount_events(&s).await;
     let mut reader      = StreamReader::new(s.session.stream, s.session.server.config.limits.source_timeout, s.stats, s.chunked);
     let media_broadcast = s.broadcast.audio.clone();
     let server          = s.session.server.clone();
