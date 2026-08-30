@@ -1,10 +1,8 @@
 use std::{
-    sync::{Arc, atomic::Ordering},
-    time::Duration, net::SocketAddr
+    net::SocketAddr, sync::{Arc, atomic::Ordering}, task::Poll, time::Duration
 };
 use anyhow::Result;
-use ::futures::{future::select_all, FutureExt};
-use hashbrown::{HashMap, hash_map::OccupiedError};
+use hashbrown::HashMap;
 use qanat::{
     mpsc,
     broadcast::{RecvError, Receiver}
@@ -13,6 +11,7 @@ use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt}, task::JoinHandle
 };
+use tokio_stream::StreamMap;
 use tracing::{info, error};
 use url::Url;
 use serde::{Deserialize, Serialize};
@@ -26,7 +25,7 @@ use crate::{
     },
     migrate::{MigrateCommand, MigrateEntry},
     server::{ClientSession, Server, Session, Stream},
-    source::{Source, SourceAccessType, MetadataMsg},
+    source::{Source, SourceAccessType},
     stream::RelayBroadcastStatus,
     utils::{self, basic_auth, concat_path, get_header}
 };
@@ -55,9 +54,23 @@ pub enum MountUpdate {
     Heartbeat
 }
 
+struct ReceiverStream<T: Clone + Send + Sync>(Receiver<T>);
+
+impl<T: Clone + Send + Sync> tokio_stream::Stream for ReceiverStream<T> {
+    type Item = Result<T, RecvError>;
+    fn poll_next(mut self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.0.try_recv() {
+            Err(qanat::broadcast::TryRecvError::Empty) => Poll::Pending,
+            Err(qanat::broadcast::TryRecvError::Lagged) => Poll::Ready(Some(Err(RecvError::Lagged))),
+            Err(qanat::broadcast::TryRecvError::Closed) => Poll::Ready(Some(Err(RecvError::Closed))),
+            Ok(v) => Poll::Ready(Some(Ok(v)))
+        }
+    }
+}
+
 pub async fn master_mount_updates(mut session: ClientSession,
-                                  // map holding all mounts as tuple (mount, metadata_channel)
-                                  mut mounts: HashMap<String, Receiver<Arc<MetadataMsg>>>) -> Result<()> {
+                                  // Set of mounts already announced to slave before migration
+                                  mounts: Vec<String>) -> Result<()> {
     info!("Mount updates stream initialized for {}", session);
 
     let user_id = session.user
@@ -72,12 +85,19 @@ pub async fn master_mount_updates(mut session: ClientSession,
         .clone();
 
     let mut migrate_comm = session.server.migrate.clone();
-    // vec holding futures of reads we must perform on each source channel
-    let mut reads;
+    // Map holding channel updates for each source channel
+    let mut reader       = StreamMap::new();
+    let mut buf          = Vec::new();
     let mut ret;
-    let mut remove     = None;
-    let mut migrate_ch = None;
-
+    let mut migrate_ch   = None;
+    {
+        let lock = session.server.sources.read().await;
+        for mount in mounts {
+            if let Some(m) = lock.get(&mount) {
+                reader.insert(mount, ReceiverStream(m.meta_broadcast.clone()));
+            }
+        }
+    }
     let heartbeat_msg      = serde_json::to_vec(&MountUpdate::Heartbeat)?;
     let heartbeat_len      = (heartbeat_msg.len() as u32).to_be_bytes();
     let mut heartbeat_tick = tokio::time::interval(Duration::from_millis(session.server.config.limits.mountupdates_heartbeat));
@@ -89,7 +109,7 @@ pub async fn master_mount_updates(mut session: ClientSession,
                 m,
                 user_id,
                 session,
-                mounts
+                reader.keys().map(|x: &String| x.to_string()).collect::<Vec<String>>()
             ).await;
         }
 
@@ -113,23 +133,23 @@ pub async fn master_mount_updates(mut session: ClientSession,
             }
 
             let mut new_mounts = Vec::new();
+            // TODO: Can we refine this to only iterate over new sources
             // We here only insert new sources
             for m in session.server.sources.read().await.iter() {
-                match mounts.try_insert(m.0.to_owned(), m.1.meta_broadcast.clone()) {
-                    Err(OccupiedError { mut entry, value }) => {
-                        if !entry.get().same_channel(&value) {
-                            entry.insert(value);
-                            new_mounts.push((m.0.clone(), m.1.properties.clone()));
-                        }
-                    },
-                    Ok(_) => {
+                match reader.contains_key(m.0) {
+                    false => {
                         new_mounts.push((m.0.clone(), m.1.properties.clone()));
+                        reader.insert(m.0.clone(), ReceiverStream(m.1.meta_broadcast.clone()));
                     },
+                    true => if reader.values().find(|x| x.0.same_channel(&m.1.meta_broadcast)).is_none() {
+                        new_mounts.push((m.0.clone(), m.1.properties.clone()));
+                        reader.insert(m.0.clone(), ReceiverStream(m.1.meta_broadcast.clone()));
+                    }
                 }
             }
             
             // Reread everything, we got premature notification
-            if mounts.is_empty() {
+            if reader.is_empty() {
                 continue 'NO_SOURCE;
             }
             
@@ -143,24 +163,14 @@ pub async fn master_mount_updates(mut session: ClientSession,
 
                 session.stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
                 session.stream.write_all(&ser).await?;
-                session.stream.flush().await?;
             }
+            session.stream.flush().await?;
             heartbeat_tick.reset();
 
             loop {
-                reads = Vec::new();
-                if let Some(rem) = remove.take() {
-                    mounts.remove(&rem);
-                }
                 // we must prevent polling empty futures list
-                if mounts.is_empty() {
+                if reader.is_empty() {
                     continue 'NO_SOURCE;
-                }
-
-                for m in &mut mounts {
-                    reads.push(async {
-                        (m.0.clone(), m.1.recv().await)
-                    }.boxed());
                 }
                 // TODO: Can we eliminate the need to transmit metadata for source if slave
                 // already listening to that source
@@ -170,35 +180,28 @@ pub async fn master_mount_updates(mut session: ClientSession,
                         session.stream.write_all(&heartbeat_msg).await?;
                         session.stream.flush().await?;
                     },
-                    ((mount, metadata), _, _) = select_all(reads) => {
-                        let ser = match metadata {
-                            Ok(v) => {
-                                // TODO: Can we use futures returned by select_all directly
-                                // Holy borrowing hell
-                                // We need to re-add recv future for this channel
-                                serde_json::to_vec(&json!({
+                    _ = reader.next_many(&mut buf, 32) => {
+                        for (mount, metadata) in buf.drain(..) {
+                            let ser = match metadata {
+                                Ok(v) => serde_json::to_vec(&json!({
                                     "mount": mount,
                                     "metadata": &v.obj,
                                     "type": "metadata"
-                                }))?
-                            },
-                            Err(RecvError::Lagged) => continue,
-                            Err(RecvError::Closed) => {
-                                let ser = serde_json::to_vec(&json!({
-                                    "mount": mount,
-                                    "type": "unmounted"
-                                }))?;
-
-                                // We remove source because it's no longer active
-                                remove = Some(mount);
-
-                                ser
-                            }
-                        };
-                        session.stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
-                        session.stream.write_all(&ser).await?;
+                                }))?,
+                                Err(RecvError::Lagged) => continue,
+                                Err(RecvError::Closed) => {
+                                    // We remove source because it's no longer active
+                                    reader.remove(&mount);
+                                    serde_json::to_vec(&json!({
+                                        "mount": mount,
+                                        "type": "unmounted"
+                                    }))?
+                                }
+                            };
+                            session.stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
+                            session.stream.write_all(&ser).await?;
+                        }
                         session.stream.flush().await?;
-
                         heartbeat_tick.reset();
                     },
                     r = new_source_notify.recv() => {
@@ -217,12 +220,12 @@ pub async fn master_mount_updates(mut session: ClientSession,
 
 async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>,
                                       user_id: String, mut session: ClientSession, 
-                                      mounts: HashMap<String, Receiver<Arc<MetadataMsg>>>) -> ! {
+                                      mounts: Vec<String>) -> ! {
     let migrate = migrate
         .expect("Got migrate notice with closed mpsc");
 
     let info = MigrateConnection::MasterMountUpdates(MigrateMasterMountUpdates {
-        mounts: mounts.into_keys().collect::<Vec<String>>(),
+        mounts,
         user_id
     });
 

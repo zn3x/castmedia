@@ -1,7 +1,6 @@
 use std::sync::{atomic::Ordering, Arc};
 
 use anyhow::Result;
-use hashbrown::HashMap;
 use tracing::info;
 use serde_json::json;
 use uuid::Uuid;
@@ -378,7 +377,7 @@ async fn mount_updates(mut session: ClientSession, req: AdminRequest) -> Result<
 
     _ = response::ok_200(&mut session.stream, sid).await;
 
-    crate::relay::master_mount_updates(session, HashMap::new()).await
+    crate::relay::master_mount_updates(session, Vec::new()).await
 }
 
 pub async fn handle_request<'a>(mut session: ClientSession, req: AdminRequest) -> Result<()> {

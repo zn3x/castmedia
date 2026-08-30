@@ -511,25 +511,12 @@ pub async fn handle_migrated(stream: Stream, addr: SocketAddr,
             };
             _ = prepare_listener(session, info).await;
         },
-        ClientInfo::MasterMountUpdates(mut info) => {
+        ClientInfo::MasterMountUpdates(info) => {
             // Same thing as source clients
             if !server.config.account.contains_key(&info.user_id) {
                 return;
             }
-
-            let mut mounts = HashMap::new();
-
             _ = migrate_finished.recv().await;
-
-            {
-                let lock = server.sources.read().await;
-                for mount in info.mounts.drain(..) {
-                    if let Some(source) = lock.get(&mount) {
-                        mounts.insert(mount, source.meta_broadcast.clone());
-                    }
-                }
-            }
-
             _ = crate::relay::master_mount_updates(
                 ClientSession {
                     // Should be fine as we route directly this connection to mount updates
@@ -539,7 +526,7 @@ pub async fn handle_migrated(stream: Stream, addr: SocketAddr,
                     addr,
                     user: Some(crate::auth::UserRef { id: info.user_id })
                 },
-                mounts
+                info.mounts
             ).await;
         }
     }
