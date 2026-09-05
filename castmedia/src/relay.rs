@@ -7,21 +7,20 @@ use qanat::{
     mpsc,
     broadcast::{RecvError, Receiver}
 };
-use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt}, task::JoinHandle
 };
 use tokio_stream::StreamMap;
 use tracing::{info, error};
 use url::Url;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::{
     broadcast::broadcast_metadata, client::{RelayStream, SourceInfo, StreamOnDemand},
     config::MasterServerRelayScheme, http::{self, HttpClient},
     internal_api::v1::{
         IcyMetadata, IcyProperties, MigrateConnection, MigrateInactiveOnDemandSource, MigrateMasterMountUpdates, MigrateSlaveMountUpdates, RelayedInfo,
-        ChunkedReadState
+        ChunkedReadState, MountUpdate
     },
     migrate::{MigrateCommand, MigrateEntry},
     server::{ClientSession, Server, Session, Stream},
@@ -33,25 +32,6 @@ use crate::{
 #[derive(Debug, Deserialize)]
 struct MasterMounts {
     mounts: Vec<String>
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(tag = "type")]
-#[serde(rename_all = "lowercase")]
-pub enum MountUpdate {
-    New {
-        mount: String,
-        properties: IcyProperties,
-        metadata: Option<IcyMetadata>
-    },
-    Metadata {
-        mount: String,
-        metadata: IcyMetadata
-    },
-    Unmounted {
-        mount: String
-    },
-    Heartbeat
 }
 
 struct ReceiverStream<T: Clone + Send + Sync>(Receiver<T>);
@@ -155,12 +135,11 @@ pub async fn master_mount_updates(mut session: ClientSession,
             
             // Now we write new sources to slave
             for new_mount in new_mounts {
-                let ser = serde_json::to_vec(&json!({
-                    "mount": new_mount.0,
-                    "properties": new_mount.1.as_ref(),
-                    "type": "new"
-                }))?;
-
+                let ser = serde_json::to_vec(&MountUpdate::New {
+                    mount: new_mount.0,
+                    properties: new_mount.1.as_ref().clone(),
+                    metadata: None
+                })?;
                 session.stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
                 session.stream.write_all(&ser).await?;
             }
@@ -182,22 +161,18 @@ pub async fn master_mount_updates(mut session: ClientSession,
                     },
                     _ = reader.next_many(&mut buf, 32) => {
                         for (mount, metadata) in buf.drain(..) {
-                            let ser = match metadata {
-                                Ok(v) => serde_json::to_vec(&json!({
-                                    "mount": mount,
-                                    "metadata": &v.obj,
-                                    "type": "metadata"
-                                }))?,
+                            let ser = serde_json::to_vec(&match metadata {
+                                Ok(v) => MountUpdate::Metadata {
+                                    mount: mount,
+                                    metadata: v.obj.clone()
+                                },
                                 Err(RecvError::Lagged) => continue,
                                 Err(RecvError::Closed) => {
                                     // We remove source because it's no longer active
                                     reader.remove(&mount);
-                                    serde_json::to_vec(&json!({
-                                        "mount": mount,
-                                        "type": "unmounted"
-                                    }))?
+                                    MountUpdate::Unmounted { mount }
                                 }
-                            };
+                            })?;
                             session.stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
                             session.stream.write_all(&ser).await?;
                         }

@@ -179,3 +179,22 @@ pub struct RelayedInfo {
     pub metadata_remaining: usize,
     pub metadata_buffer: Vec<u8>
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type")]
+#[serde(rename_all = "lowercase")]
+pub enum MountUpdate {
+    New {
+        mount: String,
+        properties: IcyProperties,
+        metadata: Option<IcyMetadata>
+    },
+    Metadata {
+        mount: String,
+        metadata: IcyMetadata
+    },
+    Unmounted {
+        mount: String
+    },
+    Heartbeat
+}
