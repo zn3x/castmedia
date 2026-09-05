@@ -486,7 +486,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
     let mut migrate_comm   = serv.migrate.clone();
     loop {
         tokio::select! {
-            r = authenticated_mode_reader(&mut stream, &mut len_enc, &mut len_enc_filled, &mut buf, &mut buf_filled) => {
+            r = message_reader::<MountUpdate>(&mut stream, &mut len_enc, &mut len_enc_filled, &mut buf, &mut buf_filled) => {
                 len_enc_filled = 0;
                 buf_filled = 0;
                 match r {
@@ -498,27 +498,17 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                 }
             },
             migrate = migrate_comm.recv() => {
-                let migrate = migrate
-                    .expect("Got migrate notice with closed mpsc");
-
                 let info = MigrateConnection::SlaveMountUpdates(MigrateSlaveMountUpdates {
                     master_url: master.url.to_string()
                 });
-                let mut drain_buffer = Vec::new();
-                if len_enc_filled > 0 {
-                    drain_buffer.extend_from_slice(&len_enc[..len_enc_filled]);
-                    if buf_filled > 0 {
-                        drain_buffer.extend_from_slice(&buf[..buf_filled]);
+                let addr = match stream.peer_addr() {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!("Failed migrating relaying connection: {e}");
+                        utils::hang().await;
                     }
-                }
-                match (stream.peer_addr(), stream.flush().await) {
-                    (Ok(client_addr), Ok(())) => _ = migrate.slave_mountupdates.send(
-                        Some(MigrateEntry::new(info, Some((stream, client_addr))).with_drained_buffer(drain_buffer))
-                    ),
-                    (Err(e), _) => error!("Failed migrating relaying connection: {e}"),
-                    (_, Err(e)) => error!("Failed migrating relaying connection: {e}")
-                }
-                utils::hang().await;
+                };
+                migrate_connection(migrate, stream, addr, len_enc, len_enc_filled, buf, buf_filled, info).await
             }
         }
     }
@@ -526,9 +516,11 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
     serv.stats.active_relay.fetch_sub(1, Ordering::Relaxed);
 }
 
-async fn authenticated_mode_reader(stream: &mut Stream, len_enc: &mut [u8; 4],
-                                   len_enc_filled: &mut usize,
-                                   buf: &mut Vec<u8>, buf_filled: &mut usize) -> Result<MountUpdate> {
+async fn message_reader<'a, T: Deserialize<'a>>(
+    stream: &mut Stream, len_enc: &mut [u8; 4],
+    len_enc_filled: &mut usize, buf: &'a mut Vec<u8>,
+    buf_filled: &mut usize
+) -> Result<T> {
     // Read length prefix one byte at a time
     while *len_enc_filled < 4 {
         let b = stream.read_u8().await?;
@@ -546,13 +538,38 @@ async fn authenticated_mode_reader(stream: &mut Stream, len_enc: &mut [u8; 4],
         let n = stream.read(&mut buf[*buf_filled..*buf_filled + read_len]).await?;
         if n == 0 {
             // EOF
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "EOF while reading mount update").into());
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "EOF while reading stream").into());
         }
         *buf_filled += n;
     }
     // Now we deserialize it
-    let event: MountUpdate = serde_json::from_slice(&buf[..len])?;
+    let event: T = serde_json::from_slice(&buf[..len])?;
     Ok(event)
+}
+
+async fn migrate_connection(
+    migrate: Result<Arc<MigrateCommand>, RecvError>,
+    mut stream: Stream, addr: SocketAddr,
+    len_enc: [u8; 4], len_enc_filled: usize, buf: Vec<u8>,
+    buf_filled: usize, info: MigrateConnection
+) -> ! {
+    let migrate = migrate
+        .expect("Got migrate notice with closed mpsc");
+
+    let mut drain_buffer = Vec::new();
+    if len_enc_filled > 0 {
+        drain_buffer.extend_from_slice(&len_enc[..len_enc_filled]);
+        if buf_filled > 0 {
+            drain_buffer.extend_from_slice(&buf[..buf_filled]);
+        }
+    }
+    match stream.flush().await {
+        Ok(()) => _ = migrate.slave_mountupdates.send(
+            Some(MigrateEntry::new(info, Some((stream, addr))).with_drained_buffer(drain_buffer))
+        ),
+        Err(e) => error!("Failed migrating relaying connection: {e}"),
+    }
+    utils::hang().await;
 }
 
 async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
