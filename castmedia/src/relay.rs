@@ -69,7 +69,11 @@ pub async fn master_mount_updates(mut session: ClientSession,
     let mut reader       = StreamMap::new();
     let mut buf          = Vec::new();
     let mut ret;
-    let mut migrate_ch   = None;
+    let mut migrate_ch     = None;
+    let mut len_enc        = [0u8; 4];
+    let mut msg_buf        = vec![0u8; 1024];
+    let mut len_enc_filled = 0;
+    let mut buf_filled     = 0;
     {
         let lock = session.server.sources.read().await;
         for mount in mounts {
@@ -85,12 +89,11 @@ pub async fn master_mount_updates(mut session: ClientSession,
 
     'NO_SOURCE: loop {
         if let Some(m) = migrate_ch {
-            migrate_master_mount_updates(
-                m,
-                user_id,
-                session,
-                reader.keys().map(|x: &String| x.to_string()).collect::<Vec<String>>()
-            ).await;
+            let info = MigrateConnection::MasterMountUpdates(MigrateMasterMountUpdates {
+                mounts: reader.keys().map(|x: &String| x.to_string()).collect::<Vec<String>>(),
+                user_id
+            });
+            migrate_connection(m, session.stream, session.addr, len_enc, len_enc_filled, msg_buf, buf_filled, info).await
         }
 
         tokio::select! {
@@ -179,6 +182,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
                         session.stream.flush().await?;
                         heartbeat_tick.reset();
                     },
+                    _ = message_reader::<MountUpdate>(&mut session.stream, &mut len_enc, &mut len_enc_filled, &mut msg_buf, &mut buf_filled) => {
+                    },
                     r = new_source_notify.recv() => {
                         ret = r;
                         continue 'SOURCE;
@@ -191,25 +196,6 @@ pub async fn master_mount_updates(mut session: ClientSession,
             };
         };
     };
-}
-
-async fn migrate_master_mount_updates(migrate: Result<Arc<MigrateCommand>, qanat::broadcast::RecvError>,
-                                      user_id: String, mut session: ClientSession, 
-                                      mounts: Vec<String>) -> ! {
-    let migrate = migrate
-        .expect("Got migrate notice with closed mpsc");
-
-    let info = MigrateConnection::MasterMountUpdates(MigrateMasterMountUpdates {
-        mounts,
-        user_id
-    });
-
-    match session.stream.flush().await {
-        Ok(()) => _ = migrate.master_mountupdates.send(MigrateEntry::new(info, Some((session.stream, session.addr)))),
-        Err(e) => tracing::error!("Failed migrating master mount updates: {e}")
-    }
-
-    utils::hang().await;
 }
 
 async fn fetch_available_mounts(server: &Server, url: &Url) -> Result<MasterMounts> {
