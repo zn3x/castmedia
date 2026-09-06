@@ -153,7 +153,8 @@ pub enum MasterServerRelayScheme {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Mount {
     pub path: String,
-    pub fallback: Option<String>
+    pub fallback: Option<String>,
+    pub max_listeners: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize)]

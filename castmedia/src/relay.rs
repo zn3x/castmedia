@@ -20,7 +20,7 @@ use crate::{
     config::MasterServerRelayScheme, http::{self, HttpClient},
     internal_api::v1::{
         IcyMetadata, IcyProperties, MigrateConnection, MigrateInactiveOnDemandSource, MigrateMasterMountUpdates, MigrateSlaveMountUpdates, RelayedInfo,
-        ChunkedReadState, MountUpdate
+        ChunkedReadState, MountUpdate, MountUpdateRequest
     },
     migrate::{MigrateCommand, MigrateEntry},
     server::{ClientSession, Server, Session, Stream},
@@ -182,7 +182,22 @@ pub async fn master_mount_updates(mut session: ClientSession,
                         session.stream.flush().await?;
                         heartbeat_tick.reset();
                     },
-                    _ = message_reader::<MountUpdate>(&mut session.stream, &mut len_enc, &mut len_enc_filled, &mut msg_buf, &mut buf_filled) => {
+                    msg = message_reader::<MountUpdateRequest>(&mut session.stream, &mut len_enc, &mut len_enc_filled, &mut msg_buf, &mut buf_filled) => match msg {
+                        Ok(MountUpdateRequest::ReserveStreamSlots { count, mount }) => {
+                            if let Some(v) = session.server.sources.read().await.get(&mount) {
+                                let ser = serde_json::to_vec(&MountUpdate::ReservedStreamSlots {
+                                    count: v.reserve_listener_slots(count, usize::MAX),
+                                    mount
+                                })?;
+                                session.stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
+                                session.stream.write_all(&ser).await?;
+                                session.stream.flush().await?;
+                            }
+                        },
+                        Err(e) => {
+                            error!("Mount updates request failed to be read from {session}: {e}");
+                            break;
+                        }
                     },
                     r = new_source_notify.recv() => {
                         ret = r;

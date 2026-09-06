@@ -86,6 +86,17 @@ pub struct Source {
     pub kill: Option<oneshot::Sender<()>>
 }
 
+impl Source {
+    pub fn reserve_listener_slots(&self, n: usize, max: usize) -> usize {
+        let prev = self.stats.active_listeners
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
+                Some((cur + n).min(max))
+            })
+            .unwrap();
+        (prev + n).min(max) - prev
+    }
+}
+
 pub struct SourceBroadcast {
     pub audio: Sender<Arc<Vec<u8>>>,
     pub metadata: Sender<Arc<MetadataMsg>>

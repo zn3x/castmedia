@@ -196,5 +196,13 @@ pub enum MountUpdate {
     Unmounted {
         mount: String
     },
-    Heartbeat
+    Heartbeat,
+    ReservedStreamSlots { count: usize, mount: String }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type")]
+#[serde(rename_all = "lowercase")]
+pub enum MountUpdateRequest {
+    ReserveStreamSlots { count: usize, mount: String }
 }
