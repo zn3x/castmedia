@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use anyhow::Result;
 
 use hashbrown::HashMap;
@@ -79,7 +79,7 @@ pub struct ServerSettings {
     pub account: HashMap<String, Account>,
     /// Master server relaying for slave instance
     #[serde(default = "default_val_master")]
-    pub master: Vec<MasterServer>,
+    pub master: Vec<Arc<MasterServer>>,
     pub yellow_pages: Option<YP>
 }
 
@@ -363,7 +363,7 @@ fn default_val_adminacc_address() -> ServerAddress {
 
 fn default_val_accounts() -> HashMap<String, Account> { HashMap::new() }
 
-fn default_val_master() -> Vec<MasterServer> { Vec::new() }
+fn default_val_master() -> Vec<Arc<MasterServer>> { Vec::new() }
 
 fn default_source_mount() -> Vec<Mount> { Vec::new() }
 

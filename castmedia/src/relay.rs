@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 use crate::{
     broadcast::broadcast_metadata, client::{RelayStream, SourceInfo, StreamOnDemand},
-    config::MasterServerRelayScheme, http::{self, HttpClient},
+    config::{MasterServerRelayScheme, MasterServer}, http::{self, HttpClient},
     internal_api::v1::{
         IcyMetadata, IcyProperties, MigrateConnection, MigrateInactiveOnDemandSource, MigrateMasterMountUpdates, MigrateSlaveMountUpdates, RelayedInfo,
         ChunkedReadState, MountUpdate, MountUpdateRequest
@@ -230,14 +230,13 @@ async fn fetch_available_mounts(server: &Server, url: &Url) -> Result<MasterMoun
     ).await?
 }
 
-async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
-                    auth: Option<&str>)
+async fn get_stream(serv: &Arc<Server>, rp: &SlaveRelayParams, mount: &str)
     -> Result<(Stream, SocketAddr, usize, usize, IcyProperties, Option<ChunkedReadState>)> {
     // Fetching media stream from master
-    let mut client = HttpClient::connect(url, mount, serv.config.limits.http_max_len).await?;
+    let mut client = HttpClient::connect(&rp.master.url, mount, serv.config.limits.http_max_len).await?;
     let addr       = client.peer_addr()?;
     client.add_header("Icy-Metadata: 1");
-    if let Some(auth) = auth {
+    if let Some(auth) = rp.auth.as_ref() {
         client.add_header(auth);
     }
     let mut reader  = client.get().await?;
@@ -277,27 +276,32 @@ async fn get_stream(serv: &Arc<Server>, url: &Url, mount: &str,
     Ok((reader.get_inner_stream(), addr, metaint, headers_buf.len(), properties, chunked))
 }
 
-pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
-                                mut migrate_successor: Option<(Option<Stream>, mpsc::UnboundedReceiver<RelaySourceMigrate>)>) {
-    let master_server     = &serv.config.master[master_ind];
-    let reconnect_timeout = match &master_server.relay_scheme {
-        MasterServerRelayScheme::Authenticated { reconnect_timeout, .. } => *reconnect_timeout,
+pub async fn authenticated_mode(serv: Arc<Server>, master: Arc<MasterServer>,
+                                migrate_successor: Option<(Option<Stream>, mpsc::UnboundedReceiver<RelaySourceMigrate>)>) {
+    let (mut stream, mut migrate_successor) = match migrate_successor {
+        Some((s, m)) => (s, Some(m)),
+        None => (None, None),
+    };
+    let (timeout, relay_params) = match &master.relay_scheme {
+        MasterServerRelayScheme::Authenticated { user, pass, stream_on_demand, reconnect_timeout } => (
+            Duration::from_millis(*reconnect_timeout),
+            Arc::new(SlaveRelayParams {
+                auth: Some(format!("Authorization: Basic {}", basic_auth(user, pass))),
+                on_demand: *stream_on_demand,
+                master
+            })
+        ),
         _ => unreachable!()
     };
-    let timeout = Duration::from_millis(reconnect_timeout);
     loop {
-        match migrate_successor.take() {
-            Some((Some(stream), m)) => authenticated_mode_event_listener(&serv, stream, master_ind, Some(m)).await,
-            v => {
-                let m = match v {
-                    Some((None, m)) => Some(m),
-                    _ => None
-                };
+        match stream.take() {
+            Some(stream) => authenticated_mode_event_listener(&serv, stream, &relay_params, migrate_successor.take()).await,
+            None => {
                 let fut = async {
                     loop {
-                        match authenticated_mode_fetch_updates_stream(&serv, master_ind).await {
+                        match authenticated_mode_fetch_updates_stream(&serv, &relay_params).await {
                             Ok(v) => return v,
-                            Err(e) => error!("Initial mountupdates connection to {} failed: {}", master_server, e)
+                            Err(e) => error!("Initial mountupdates connection to {} failed: {}", relay_params.master, e)
                         }
                         tokio::time::sleep(timeout).await;
                     }
@@ -312,23 +316,22 @@ pub async fn authenticated_mode(serv: Arc<Server>, master_ind: usize,
                         utils::hang().await;
                     }
                 };
-                authenticated_mode_event_listener(&serv, stream, master_ind, m).await;
+                authenticated_mode_event_listener(&serv, stream, &relay_params, migrate_successor.take()).await;
             }
         }
     }
 }
 
-async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, master_ind: usize) -> Result<Stream> {
-    let url  = &serv.config.master[master_ind].url;
-    let auth = match &serv.config.master[master_ind].relay_scheme {
-        MasterServerRelayScheme::Authenticated { user, pass, .. } =>
-            format!("Authorization: Basic {}", basic_auth(user, pass)),
-        // Should not reach this as we did treat it already
-        _ => unreachable!()
-    };
+struct SlaveRelayParams {
+    master: Arc<MasterServer>,
+    auth: Option<String>,
+    on_demand: bool,
+    // TODO: add channel for inter-master comms
+}
 
-    let mut client  = HttpClient::connect(url, "/admin/mountupdates", serv.config.limits.http_max_len).await?;
-    client.add_header(&auth);
+async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, rp: &SlaveRelayParams) -> Result<Stream> {
+    let mut client  = HttpClient::connect(&rp.master.url, "/admin/mountupdates", serv.config.limits.http_max_len).await?;
+    client.add_header(rp.auth.as_ref().unwrap());
     let mut reader  = client.get().await?;
     let headers_buf = reader.read_headers().await?;
 
@@ -370,26 +373,16 @@ struct RelaySourceTask {
 }
 
 async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Stream,
-                                           master_ind: usize,
+                                           rp: &Arc<SlaveRelayParams>,
                                            migrate_successor: Option<mpsc::UnboundedReceiver<RelaySourceMigrate>>) {
-    let master            = &serv.config.master[master_ind];
-    let (auth, on_demand) = match &serv.config.master[master_ind].relay_scheme {
-        MasterServerRelayScheme::Authenticated { user, pass, stream_on_demand, .. } => (
-            format!("Authorization: Basic {}\r\n", basic_auth(user, pass)),
-            *stream_on_demand
-        ),
-        // Should not reach this as we did treat it already
-        _ => unreachable!()
-    };
-
     let mut sources = HashMap::new();
     if let Some(mut m) = migrate_successor {
         while let Ok(v) = m.recv().await {
             match v {
                 RelaySourceMigrate::Normal { stream, addr, info } => {
                     let mount    = info.mountpoint.clone();
+                    let rp_cl    = rp.clone();
                     let serv_cl  = serv.clone();
-                    let auth_cl  = auth.to_owned();
                     let task     = tokio::task::spawn(async move {
                         let cmount = info.mountpoint.clone();
                         let ret    = crate::source::handle_source(
@@ -406,7 +399,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                         match ret {
                             RelayBroadcastStatus::StreamEndOrIdle(_) |
                                 RelayBroadcastStatus::Unreachable(_) => {
-                                relay_source(&serv_cl, master_ind, &cmount, Some(&auth_cl)).await;
+                                relay_source(&serv_cl, &rp_cl, &cmount).await;
                             },
                             _ => ()
                         }
@@ -415,10 +408,10 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                 },
                 RelaySourceMigrate::OnDemandIdle { mount, properties, metadata } => {
                     handle_mount_update(
-                        &mut sources, serv,
-                        master_ind, on_demand,
+                        &mut sources,
+                        serv,
+                        rp,
                         MountUpdate::New { mount, properties, metadata },
-                        &auth
                     ).await;
                 },
                 RelaySourceMigrate::OnDemandActive { stream, addr, mut info } => {
@@ -451,7 +444,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
 
                     let mount    = info.mountpoint.clone();
                     let serv_cl  = serv.clone();
-                    let auth_cl  = auth.to_owned();
+                    let rp_cl    = rp.clone();
                     let task     = tokio::task::spawn(async move {
                         let cmount = info.mountpoint.clone();
                         let ret    = crate::source::handle_source(
@@ -466,7 +459,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                             .expect("RelayBroadcastStatus should be returned on relay stream");
 
                         if let Some(v) = relay_source_on_demand_exception(ret).await {
-                            relay_source_on_demand(&serv_cl, master_ind, cmount, v, auth_cl).await;
+                            relay_source_on_demand(&serv_cl, &rp_cl, cmount, v).await;
                         }
                     });
 
@@ -476,7 +469,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
         }
     }
 
-    info!("Starting mount updates from {}", master);
+    info!("Starting mount updates from {}", rp.master);
 
     serv.stats.active_relay.fetch_add(1, Ordering::Relaxed);
 
@@ -491,16 +484,16 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                 len_enc_filled = 0;
                 buf_filled = 0;
                 match r {
-                    Ok(event) => handle_mount_update(&mut sources, serv, master_ind, on_demand, event, &auth).await,
+                    Ok(event) => handle_mount_update(&mut sources, serv, rp, event).await,
                     Err(e)    => {
-                        error!("Mount updates from {master} stopped: {e}");
+                        error!("Mount updates from {} stopped: {e}", rp.master);
                         break;
                     }
                 }
             },
             migrate = migrate_comm.recv() => {
                 let info = MigrateConnection::SlaveMountUpdates(MigrateSlaveMountUpdates {
-                    master_url: master.url.to_string()
+                    master_url: rp.master.url.to_string()
                 });
                 let addr = match stream.peer_addr() {
                     Ok(v) => v,
@@ -574,12 +567,10 @@ async fn migrate_connection(
 }
 
 async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
-                             serv: &Arc<Server>, master_ind: usize,
-                             on_demand: bool, event: MountUpdate, auth: &str) {
-    let master = &serv.config.master[master_ind].url;
-
+                             serv: &Arc<Server>, rp: &Arc<SlaveRelayParams>, event: MountUpdate) {
     // Now handling events for every source
     match event {
+        MountUpdate::ReservedStreamSlots { count, mount } => todo!(),
         MountUpdate::Heartbeat => (),
         MountUpdate::New { mount, properties, metadata } => {
             if let Some(mut task) = sources.remove(&mount) {
@@ -603,7 +594,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
                 let mut lock = serv.sources.write().await;
                 if let Some(source) = lock.get_mut(&mount) {
                     if let SourceAccessType::RelayedSource { relayed_source } = &source.access {
-                        if relayed_source.starts_with(serv.config.master[master_ind].url.as_str()) {
+                        if relayed_source.starts_with(rp.master.url.as_str()) {
                             // This is the same source
                             let kill = source.kill.take();
                             drop(lock);
@@ -623,12 +614,12 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
             // If we don't have on_demand enabled
             // we don't need to do all the following hassle
             // handle it like normal relay
-            if !on_demand {
+            if !rp.on_demand {
                 let serv_cl  = serv.clone();
-                let auth_cl  = auth.to_owned();
+                let rp_cl    = rp.clone();
                 let mount_cl = mount.clone();
                 let task     = tokio::task::spawn(async move {
-                    relay_source(&serv_cl, master_ind, &mount_cl, Some(&auth_cl)).await;
+                    relay_source(&serv_cl, &rp_cl, &mount_cl).await;
                 });
                 sources.insert(mount, RelaySourceTask { handle: task, just_migrated: false });
                 return;
@@ -647,7 +638,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
 
             let wake_sink                  = diatomic_waker::WakeSink::new();
             let wake_src                   = wake_sink.source();
-            let url                        = concat_path(master.as_str(), &mount);
+            let url                        = concat_path(rp.master.url.as_str(), &mount);
             let (mut source, broadcast,
                  kill_notifier)            = Source::new(
                      properties, None,
@@ -664,11 +655,12 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
             }
 
             let serv_cl  = serv.clone();
-            let auth_cl  = auth.to_owned();
+            let rp_cl    = rp.clone();
             let mount_cl = mount.clone();
             let task     = tokio::task::spawn(async move {
                 relay_source_on_demand(
-                    &serv_cl, master_ind,
+                    &serv_cl,
+                    &rp_cl,
                     mount_cl,
                     StreamOnDemand {
                         stats,
@@ -676,7 +668,6 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
                         kill_notifier,
                         on_demand_notify: wake_sink
                     },
-                    auth_cl
                 ).await;
             });
 
@@ -689,12 +680,12 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
             // 1. on_demand is disabled
             // 2. on_demand is enable and we are currently listening
             // 3. no task is currently listening to mount
-            if !on_demand || !sources.contains_key(&mount) {
+            if !rp.on_demand || !sources.contains_key(&mount) {
                 return;
             }
 
             let m = match serv.sources.read().await.get(&mount) {
-                Some(source) => if on_demand && source.stats.active_listeners.load(Ordering::Acquire) != 0 {
+                Some(source) => if rp.on_demand && source.stats.active_listeners.load(Ordering::Acquire) != 0 {
                     return;
                 } else {
                     broadcast_metadata(source, Some(metadata.clone())).await;
@@ -714,7 +705,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
                     if let Some(kill) = source.kill.take() {
                         drop(lock);
                         _ = kill.send(());
-                        if !on_demand {
+                        if !rp.on_demand {
                             // We might need to cancel task in case there was
                             // already an exception and relay_source didn't receive
                             // Kill signal properly
@@ -732,15 +723,9 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
     }
 }
 
-async fn relay_source(serv: &Arc<Server>, master_ind: usize, mount: &str, auth: Option<&str>) {
+async fn relay_source(serv: &Arc<Server>, rp: &SlaveRelayParams, mount: &str) {
     loop {
-        let status = fetch_source_from_master(
-            serv, master_ind, mount.to_owned(),
-            None,
-            auth
-        ).await;
-
-        match status {
+        match fetch_source_from_master(serv, rp, mount.to_owned(), None).await {
             RelayBroadcastStatus::Killed => break,
             RelayBroadcastStatus::StreamEndOrIdle(_) => (),
             RelayBroadcastStatus::Unreachable(_) => {
@@ -753,8 +738,8 @@ async fn relay_source(serv: &Arc<Server>, master_ind: usize, mount: &str, auth: 
     }
 }
 
-async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: String,
-                                mut on_demand: StreamOnDemand, auth: String) {
+async fn relay_source_on_demand(serv: &Arc<Server>, rp: &SlaveRelayParams, mount: String,
+                                mut on_demand: StreamOnDemand) {
     // We here need to wait until we get notification that we have
     // more than 0 listener
     // ofc we should also handle also the event of killing ourselves
@@ -776,10 +761,9 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
                 let migrate = migrate
                     .expect("Got migrate notice with closed mpsc");
 
-                let master = &serv.config.master[master_ind];
                 if let Some((properties, metadata)) = serv.sources.read().await.get(&mount).map(|x| ((*x.properties).to_owned(), x.metadata.clone())) {
                     let info = MigrateConnection::SlaveInactiveOnDemandSource(MigrateInactiveOnDemandSource {
-                        master_url: master.url.to_string(),
+                        master_url: rp.master.url.to_string(),
                         mountpoint: mount,
                         properties,
                         metadata: metadata.read().await.clone()
@@ -793,7 +777,7 @@ async fn relay_source_on_demand(serv: &Arc<Server>, master_ind: usize, mount: St
             }
         }
 
-        let ret = fetch_source_from_master(serv, master_ind, mount.clone(), Some(on_demand), Some(&auth)).await;
+        let ret = fetch_source_from_master(serv, rp, mount.clone(), Some(on_demand)).await;
         match relay_source_on_demand_exception(ret).await {
             Some(v) => on_demand = v,
             None => break
@@ -830,14 +814,12 @@ async fn relay_source_on_demand_exception(ret: RelayBroadcastStatus) -> Option<S
     }
 }
 
-async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: String,
-                      on_demand: Option<StreamOnDemand>, auth: Option<&str>)
+async fn fetch_source_from_master(serv: &Arc<Server>, rp: &SlaveRelayParams, mount: String,
+                                  on_demand: Option<StreamOnDemand>)
     -> RelayBroadcastStatus {
-    let url = &serv.config.master[master_ind].url;
-
-    match get_stream(serv, url, &mount, auth).await {
+    match get_stream(serv, rp, &mount).await {
         Ok((stream, addr, metaint, initial_bytes_read, properties, chunked)) => {
-            let url = concat_path(url.as_str(), &mount);
+            let url = concat_path(rp.master.url.as_str(), &mount);
             let ret = crate::source::handle_source(
                 Session {
                     server: serv.clone(),
@@ -869,7 +851,7 @@ async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: 
             if let Err(e) = ret.as_ref() {
                 error!(
                     "{} relaying for {} ended with: {}",
-                    serv.config.master[master_ind],
+                    rp.master,
                     mount,
                     e
                 );
@@ -881,7 +863,7 @@ async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: 
         Err(e) => {
             error!(
                 "{} relaying for {} failed: {}",
-                serv.config.master[master_ind],
+                rp.master,
                 mount,
                 e
             );
@@ -890,40 +872,39 @@ async fn fetch_source_from_master(serv: &Arc<Server>, master_ind: usize, mount: 
     }
 }
 
-pub async fn slave_instance(serv: Arc<Server>, master_ind: usize) {
-    // Here we should be fine a we did check bounds before
-    let master_server = &serv.config.master[master_ind];
-
-    match &master_server.relay_scheme {
+pub async fn slave_instance(serv: Arc<Server>, master: Arc<MasterServer>) {
+    match &master.relay_scheme {
         MasterServerRelayScheme::Transparent { update_interval } => {
             let mut interval = tokio::time::interval(Duration::from_millis(*update_interval));
             loop {
                 interval.tick().await;
-
-                match fetch_available_mounts(&serv, &master_server.url).await {
+                match fetch_available_mounts(&serv, &master.url).await {
                     Ok(mounts) => {
                         let lock = serv.sources.read().await;
                         for mount in &mounts.mounts {
                             if !lock.contains_key(mount) {
                                 let serv_clone  = serv.clone();
                                 let mount_clone = mount.clone();
+                                let transparent = SlaveRelayParams { master: master.clone(), auth: None, on_demand: false };
                                 tokio::spawn(async move {
                                     fetch_source_from_master(
-                                        &serv_clone, master_ind,
-                                        mount_clone, None, None
+                                        &serv_clone,
+                                        &transparent,
+                                        mount_clone,
+                                        None
                                     ).await
                                 });
                             }
                         }
                     },
                     Err(e) => {
-                        info!("Fetching mounts from {} failed: {}", master_server, e);
+                        info!("Fetching mounts from {} failed: {}", master, e);
                     }
                 }
             }
         },
         MasterServerRelayScheme::Authenticated { .. } => {
-            authenticated_mode(serv, master_ind, None).await;
+            authenticated_mode(serv, master, None).await;
         }
     }
 }

@@ -73,10 +73,11 @@ pub async fn handle_successor(server: Arc<Server>) {
         }
 
         // Loading tasks for all new master relays
-        for id in slave_id {
+        for master in &server.config.master {
             let serv = server.clone();
+            let mast = master.clone();
             tokio::spawn(async move {
-                crate::relay::slave_instance(serv, id).await;
+                crate::relay::slave_instance(serv, mast).await;
             });
         }
     }).await;
@@ -341,9 +342,10 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                                         let (tx, rx) = mpsc::unbounded_channel();
                                         slave_tx.push(MasterServerTask { url: &master.url, tx, on_demand: *stream_on_demand });
                                         let serv = server.clone();
+                                        let m    = master.clone();
                                         runtime_handle.spawn(async move {
                                             crate::relay::authenticated_mode(
-                                                serv.clone(), i,
+                                                serv.clone(), m,
                                                 Some((None, rx))
                                             ).await;
                                         });
@@ -422,9 +424,10 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                                     let (tx, rx) = mpsc::unbounded_channel();
                                     slave_tx.push(MasterServerTask { url: &master.url, tx, on_demand: stream_on_demand });
                                     let serv = server.clone();
+                                    let m    = master.clone();
                                     runtime_handle.spawn(async move {
                                         crate::relay::authenticated_mode(
-                                            serv.clone(), i,
+                                            serv.clone(), m,
                                             Some((Some(stream), rx))
                                         ).await;
                                     });
