@@ -5,7 +5,7 @@ use std::{
 use hashbrown::HashMap;
 use qanat::{
     broadcast::{Receiver, Sender},
-    oneshot
+    oneshot, mpsc
 };
 use anyhow::Result;
 use tokio::sync::RwLock;
@@ -16,7 +16,7 @@ use crate::{
     server::{ClientSession, Session},
     request::{SourceRequest, Request},
     response, utils, stream::{self, BroadcastInfo, RelayBroadcastStatus}, auth,
-    client::{Client, SourceInfo}, config::Role,
+    client::{Client, SourceInfo}, config::{Role, MasterServer},
     internal_api::v1::IcyMetadata
 };
 pub use crate::internal_api::v1::{IcyProperties, ChunkedReadState};
@@ -51,11 +51,12 @@ impl Default for SourceStats {
 pub enum SourceAccessType {
     SourceClient {
         /// Account username used to mount source
-        username: String
+        username: String,
+        max_listeners: Option<usize>
     },
     RelayedSource {
-        /// URL stream source if this is a relayed stream
-        relayed_source: String,
+        master: Arc<MasterServer>,
+        reserve_listener_slot_tx: Option<mpsc::UnboundedSender<ReserveListenerSlotRequest>>
     }
 }
 
@@ -86,17 +87,6 @@ pub struct Source {
     pub kill: Option<oneshot::Sender<()>>
 }
 
-impl Source {
-    pub fn reserve_listener_slots(&self, n: usize, max: usize) -> usize {
-        let prev = self.stats.active_listeners
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
-                Some((cur + n).min(max))
-            })
-            .unwrap();
-        (prev + n).min(max) - prev
-    }
-}
-
 pub struct SourceBroadcast {
     pub audio: Sender<Arc<Vec<u8>>>,
     pub metadata: Sender<Arc<MetadataMsg>>
@@ -125,6 +115,11 @@ pub enum MoveClientsType {
     Fallback,
 }
 
+#[derive(Debug)]
+pub struct ReserveListenerSlotRequest {
+    pub mount: String,
+    pub resp: oneshot::Sender<bool>
+}
 
 impl Source {
     pub fn new(properties: IcyProperties,
@@ -160,6 +155,34 @@ impl Source {
             metadata: tx1
         },
         rx3)
+    }
+
+    pub fn reserve_listener_slots(&self, n: usize) -> usize {
+        let max  = match self.access {
+            SourceAccessType::SourceClient { max_listeners, .. } => max_listeners.unwrap_or(usize::MAX),
+            SourceAccessType::RelayedSource { .. } => usize::MAX
+        };
+        let prev = self.stats.active_listeners
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
+                Some((cur + n).min(max))
+            })
+            .unwrap();
+        (prev + n).min(max) - prev
+    }
+
+    pub async fn reserve_listener_slot(&self, mount: &str) -> bool {
+        match &self.access {
+            SourceAccessType::SourceClient { .. } => self.reserve_listener_slots(1) == 1,
+            SourceAccessType::RelayedSource { reserve_listener_slot_tx, .. } => match reserve_listener_slot_tx.as_ref() {
+                Some(rtx) => { 
+                    let (tx, mut rx) = oneshot::channel();
+                    // SAFETY: Reservation should never fail as mount updates slave never drops reader
+                    _ = rtx.send(ReserveListenerSlotRequest { resp: tx, mount: mount.to_string() });
+                    rx.recv().await.unwrap()
+                },
+                None => true // We are in transparent mode, we don't support max_listeners here
+            }
+        }
     }
 }
 
@@ -240,14 +263,16 @@ pub async fn handle_request(mut session: ClientSession, request: Request<'_>, re
         .id
         .clone();
 
-    let mut fallback = None;
+    let mut fallback      = None;
+    let mut max_listeners = None;
     if let Some(account) = &session.server.config.account.get(&user_id) {
         match account.role {
             Role::Admin => (),
             Role::Source => {
                 for mount in &account.mount {
                     if mount.path.eq(&req.mountpoint) {
-                        fallback = mount.fallback.clone();
+                        fallback      = mount.fallback.clone();
+                        max_listeners = mount.max_listeners.clone();
                         break;
                     }
                 }
@@ -272,7 +297,7 @@ pub async fn handle_request(mut session: ClientSession, request: Request<'_>, re
             broadcast: None,
             metadata: None,
             relayed: None,
-            access: SourceAccessType::SourceClient { username: user_id }
+            access: SourceAccessType::SourceClient { username: user_id, max_listeners }
         }
     ).await?;
 
@@ -280,10 +305,10 @@ pub async fn handle_request(mut session: ClientSession, request: Request<'_>, re
 }
 
 pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Option<RelayBroadcastStatus>> {
-    let (relayed, on_demand, stream_src_url) = match (info.relayed, &info.access) {
-        (Some(v), SourceAccessType::RelayedSource { relayed_source }) => (
+    let (relayed, on_demand, source_master) = match (info.relayed, &info.access) {
+        (Some(v), SourceAccessType::RelayedSource { master, .. }) => (
             Some(v.info), v.on_demand,
-            Some(relayed_source.clone())
+            Some(master.clone())
         ),
         (None, _) => (None, None, None),
         _         => unreachable!()
@@ -392,7 +417,7 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
             binfo.session.server.stats.active_relay.fetch_add(1, Ordering::Relaxed);
             binfo.session.server.stats.active_relay_streams.fetch_add(1, Ordering::Acquire);
 
-            return Ok(Some(stream::relay_broadcast(binfo, relay_info, stream_src_url.unwrap(), on_demand_notify).await));
+            return Ok(Some(stream::relay_broadcast(binfo, relay_info, source_master.unwrap(), on_demand_notify).await));
         }
     }
 

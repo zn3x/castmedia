@@ -65,7 +65,7 @@ pub async fn authenticate(
                         has_permission = has_permission
                             && match session.server.sources.read().await.get(mount) {
                                 Some(v) => match &v.access {
-                                    crate::source::SourceAccessType::SourceClient { username } => username == &user,
+                                    crate::source::SourceAccessType::SourceClient { username, .. } => username == &user,
                                     _ => false,
                                 },
                                 None => false,

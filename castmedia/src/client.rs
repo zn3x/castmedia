@@ -488,7 +488,7 @@ pub async fn handle_migrated(stream: Stream, addr: SocketAddr,
     match client {
         ClientInfo::Source(info) => {
             // We will only allow source clients that are still present in config
-            if let SourceAccessType::SourceClient { username } = &info.access {
+            if let SourceAccessType::SourceClient { username, .. } = &info.access {
                 if !server.config.account.contains_key(username) {
                     return;
                 }

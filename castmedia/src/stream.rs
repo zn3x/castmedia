@@ -15,7 +15,7 @@ use qanat::oneshot;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 
 use crate::{
-    utils,
+    utils, config::MasterServer,
     server::{Stream, Session, Server},
     source::{SourceBroadcast, SourceStats, MoveClientsCommand, MoveClientsType, SourceAccessType},
     migrate::{MigrateCommand, MigrateEntry},
@@ -118,7 +118,7 @@ pub enum RelayBroadcastStatus {
 }
 
 pub async fn relay_broadcast(mut s: BroadcastInfo<'_>,
-                             mut relay: RelayedInfo, master: String,
+                             mut relay: RelayedInfo, master: Arc<MasterServer>,
                              on_demand_notify: Option<diatomic_waker::WakeSink>) -> RelayBroadcastStatus {
     if !s.on_demand {
         info!("Mounted source on {} (from {})", s.mountpoint, master);
@@ -356,9 +356,9 @@ async fn migrate_stream(mut s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>
         queue_size: s.queue_size as u64,
         chunked: s.stream.chunked.and_then(|x| Some(x.state.clone())),
         is_relay: match access {
-            SourceAccessType::SourceClient { username } => MigrateSourceConnectionType::SourceClient { username },
-            SourceAccessType::RelayedSource { relayed_source } => MigrateSourceConnectionType::RelayedSource {
-                relayed_stream: relayed_source,
+            SourceAccessType::SourceClient { username, .. } => MigrateSourceConnectionType::SourceClient { username },
+            SourceAccessType::RelayedSource { master, .. } => MigrateSourceConnectionType::RelayedSource {
+                relayed_stream: utils::concat_path(master.url.as_str(), s.mountpoint),
                 relay_info: relay.expect("Should have non empty RelayInfo on source migration"),
                 on_demand
             }

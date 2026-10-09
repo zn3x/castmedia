@@ -12,7 +12,8 @@ use crate::{
     auth::{self, RequiredRole},
     broadcast::broadcast_metadata,
     source::{MoveClientsCommand, MoveClientsType, SourceAccessType},
-    internal_api::v1::IcyMetadata
+    internal_api::v1::IcyMetadata,
+    utils::concat_path
 };
 
 async fn update_metadata(session: &mut ClientSession, req: AdminRequest) -> Result<()> {
@@ -111,11 +112,12 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
             let s = sinfo.as_object_mut()
                 .expect("Listmounts json response should be an object");
             match &source.1.access {
-                SourceAccessType::SourceClient { username } => {
+                SourceAccessType::SourceClient { username, max_listeners } => {
                     s.insert("source_username".to_string(), serde_json::to_value(username)?);
+                    s.insert("max_listeners".to_string(), serde_json::to_value(max_listeners)?);
                 },
-                SourceAccessType::RelayedSource { relayed_source } => {
-                    s.insert("stream_source".to_string(), serde_json::to_value(relayed_source)?);
+                SourceAccessType::RelayedSource { master, .. } => {
+                    s.insert("stream_source".to_string(), serde_json::to_value(concat_path(master.url.as_str(), source.0))?);
                 }
             }
             chunked.send(&mut session.stream, format!("\"{}\":", source.0).as_bytes()).await?;

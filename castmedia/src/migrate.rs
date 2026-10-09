@@ -10,15 +10,15 @@ use tracing::{error, info};
 use url::Url;
 
 use crate::{
-    source::SourceAccessType,
+    source::{SourceAccessType, ReserveListenerSlotRequest},
     client::{
         handle_migrated,
         ListenerRestoreInfo, SourceInfo,
         ListenerInfo, RelayStream, MasterMountUpdatesInfo
     },
     server::{Server, Stream},
-    config::MasterServerRelayScheme,
-    utils, relay::RelaySourceMigrate,
+    config::{MasterServerRelayScheme, MasterServer},
+    utils, relay::{RelaySourceMigrate, SlaveMountUpdatesMigrate},
     internal_api::v1::*
 };
 
@@ -225,10 +225,11 @@ fn read_socket(predeseccor: &mut UnixStream) -> Result<(Stream, SocketAddr)> {
     Ok((stream, info.client_addr))
 }
 
-struct MasterServerTask<'a> {
-    url: &'a Url,
+struct MasterServerTask {
+    master: Arc<MasterServer>,
     tx: UnboundedSender<RelaySourceMigrate>,
-    on_demand: bool
+    on_demand: bool,
+    reserve_listener_slot_tx: UnboundedSender<ReserveListenerSlotRequest>
 }
 
 fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut Vec<usize>) -> Result<()> {
@@ -276,110 +277,100 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
         let source: MigrateConnection = serde_json::from_slice(&buf[..len])?;
         let cl_info = match source {
             MigrateConnection::Source(info) => {
-                let snapshot = restore_channel_from_snapshot(info.broadcast_snapshot);
-                let mut is_relay = None;
-                let (access, relayed) = match info.is_relay {
-                    MigrateSourceConnectionType::RelayedSource { relayed_stream, relay_info, .. } => {
-                        is_relay = Some(relayed_stream.clone());
-                        (
-                            SourceAccessType::RelayedSource { relayed_source: relayed_stream },
-                            Some(RelayStream {
-                                info: relay_info,
-                                on_demand: None
-                            })
-                        )
-                    },
-                    MigrateSourceConnectionType::SourceClient { username } => (
-                        SourceAccessType::SourceClient { username: username.clone() },
-                        None
-                    )
-                };
-                let ret = SourceInfo {
-                    mountpoint: info.mountpoint,
-                    properties: info.properties,
-                    initial_bytes_read: 0,
-                    metadata: Some(info.metadata),
-                    chunked: info.chunked,
-                    fallback: info.fallback,
-                    queue_size: info.queue_size as usize,
-                    broadcast: Some(snapshot),
-                    access,
-                    relayed
-                };
-                
-                if let Some(r) = is_relay {
-                    let (stream, addr) = match read_socket(&mut predeseccor) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            error!("Failed to fetch migrated connection: {}", e);
-                            continue 'OUTER;
-                        }
-                    };
-                    let url = match r.parse::<Url>() {
-                        Ok(v) => v,
-                        Err(_) => continue
-                    };
-                    'FIND_MASTER: loop {
-                        for master in &slave_tx {
-                            if master.url.host_str().eq(&url.host_str())
-                                && master.url.port().eq(&url.port()) {
-                                // When config is switched from on_demand mode or vice-versa
-                                // we should comply
-                                _ = match master.on_demand {
-                                    true  => master.tx.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret }),
-                                    false => master.tx.send(RelaySourceMigrate::Normal { stream, addr, info: ret })
-                                };
+                let username = match &info.is_relay {
+                    MigrateSourceConnectionType::RelayedSource { relayed_stream, .. } => {
+                        let (stream, addr) = match read_socket(&mut predeseccor) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("Failed to fetch migrated connection: {}", e);
                                 continue 'OUTER;
                             }
-                        }
-                        // We can't find master, we should check if we did switch from transparent
-                        for (i, master) in server.config.master.iter().enumerate() {
-                            if master.url.host_str().eq(&url.host_str())
-                                && master.url.port().eq(&url.port()) {
-                                match &master.relay_scheme {
-                                    MasterServerRelayScheme::Authenticated { stream_on_demand, .. } => {
-                                        slave_id.retain(|x| x.ne(&i));
-                                        let (tx, rx) = mpsc::unbounded_channel();
-                                        slave_tx.push(MasterServerTask { url: &master.url, tx, on_demand: *stream_on_demand });
-                                        let serv = server.clone();
-                                        let m    = master.clone();
-                                        runtime_handle.spawn(async move {
-                                            crate::relay::authenticated_mode(
-                                                serv.clone(), m,
-                                                Some((None, rx))
-                                            ).await;
-                                        });
-                                        continue 'FIND_MASTER;
-                                    },
-                                    _ => {
-                                        // Switching from authenticated to transparent
-                                        let serv = server.clone();
-                                        runtime_handle.spawn(async move {
-                                            crate::source::handle_source(
-                                                crate::server::Session {
-                                                    server: serv,
-                                                    stream,
-                                                    addr
-                                                },
-                                                ret
-                                            ).await
-                                                .expect("Error shouldn't be returned on relay stream")
-                                                .expect("RelayBroadcastStatus should be returned on relay stream");
-                                        });
+                        };
+                        let url = match relayed_stream.parse::<Url>() {
+                            Ok(v) => v,
+                            Err(_) => continue
+                        };
+                        'FIND_MASTER: loop {
+                            for m in &slave_tx {
+                                if m.master.url.host_str().eq(&url.host_str())
+                                    && m.master.url.port().eq(&url.port()) {
+                                    let ret = init_source_info(
+                                        info,
+                                        SourceAccessType::RelayedSource { master: m.master.clone(), reserve_listener_slot_tx: Some(m.reserve_listener_slot_tx.clone()) }
+                                    );
+                                    // When config is switched from on_demand mode or vice-versa
+                                    // we should comply
+                                    _ = match m.on_demand {
+                                        true  => m.tx.send(RelaySourceMigrate::OnDemandActive { stream, addr, info: ret }),
+                                        false => m.tx.send(RelaySourceMigrate::Normal { stream, addr, info: ret })
+                                    };
+                                    continue 'OUTER;
+                                }
+                            }
+                            // We can't find master, we should check if we did switch from transparent
+                            for (i, master) in server.config.master.iter().enumerate() {
+                                if master.url.host_str().eq(&url.host_str())
+                                    && master.url.port().eq(&url.port()) {
+                                    match &master.relay_scheme {
+                                        MasterServerRelayScheme::Authenticated { stream_on_demand, .. } => {
+                                            slave_id.retain(|x| x.ne(&i));
+                                            let (tx, rx)   = mpsc::unbounded_channel();
+                                            let (tx1, rx1) = mpsc::unbounded_channel();
+                                            slave_tx.push(MasterServerTask { master: master.clone(), tx, on_demand: *stream_on_demand, reserve_listener_slot_tx: tx1.clone() });
+                                            let serv = server.clone();
+                                            let m    = master.clone();
+                                            runtime_handle.spawn(async move {
+                                                crate::relay::authenticated_mode(
+                                                    serv.clone(), m,
+                                                    Some(SlaveMountUpdatesMigrate {
+                                                        stream: None,
+                                                        migrate_successor: rx,
+                                                        reserve_listener_slot_tx: tx1,
+                                                        reserve_listener_slot_rx: rx1
+                                                    })
+                                                ).await;
+                                            });
+                                            continue 'FIND_MASTER;
+                                        },
+                                        _ => {
+                                            // Switching from authenticated to transparent
+                                            let serv = server.clone();
+                                            let info = init_source_info(
+                                                info,
+                                                SourceAccessType::RelayedSource { master: master.clone(), reserve_listener_slot_tx: None }
+                                            );
+                                            runtime_handle.spawn(async move {
+                                                crate::source::handle_source(
+                                                    crate::server::Session {
+                                                        server: serv,
+                                                        stream,
+                                                        addr
+                                                    },
+                                                    info
+                                                ).await
+                                                    .expect("Error shouldn't be returned on relay stream")
+                                                    .expect("RelayBroadcastStatus should be returned on relay stream");
+                                            });
 
-                                        continue 'OUTER;
+                                            continue 'OUTER;
+                                        }
                                     }
                                 }
                             }
-                        }
-                        // Meh it doesn't exist, it must have been removed
-                        break;
-                    };
-                    // If we can't find a master server for this relay source
-                    // we will drop it here
-                    continue 'OUTER;
-                }
-                crate::client::ClientInfo::Source(ret)
+                            // Meh it doesn't exist, it must have been removed
+                            break;
+                        };
+                        // If we can't find a master server for this relay source
+                        // we will drop it here
+                        continue 'OUTER;
+                    },
+                    MigrateSourceConnectionType::SourceClient { username } => username.to_string()
+                };
+
+                crate::client::ClientInfo::Source(init_source_info(
+                    info,
+                    SourceAccessType::SourceClient { username: username, max_listeners: None }
+                ))
             },
             MigrateConnection::Client(info) => {
                 crate::client::ClientInfo::Listener(ListenerInfo {
@@ -421,14 +412,20 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                                 },
                                 MasterServerRelayScheme::Authenticated { stream_on_demand, .. } => {
                                     slave_id.retain(|x| x.ne(&i));
-                                    let (tx, rx) = mpsc::unbounded_channel();
-                                    slave_tx.push(MasterServerTask { url: &master.url, tx, on_demand: stream_on_demand });
+                                    let (tx, rx)   = mpsc::unbounded_channel();
+                                    let (tx1, rx1) = mpsc::unbounded_channel();
+                                    slave_tx.push(MasterServerTask { master: master.clone(), tx, on_demand: stream_on_demand, reserve_listener_slot_tx: tx1.clone() });
                                     let serv = server.clone();
                                     let m    = master.clone();
                                     runtime_handle.spawn(async move {
                                         crate::relay::authenticated_mode(
                                             serv.clone(), m,
-                                            Some((Some(stream), rx))
+                                            Some(SlaveMountUpdatesMigrate {
+                                                stream: Some(stream),
+                                                migrate_successor: rx,
+                                                reserve_listener_slot_tx: tx1,
+                                                reserve_listener_slot_rx: rx1
+                                            })
                                         ).await;
                                     });
                                     continue 'OUTER;
@@ -444,10 +441,10 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                 // New loaded configuration states that we have same master
                 // but with ondemand flag true
                 if let Ok(url) = info.master_url.parse::<Url>() {
-                    for master in &mut slave_tx {
-                        if master.url.host_str().eq(&url.host_str())
-                            && master.url.port().eq(&url.port()) {
-                            _ = master.tx.send(RelaySourceMigrate::OnDemandIdle { mount: info.mountpoint, properties: info.properties, metadata: Some(info.metadata) });
+                    for m in &mut slave_tx {
+                        if m.master.url.host_str().eq(&url.host_str())
+                            && m.master.url.port().eq(&url.port()) {
+                            _ = m.tx.send(RelaySourceMigrate::OnDemandIdle { mount: info.mountpoint, properties: info.properties, metadata: Some(info.metadata) });
                             continue 'OUTER;
                         }
                     }
@@ -478,4 +475,23 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
     info!("Migration from old instance completed.");
 
     Ok(())
+}
+
+fn init_source_info(info: MigrateSource, access: SourceAccessType) -> SourceInfo {
+    let snapshot = restore_channel_from_snapshot(info.broadcast_snapshot);
+    SourceInfo {
+        mountpoint: info.mountpoint,
+        properties: info.properties,
+        initial_bytes_read: 0,
+        metadata: Some(info.metadata),
+        chunked: info.chunked,
+        fallback: info.fallback,
+        queue_size: info.queue_size as usize,
+        broadcast: Some(snapshot),
+        access,
+        relayed: match info.is_relay {
+            MigrateSourceConnectionType::RelayedSource { relay_info, .. } => Some(RelayStream { on_demand: None, info: relay_info }),
+            _ => None
+        }
+    }
 }
