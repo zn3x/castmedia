@@ -5,7 +5,7 @@ use scrypt::password_hash::{PasswordHash, PasswordVerifier};
 
 use crate::{
     server::{ClientSession, AddrType},
-    response, config::Role,
+    response, config::{Role, Account, Mount},
 };
 
 pub enum RequiredRole {
@@ -58,7 +58,7 @@ pub async fn authenticate(
                 match role {
                     RequiredRole::Admin => {}
                     RequiredRole::SourceApi { ref mount } => if account.role == Role::Source {
-                        has_permission = account.mount.iter().any(|x| x.path == "*" || x.path == *mount);
+                        has_permission = get_mount_matching_source_conf(account, mount).is_some();
                         if has_permission {
                             password_hash = Some(account.pass.clone());
                         }
@@ -72,7 +72,7 @@ pub async fn authenticate(
                             };
                     }
                     RequiredRole::SourceMount { ref mount } => if account.role == Role::Source {
-                        has_permission = account.mount.iter().any(|x| x.path == "*" || x.path == *mount);
+                        has_permission = get_mount_matching_source_conf(account, mount).is_some();
                         if has_permission {
                             password_hash = Some(account.pass.clone());
                         }
@@ -105,4 +105,9 @@ pub async fn authenticate(
     }
     response::authentication_needed(&mut session.stream, &session.server.config.info.id).await?;
     Err(anyhow::Error::msg("Authentication failed"))
+}
+
+#[inline(always)]
+pub fn get_mount_matching_source_conf<'a>(account: &'a Account, mount: &str) -> Option<&'a Mount> {
+    account.mount.iter().find(|x| x.path == "*" || x.path == *mount)
 }

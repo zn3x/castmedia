@@ -19,7 +19,8 @@ use crate::{
     response, utils, admin, api,
     migrate::{MigrateEntry, MigrateCommand},
     broadcast::read_media_broadcast,
-    internal_api::v1::{RelayedInfo, ClientProperties, MigrateClient, MigrateConnection, IcyMetadata, ChunkedReadState}
+    internal_api::v1::{RelayedInfo, ClientProperties, MigrateClient, MigrateConnection, IcyMetadata, ChunkedReadState},
+    config::Role
 };
 
 pub struct Client {
@@ -486,13 +487,31 @@ pub async fn handle_migrated(stream: Stream, addr: SocketAddr,
                              server: Arc<Server>, client: ClientInfo,
                              mut migrate_finished: Receiver<()>) {
     match client {
-        ClientInfo::Source(info) => {
+        ClientInfo::Source(mut info) => {
             // We will only allow source clients that are still present in config
-            if let SourceAccessType::SourceClient { username, .. } = &info.access {
-                if !server.config.account.contains_key(username) {
+            if let SourceAccessType::SourceClient { username, max_listeners } = &mut info.access {
+                let Some(account) = server.config.account.get(username) else {
+                    return;
+                };
+                let is_source = match account.role {
+                    Role::Slave => return,
+                    Role::Admin => false,
+                    Role::Source => true,
+                };
+
+                let mount = crate::auth::get_mount_matching_source_conf(account, &info.mountpoint);
+                if is_source && mount.is_none() {
                     return;
                 }
+
+                if let Some(mount) = mount {
+                    *max_listeners = mount.max_listeners;
+                    if let Some(fallback) = &mount.fallback {
+                        info.fallback = Some(fallback.to_string());
+                    }
+                }
             }
+
 
             let session = Session {
                 server,

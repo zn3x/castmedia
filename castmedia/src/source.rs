@@ -267,8 +267,7 @@ pub async fn handle_request(mut session: ClientSession, request: Request<'_>, re
     let mut max_listeners = None;
     if let Some(account) = &session.server.config.account.get(&user_id) {
         match account.role {
-            Role::Admin => (),
-            Role::Source => {
+            Role::Admin | Role::Source => {
                 for mount in &account.mount {
                     if mount.path.eq(&req.mountpoint) {
                         fallback      = mount.fallback.clone();
@@ -277,7 +276,7 @@ pub async fn handle_request(mut session: ClientSession, request: Request<'_>, re
                     }
                 }
             },
-            _ => ()
+            _ => unreachable!()
         }
     }
 
