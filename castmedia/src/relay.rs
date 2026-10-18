@@ -4,14 +4,14 @@ use std::{
 use anyhow::Result;
 use hashbrown::HashMap;
 use qanat::{
-    mpsc,
+    mpsc, oneshot,
     broadcast::{self, RecvError, Receiver}
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt}, task::JoinHandle
 };
 use tokio_stream::StreamMap;
-use tracing::{info, error};
+use tracing::{error, info, warn};
 use url::Url;
 use serde::Deserialize;
 
@@ -183,13 +183,13 @@ pub async fn master_mount_updates(mut session: ClientSession,
                         heartbeat_tick.reset();
                     },
                     msg = message_reader::<MountUpdateRequest>(&mut session.stream, &mut len_enc, &mut len_enc_filled, &mut msg_buf, &mut buf_filled) => match msg {
-                        Ok(MountUpdateRequest::ReserveStreamSlots { count, mount }) => {
+                        Ok(MountUpdateRequest::ReserveStreamSlots { id, count, mount }) => {
                             if let Some(v) = session.server.sources.read().await.get(&mount) {
                                 // TODO: We must keep track of each slave reservations so we remove
                                 // them if slave disconnects
                                 let ser = serde_json::to_vec(&MountUpdate::ReservedStreamSlots {
-                                    count: v.reserve_listener_slots(count),
-                                    mount
+                                    id,
+                                    granted: v.reserve_listener_slots(count as usize) as u32
                                 })?;
                                 session.stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
                                 session.stream.write_all(&ser).await?;
@@ -428,6 +428,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                         serv,
                         rp,
                         MountUpdate::New { mount, properties, metadata },
+                        None
                     ).await;
                 },
                 RelaySourceMigrate::OnDemandActive { stream, addr, mut info } => {
@@ -496,13 +497,14 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
     let mut migrate_comm   = serv.migrate.clone();
     let mut res_buf        = Vec::new();
     let mut reservations   = HashMap::new();
+    let mut counter        = 0u32;
     loop {
         tokio::select! {
             r = message_reader::<MountUpdate>(&mut stream, &mut len_enc, &mut len_enc_filled, &mut buf, &mut buf_filled) => {
                 len_enc_filled = 0;
                 buf_filled = 0;
                 match r {
-                    Ok(event) => handle_mount_update(&mut sources, serv, rp, event).await,
+                    Ok(event) => handle_mount_update(&mut sources, serv, rp, event, Some(&mut reservations)).await,
                     Err(e)    => {
                         error!("Mount updates from {} stopped: {e}", rp.master);
                         break;
@@ -511,14 +513,22 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
             },
             r = reservations_rx.recv_batched(&mut res_buf, 32, false) => match r {
                 Ok(()) => {
+                    let mut temp_reserv = HashMap::new();
                     for req in res_buf.drain(..) {
-                        match reservations.entry(req.mount) {
+                        match temp_reserv.entry(req.mount) {
                             hashbrown::hash_map::Entry::Vacant(v) => { v.insert(vec![req.resp]); },
                             hashbrown::hash_map::Entry::Occupied(mut v) => v.get_mut().push(req.resp)
                         };
                     }
+                    counter = counter.wrapping_add(1);
+                    reservations.extend(temp_reserv.into_iter().map(|v| (counter, v)));
+
+                    if let Err(e) = write_reservations(&mut stream, &reservations).await {
+                        error!("Failed to write slave listener reservations: {e}");
+                        break;
+                    }
                 },
-                Err(e) => unreachable!("Slave mount updates reservation channel closed")
+                Err(e) => unreachable!("Slave mount updates reservation channel closed {e}")
             },
             migrate = migrate_comm.recv() => {
                 let info = MigrateConnection::SlaveMountUpdates(MigrateSlaveMountUpdates {
@@ -537,6 +547,17 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
     }
     
     serv.stats.active_relay.fetch_sub(1, Ordering::Relaxed);
+}
+
+async fn write_reservations(stream: &mut Stream, reservations: &HashMap<u32, (String, Vec<oneshot::Sender<bool>>)>) -> Result<()> {
+    for (id, reserv) in reservations.iter() {
+        let ser = serde_json::to_vec(&MountUpdateRequest::ReserveStreamSlots { id: *id, count: reserv.1.len() as u32, mount: reserv.0.to_string() })?;
+        stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
+        stream.write_all(&ser).await?;
+    }
+    stream.flush().await?;
+
+    Ok(())
 }
 
 async fn message_reader<'a, T: Deserialize<'a>>(
@@ -596,10 +617,28 @@ async fn migrate_connection(
 }
 
 async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
-                             serv: &Arc<Server>, rp: &Arc<SlaveRelayParams>, event: MountUpdate) {
+                             serv: &Arc<Server>, rp: &Arc<SlaveRelayParams>, event: MountUpdate,
+                             reservations: Option<&mut HashMap<u32, (String, Vec<oneshot::Sender<bool>>)>>) {
     // Now handling events for every source
     match event {
-        MountUpdate::ReservedStreamSlots { count, mount } => todo!(),
+        MountUpdate::ReservedStreamSlots { id, granted } => match reservations {
+            Some(reservations) => {
+                match reservations.remove(&id) {
+                    Some((_, mut v)) => {
+                        // Avoid going out of bound here by using min here
+                        for tx in v.drain(..(granted as usize).min(v.len())) {
+                            _ = tx.send(true);
+                        }
+                        // We otherwise reject the rest as we didnt get enough granted reservations
+                        for tx in v.drain(..) {
+                            _ = tx.send(false);
+                        }
+                    },
+                    None => warn!("{} sent reservation response for inexisting request with id {id}", rp.master)
+                }
+            },
+            None => unreachable!()
+        },
         MountUpdate::Heartbeat => (),
         MountUpdate::New { mount, properties, metadata } => {
             if let Some(mut task) = sources.remove(&mount) {
