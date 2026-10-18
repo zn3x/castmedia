@@ -4,8 +4,8 @@ use std::{
 };
 use hashbrown::HashMap;
 use qanat::{
-    broadcast::{Receiver, Sender},
-    oneshot, mpsc
+    broadcast::{self, Receiver, Sender},
+    mpsc, oneshot
 };
 use anyhow::Result;
 use tokio::sync::RwLock;
@@ -56,7 +56,7 @@ pub enum SourceAccessType {
     },
     RelayedSource {
         master: Arc<MasterServer>,
-        reserve_listener_slot_tx: Option<mpsc::UnboundedSender<ReserveListenerSlotRequest>>
+        reserve_listener_slot: Option<broadcast::Receiver<mpsc::UnboundedSender<ReserveListenerSlotRequest>>>
     }
 }
 
@@ -121,6 +121,15 @@ pub struct ReserveListenerSlotRequest {
     pub resp: oneshot::Sender<bool>
 }
 
+#[derive(Debug, Default)]
+pub struct ReservationState {
+    pub reserved: bool,
+    /// Broadcast channel receiver where we receive MPSC channel write to send reservation in
+    pub brx: Option<Receiver<mpsc::UnboundedSender<ReserveListenerSlotRequest>>>,
+    /// The MPSC writer itself
+    pub rtx: Option<mpsc::UnboundedSender<ReserveListenerSlotRequest>>
+}
+
 impl Source {
     pub fn new(properties: IcyProperties,
                fallback: Option<String>,
@@ -170,17 +179,69 @@ impl Source {
         (prev + n).min(max) - prev
     }
 
-    pub async fn reserve_listener_slot(&self, mount: &str) -> bool {
+    pub async fn reserve_listener_slot(&self, state: &mut ReservationState, mount: &str) -> bool {
         match &self.access {
-            SourceAccessType::SourceClient { .. } => self.reserve_listener_slots(1) == 1,
-            SourceAccessType::RelayedSource { reserve_listener_slot_tx, .. } => match reserve_listener_slot_tx.as_ref() {
-                Some(rtx) => { 
-                    let (tx, mut rx) = oneshot::channel();
-                    // SAFETY: Reservation should never fail as mount updates slave never drops reader
-                    _ = rtx.send(ReserveListenerSlotRequest { resp: tx, mount: mount.to_string() });
-                    rx.recv().await.unwrap()
+            SourceAccessType::SourceClient { .. } => match state.reserved {
+                true => utils::hang().await,
+                false => {
+                    state.reserved = self.reserve_listener_slots(1) == 1;
+                    state.reserved
+                }
+            },
+            SourceAccessType::RelayedSource { reserve_listener_slot, .. } => {
+                let (mut rtx, mut brx) = match reserve_listener_slot.as_ref() {
+                    Some(rtx) => {
+                        let mut brx = state.brx.take().unwrap_or(rtx.clone());
+                        match state.rtx.take() {
+                            Some(v) => (v, brx),
+                            None => {
+                                // SAFETY: Our broadcast channel is never dropped because slave
+                                // mount update never exits
+                                (brx.recv().await.unwrap(), brx)
+                            }
+                        }
+                    },
+                    None => utils::hang().await // We are in transparent mode, we don't support max_listeners here
+                };
+
+                loop {
+                    tokio::select! {
+                        // SAFETY: Same thing here
+                        v = brx.recv() => {
+                            rtx            = v.unwrap();
+                            state.reserved = false;
+                        },
+                        v = self.reserve_auth(state, mount, &mut rtx) => {
+                            state.rtx.replace(rtx);
+                            state.brx.replace(brx);
+                            return v
+                        }
+                    };
+                }
+            }
+        }
+    }
+
+    async fn reserve_auth(&self, state: &mut ReservationState, mount: &str, rtx: &mut mpsc::UnboundedSender<ReserveListenerSlotRequest>) -> bool {
+        if state.reserved {
+            // We did already get reservation, we only wait for other branch of select if
+            // mount update disconnects, then we must get new reservation
+            utils::hang().await
+        } else {
+            let (tx, mut rx) = oneshot::channel();
+            match rtx.send(ReserveListenerSlotRequest { resp: tx, mount: mount.to_string() }) {
+                Ok(()) => {
+                    // SAFETY: This should never throw an exception as inner
+                    // type is never dropped, this branch of select will be
+                    // stopped long before recv here hangs indefinitely 
+                    state.reserved = rx.recv().await.unwrap();
+                    state.reserved
                 },
-                None => true // We are in transparent mode, we don't support max_listeners here
+                Err(_) => {
+                    // We got caught when new channel is set up after mount
+                    // update disconnect
+                    utils::hang().await
+                }
             }
         }
     }

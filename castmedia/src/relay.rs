@@ -1,11 +1,11 @@
 use std::{
-    net::SocketAddr, sync::{Arc, atomic::Ordering}, task::Poll, time::Duration
+    net::SocketAddr, num::NonZeroUsize, sync::{Arc, atomic::Ordering}, task::Poll, time::Duration
 };
 use anyhow::Result;
 use hashbrown::HashMap;
 use qanat::{
     mpsc,
-    broadcast::{RecvError, Receiver}
+    broadcast::{self, RecvError, Receiver}
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt}, task::JoinHandle
@@ -185,6 +185,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
                     msg = message_reader::<MountUpdateRequest>(&mut session.stream, &mut len_enc, &mut len_enc_filled, &mut msg_buf, &mut buf_filled) => match msg {
                         Ok(MountUpdateRequest::ReserveStreamSlots { count, mount }) => {
                             if let Some(v) = session.server.sources.read().await.get(&mount) {
+                                // TODO: We must keep track of each slave reservations so we remove
+                                // them if slave disconnects
                                 let ser = serde_json::to_vec(&MountUpdate::ReservedStreamSlots {
                                     count: v.reserve_listener_slots(count),
                                     mount
@@ -279,16 +281,16 @@ async fn get_stream(serv: &Arc<Server>, rp: &SlaveRelayParams, mount: &str)
 pub struct SlaveMountUpdatesMigrate {
     pub stream: Option<Stream>,
     pub migrate_successor: mpsc::UnboundedReceiver<RelaySourceMigrate>,
-    pub reserve_listener_slot_tx: mpsc::UnboundedSender<ReserveListenerSlotRequest>,
-    pub reserve_listener_slot_rx: mpsc::UnboundedReceiver<ReserveListenerSlotRequest>
+    pub reserve_listener_slot_tx: broadcast::Sender<mpsc::UnboundedSender<ReserveListenerSlotRequest>>,
+    pub reserve_listener_slot_rx: broadcast::Receiver<mpsc::UnboundedSender<ReserveListenerSlotRequest>>
 }
 
 pub async fn authenticated_mode(serv: Arc<Server>, master: Arc<MasterServer>,
                                 migrate: Option<SlaveMountUpdatesMigrate>) -> ! {
-    let (mut stream, mut migrate_successor, tx, mut rx) = match migrate {
+    let (mut stream, mut migrate_successor, mut tx, rx) = match migrate {
         Some(m) => (m.stream, Some(m.migrate_successor), m.reserve_listener_slot_tx, m.reserve_listener_slot_rx),
         None => {
-            let (tx, rx) = mpsc::unbounded_channel();
+            let (tx, rx) = broadcast::channel(NonZeroUsize::MIN);
             (None, None, tx, rx)
         }
     };
@@ -299,12 +301,14 @@ pub async fn authenticated_mode(serv: Arc<Server>, master: Arc<MasterServer>,
                 auth: Some(format!("Authorization: Basic {}", basic_auth(user, pass))),
                 on_demand: *stream_on_demand,
                 master,
-                reserve_listener_slot_tx: Some(tx)
+                reserve_listener_slot: Some(rx)
             })
         ),
         _ => unreachable!()
     };
     loop {
+        let (rtx, mut rx) = mpsc::unbounded_channel();
+        tx.send(rtx);
         match stream.take() {
             Some(stream) => authenticated_mode_event_listener(&serv, stream, &relay_params, migrate_successor.take(), &mut rx).await,
             None => {
@@ -337,7 +341,7 @@ struct SlaveRelayParams {
     master: Arc<MasterServer>,
     auth: Option<String>,
     on_demand: bool,
-    reserve_listener_slot_tx: Option<mpsc::UnboundedSender<ReserveListenerSlotRequest>>
+    reserve_listener_slot: Option<broadcast::Receiver<mpsc::UnboundedSender<ReserveListenerSlotRequest>>>
 }
 
 async fn authenticated_mode_fetch_updates_stream(serv: &Arc<Server>, rp: &SlaveRelayParams) -> Result<Stream> {
@@ -490,6 +494,8 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
     let mut len_enc_filled = 0;
     let mut buf_filled     = 0;
     let mut migrate_comm   = serv.migrate.clone();
+    let mut res_buf        = Vec::new();
+    let mut reservations   = HashMap::new();
     loop {
         tokio::select! {
             r = message_reader::<MountUpdate>(&mut stream, &mut len_enc, &mut len_enc_filled, &mut buf, &mut buf_filled) => {
@@ -503,8 +509,16 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                     }
                 }
             },
-            r = reservations_rx.recv() => {
-                // TODO
+            r = reservations_rx.recv_batched(&mut res_buf, 32, false) => match r {
+                Ok(()) => {
+                    for req in res_buf.drain(..) {
+                        match reservations.entry(req.mount) {
+                            hashbrown::hash_map::Entry::Vacant(v) => { v.insert(vec![req.resp]); },
+                            hashbrown::hash_map::Entry::Occupied(mut v) => v.get_mut().push(req.resp)
+                        };
+                    }
+                },
+                Err(e) => unreachable!("Slave mount updates reservation channel closed")
             },
             migrate = migrate_comm.recv() => {
                 let info = MigrateConnection::SlaveMountUpdates(MigrateSlaveMountUpdates {
@@ -656,7 +670,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
             let (mut source, broadcast,
                  kill_notifier)            = Source::new(
                      properties, None,
-                     SourceAccessType::RelayedSource { master: rp.master.clone(), reserve_listener_slot_tx: rp.reserve_listener_slot_tx.clone() },
+                     SourceAccessType::RelayedSource { master: rp.master.clone(), reserve_listener_slot: rp.reserve_listener_slot.clone() },
                      None, metadata.clone());
             source.on_demand_notify_reader = Some(wake_src);
 
@@ -848,7 +862,7 @@ async fn fetch_source_from_master(serv: &Arc<Server>, rp: &SlaveRelayParams, mou
                     queue_size: 0,
                     broadcast: None,
                     metadata: None,
-                    access: SourceAccessType::RelayedSource { master: rp.master.clone(), reserve_listener_slot_tx: rp.reserve_listener_slot_tx.clone() },
+                    access: SourceAccessType::RelayedSource { master: rp.master.clone(), reserve_listener_slot: rp.reserve_listener_slot.clone() },
                     relayed: Some(RelayStream {
                         info: RelayedInfo {
                             metaint,
@@ -898,7 +912,7 @@ pub async fn slave_instance(serv: Arc<Server>, master: Arc<MasterServer>) {
                             if !lock.contains_key(mount) {
                                 let serv_clone  = serv.clone();
                                 let mount_clone = mount.clone();
-                                let transparent = SlaveRelayParams { master: master.clone(), auth: None, on_demand: false, reserve_listener_slot_tx: None };
+                                let transparent = SlaveRelayParams { master: master.clone(), auth: None, on_demand: false, reserve_listener_slot: None };
                                 tokio::spawn(async move {
                                     fetch_source_from_master(
                                         &serv_clone,

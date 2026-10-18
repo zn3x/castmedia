@@ -2,9 +2,11 @@ use std::{
     io::{Read, Write}, net::SocketAddr, num::NonZeroUsize, os::{fd::AsRawFd, unix::net::{UnixListener, UnixStream}}, sync::Arc, time::Duration
 };
 use anyhow::Result;
-use qanat::broadcast::{restore_channel_from_snapshot, self};
 use tokio::runtime::Handle;
-use qanat::mpsc::{self, UnboundedSender};
+use qanat::{
+    mpsc::{self, UnboundedSender},
+    broadcast::{restore_channel_from_snapshot, self}
+};
 use passfd::FdPassingExt;
 use tracing::{error, info};
 use url::Url;
@@ -229,7 +231,7 @@ struct MasterServerTask {
     master: Arc<MasterServer>,
     tx: UnboundedSender<RelaySourceMigrate>,
     on_demand: bool,
-    reserve_listener_slot_tx: UnboundedSender<ReserveListenerSlotRequest>
+    reserve_listener_slot: broadcast::Receiver<UnboundedSender<ReserveListenerSlotRequest>>
 }
 
 fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut Vec<usize>) -> Result<()> {
@@ -296,7 +298,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                                     && m.master.url.port().eq(&url.port()) {
                                     let ret = init_source_info(
                                         info,
-                                        SourceAccessType::RelayedSource { master: m.master.clone(), reserve_listener_slot_tx: Some(m.reserve_listener_slot_tx.clone()) }
+                                        SourceAccessType::RelayedSource { master: m.master.clone(), reserve_listener_slot: Some(m.reserve_listener_slot.clone()) }
                                     );
                                     // When config is switched from on_demand mode or vice-versa
                                     // we should comply
@@ -315,8 +317,8 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                                         MasterServerRelayScheme::Authenticated { stream_on_demand, .. } => {
                                             slave_id.retain(|x| x.ne(&i));
                                             let (tx, rx)   = mpsc::unbounded_channel();
-                                            let (tx1, rx1) = mpsc::unbounded_channel();
-                                            slave_tx.push(MasterServerTask { master: master.clone(), tx, on_demand: *stream_on_demand, reserve_listener_slot_tx: tx1.clone() });
+                                            let (tx1, rx1) = broadcast::channel(NonZeroUsize::MIN);
+                                            slave_tx.push(MasterServerTask { master: master.clone(), tx, on_demand: *stream_on_demand, reserve_listener_slot: rx1.clone() });
                                             let serv = server.clone();
                                             let m    = master.clone();
                                             runtime_handle.spawn(async move {
@@ -337,7 +339,7 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                                             let serv = server.clone();
                                             let info = init_source_info(
                                                 info,
-                                                SourceAccessType::RelayedSource { master: master.clone(), reserve_listener_slot_tx: None }
+                                                SourceAccessType::RelayedSource { master: master.clone(), reserve_listener_slot: None }
                                             );
                                             runtime_handle.spawn(async move {
                                                 crate::source::handle_source(
@@ -413,8 +415,8 @@ fn migrate_successor(server: Arc<Server>, runtime_handle: Handle, slave_id: &mut
                                 MasterServerRelayScheme::Authenticated { stream_on_demand, .. } => {
                                     slave_id.retain(|x| x.ne(&i));
                                     let (tx, rx)   = mpsc::unbounded_channel();
-                                    let (tx1, rx1) = mpsc::unbounded_channel();
-                                    slave_tx.push(MasterServerTask { master: master.clone(), tx, on_demand: stream_on_demand, reserve_listener_slot_tx: tx1.clone() });
+                                    let (tx1, rx1) = broadcast::channel(NonZeroUsize::MIN);
+                                    slave_tx.push(MasterServerTask { master: master.clone(), tx, on_demand: stream_on_demand, reserve_listener_slot: rx1.clone() });
                                     let serv = server.clone();
                                     let m    = master.clone();
                                     runtime_handle.spawn(async move {
