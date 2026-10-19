@@ -182,8 +182,8 @@ pub async fn master_mount_updates(mut session: ClientSession,
                         session.stream.flush().await?;
                         heartbeat_tick.reset();
                     },
-                    msg = message_reader::<MountUpdateRequest>(&mut session.stream, &mut len_enc, &mut len_enc_filled, &mut msg_buf, &mut buf_filled) => match msg {
-                        Ok(MountUpdateRequest::ReserveStreamSlots { id, count, mount }) => {
+                    msg = message_reader::<MountUpdateRequest>(&mut session.stream, &mut len_enc, &mut len_enc_filled, &mut msg_buf, &mut buf_filled) => match msg? {
+                        MountUpdateRequest::ReserveStreamSlots { id, count, mount } => {
                             if let Some(v) = session.server.sources.read().await.get(&mount) {
                                 // TODO: We must keep track of each slave reservations so we remove
                                 // them if slave disconnects
@@ -195,10 +195,6 @@ pub async fn master_mount_updates(mut session: ClientSession,
                                 session.stream.write_all(&ser).await?;
                                 session.stream.flush().await?;
                             }
-                        },
-                        Err(e) => {
-                            error!("Mount updates request failed to be read from {session}: {e}");
-                            break;
                         }
                     },
                     r = new_source_notify.recv() => {
