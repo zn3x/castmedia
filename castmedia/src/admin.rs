@@ -111,7 +111,7 @@ async fn list_mounts(session: &mut ClientSession, req: AdminRequest) -> Result<(
 
             let s = sinfo.as_object_mut()
                 .expect("Listmounts json response should be an object");
-            match &source.1.access {
+            match source.1.access.as_ref() {
                 SourceAccessType::SourceClient { username, max_listeners } => {
                     s.insert("source_username".to_string(), serde_json::to_value(username)?);
                     s.insert("max_listeners".to_string(), serde_json::to_value(max_listeners)?);
@@ -222,7 +222,7 @@ async fn kill_source(session: &mut ClientSession, req: AdminRequest) -> Result<(
         Some(mount) => {
             let mut kill_switch = SourceKillSwitchFound::None;
             if let Some(source) = session.server.sources.write().await.get_mut(mount) {
-                kill_switch = if let SourceAccessType::SourceClient { .. } = &source.access {
+                kill_switch = if let SourceAccessType::SourceClient { .. } = source.access.as_ref() {
                     SourceKillSwitchFound::Some(source.kill.take())
                 } else {
                     SourceKillSwitchFound::IsRelayed

@@ -61,6 +61,7 @@ pub enum SourceAccessType {
 }
 
 pub struct Source {
+    pub mount: Arc<String>,
     pub properties: Arc<IcyProperties>,
     pub metadata: Arc<RwLock<IcyMetadata>>,
     /// List of currently connected listeners to mount
@@ -68,7 +69,7 @@ pub struct Source {
     pub stats: Arc<SourceStats>,
     /// Fallback mountpoint in case this one is down
     pub fallback: Option<String>,
-    pub access: SourceAccessType,
+    pub access: Arc<SourceAccessType>,
     /// Notify relay task to start reading stream
     /// Used when we get first listener for a source
     pub on_demand_notify_reader: Option<diatomic_waker::WakeSource>,
@@ -115,27 +116,13 @@ pub enum MoveClientsType {
     Fallback,
 }
 
-#[derive(Debug)]
-pub struct ReserveListenerSlotRequest {
-    pub mount: String,
-    pub resp: oneshot::Sender<bool>
-}
-
-#[derive(Debug, Default)]
-pub struct ReservationState {
-    pub reserved: bool,
-    /// Broadcast channel receiver where we receive MPSC channel write to send reservation in
-    pub brx: Option<Receiver<mpsc::UnboundedSender<ReserveListenerSlotRequest>>>,
-    /// The MPSC writer itself
-    pub rtx: Option<mpsc::UnboundedSender<ReserveListenerSlotRequest>>
-}
-
 impl Source {
     pub fn new(properties: IcyProperties,
                fallback: Option<String>,
                access: SourceAccessType,
                migrated: Option<(Sender<Arc<Vec<u8>>>, Receiver<Arc<Vec<u8>>>)>,
-               metadata: Option<IcyMetadata>) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
+               metadata: Option<IcyMetadata>,
+               mount: String) -> (Self, SourceBroadcast, oneshot::Receiver<()>) {
         let size: NonZeroUsize  = NonZeroUsize::MIN;
         let (tx, rx)            = match migrated {
             Some(v)            => v,
@@ -145,12 +132,13 @@ impl Source {
         let (tx2, rx2)         = qanat::broadcast::channel(size);
         let (tx3, rx3)         = oneshot::channel();
         (Source {
+            mount: Arc::new(mount),
             properties: Arc::new(properties),
             metadata: Arc::new(RwLock::new(metadata.unwrap_or_default())),
             clients: Arc::new(RwLock::new(HashMap::new())),
             stats: Arc::new(SourceStats::default()),
             fallback,
-            access,
+            access: Arc::new(access),
             on_demand_notify_reader: None,
             broadcast: rx,
             meta_broadcast_sender: tx1.clone(),
@@ -167,32 +155,58 @@ impl Source {
     }
 
     pub fn reserve_listener_slots(&self, n: usize) -> usize {
-        let max  = match self.access {
+        Self::reserve_listener_slots_inner(&self.access, &self.stats, n)
+    }
+
+    #[inline]
+    pub fn reserve_listener_slots_inner(access: &SourceAccessType, stats: &SourceStats, n: usize) -> usize {
+        let max  = match access {
             SourceAccessType::SourceClient { max_listeners, .. } => max_listeners.unwrap_or(usize::MAX),
             SourceAccessType::RelayedSource { .. } => usize::MAX
         };
-        let prev = self.stats.active_listeners
+        let prev = stats.active_listeners
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
                 Some((cur + n).min(max))
             })
             .unwrap();
         (prev + n).min(max) - prev
     }
+}
 
-    pub async fn reserve_listener_slot(&self, state: &mut ReservationState, mount: &str) -> bool {
-        match &self.access {
-            SourceAccessType::SourceClient { .. } => match state.reserved {
+#[derive(Debug)]
+pub struct ReserveListenerSlotRequest {
+    pub mount: Arc<String>,
+    pub resp: oneshot::Sender<bool>
+}
+
+pub struct ReservationGuard {
+    pub reserved: bool,
+    /// Broadcast channel receiver where we receive MPSC channel write to send reservation in
+    pub brx: Option<Receiver<mpsc::UnboundedSender<ReserveListenerSlotRequest>>>,
+    /// The MPSC writer itself
+    pub rtx: Option<mpsc::UnboundedSender<ReserveListenerSlotRequest>>,
+    pub access: Arc<SourceAccessType>,
+    pub stats: Arc<SourceStats>,
+    pub mount: Arc<String>
+}
+
+impl ReservationGuard {
+    /// Reservation must continuously be polled until false is returned which signifies we failed
+    /// to make/keep reservation.
+    pub async fn poll(&mut self) -> bool {
+        match self.access.as_ref() {
+            SourceAccessType::SourceClient { .. } => match self.reserved {
                 true => utils::hang().await,
                 false => {
-                    state.reserved = self.reserve_listener_slots(1) == 1;
-                    state.reserved
+                    self.reserved = Source::reserve_listener_slots_inner(&self.access, &self.stats, 1) == 1;
+                    self.reserved
                 }
             },
             SourceAccessType::RelayedSource { reserve_listener_slot, .. } => {
                 let (mut rtx, mut brx) = match reserve_listener_slot.as_ref() {
                     Some(rtx) => {
-                        let mut brx = state.brx.take().unwrap_or(rtx.clone());
-                        match state.rtx.take() {
+                        let mut brx = self.brx.take().unwrap_or(rtx.clone());
+                        match self.rtx.take() {
                             Some(v) => (v, brx),
                             None => {
                                 // SAFETY: Our broadcast channel is never dropped because slave
@@ -208,12 +222,12 @@ impl Source {
                     tokio::select! {
                         // SAFETY: Same thing here
                         v = brx.recv() => {
-                            rtx            = v.unwrap();
-                            state.reserved = false;
+                            rtx           = v.unwrap();
+                            self.reserved = false;
                         },
-                        v = self.reserve_auth(state, mount, &mut rtx) => {
-                            state.rtx.replace(rtx);
-                            state.brx.replace(brx);
+                        v = self.reserve_auth(&mut rtx) => {
+                            self.rtx.replace(rtx);
+                            self.brx.replace(brx);
                             return v
                         }
                     };
@@ -222,20 +236,20 @@ impl Source {
         }
     }
 
-    async fn reserve_auth(&self, state: &mut ReservationState, mount: &str, rtx: &mut mpsc::UnboundedSender<ReserveListenerSlotRequest>) -> bool {
-        if state.reserved {
+    async fn reserve_auth(&mut self, rtx: &mut mpsc::UnboundedSender<ReserveListenerSlotRequest>) -> bool {
+        if self.reserved {
             // We did already get reservation, we only wait for other branch of select if
             // mount update disconnects, then we must get new reservation
             utils::hang().await
         } else {
             let (tx, mut rx) = oneshot::channel();
-            match rtx.send(ReserveListenerSlotRequest { resp: tx, mount: mount.to_string() }) {
+            match rtx.send(ReserveListenerSlotRequest { resp: tx, mount: self.mount.clone() }) {
                 Ok(()) => {
                     // SAFETY: This should never throw an exception as inner
                     // type is never dropped, this branch of select will be
                     // stopped long before recv here hangs indefinitely 
-                    state.reserved = rx.recv().await.unwrap();
-                    state.reserved
+                    self.reserved = rx.recv().await.unwrap();
+                    self.reserved
                 },
                 Err(_) => {
                     // We got caught when new channel is set up after mount
@@ -392,7 +406,8 @@ pub async fn handle_source(mut session: Session, info: SourceInfo) -> Result<Opt
         let source;
         (source, broadcast, kill_notifier) = Source::new(
             info.properties, info.fallback,
-            info.access, info.broadcast, info.metadata.clone()
+            info.access, info.broadcast, info.metadata.clone(),
+            info.mountpoint.clone()
         );
 
         // Handling two cases here

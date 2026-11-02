@@ -435,7 +435,8 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
                              info.properties.clone(), info.fallback.clone(),
                              info.access.clone(),
                              info.broadcast.take(),
-                             info.metadata.clone());
+                             info.metadata.clone(),
+                             info.mountpoint.clone());
                     source.on_demand_notify_reader = Some(wake_src);
 
                     let stats = source.stats.clone();
@@ -545,7 +546,7 @@ async fn authenticated_mode_event_listener(serv: &Arc<Server>, mut stream: Strea
     serv.stats.active_relay.fetch_sub(1, Ordering::Relaxed);
 }
 
-async fn write_reservations(stream: &mut Stream, reservations: &HashMap<u32, (String, Vec<oneshot::Sender<bool>>)>) -> Result<()> {
+async fn write_reservations(stream: &mut Stream, reservations: &HashMap<u32, (Arc<String>, Vec<oneshot::Sender<bool>>)>) -> Result<()> {
     for (id, reserv) in reservations.iter() {
         let ser = serde_json::to_vec(&MountUpdateRequest::ReserveStreamSlots { id: *id, count: reserv.1.len() as u32, mount: reserv.0.to_string() })?;
         stream.write_all(&(ser.len() as u32).to_be_bytes()).await?;
@@ -614,7 +615,7 @@ async fn migrate_connection(
 
 async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
                              serv: &Arc<Server>, rp: &Arc<SlaveRelayParams>, event: MountUpdate,
-                             reservations: Option<&mut HashMap<u32, (String, Vec<oneshot::Sender<bool>>)>>) {
+                             reservations: Option<&mut HashMap<u32, (Arc<String>, Vec<oneshot::Sender<bool>>)>>) {
     // Now handling events for every source
     match event {
         MountUpdate::ReservedStreamSlots { id, granted } => match reservations {
@@ -657,7 +658,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
                 // so we don't found source still existant after
                 let mut lock = serv.sources.write().await;
                 if let Some(source) = lock.get_mut(&mount) {
-                    if let SourceAccessType::RelayedSource { master, .. } = &source.access {
+                    if let SourceAccessType::RelayedSource { master, .. } = source.access.as_ref() {
                         if master.url.eq(&rp.master.url) {
                             // This is the same source
                             let kill = source.kill.take();
@@ -706,7 +707,7 @@ async fn handle_mount_update(sources: &mut HashMap<String, RelaySourceTask>,
                  kill_notifier)            = Source::new(
                      properties, None,
                      SourceAccessType::RelayedSource { master: rp.master.clone(), reserve_listener_slot: rp.reserve_listener_slot.clone() },
-                     None, metadata.clone());
+                     None, metadata.clone(), mount.clone());
             source.on_demand_notify_reader = Some(wake_src);
 
             let stats = source.stats.clone();

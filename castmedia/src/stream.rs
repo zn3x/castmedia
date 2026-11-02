@@ -338,7 +338,7 @@ async fn migrate_stream(mut s: MigrateStreamInfo<'_>, relay: Option<RelayedInfo>
             x.properties.as_ref().clone(),
             x.fallback.clone(),
             x.metadata.clone(),
-            x.access.clone()
+            x.access.as_ref().clone()
         ))
         .expect("Source should still exist at this point");
     let metadata = metadata.read().await.clone();
