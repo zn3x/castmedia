@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::{
     server::{ClientSession, Stream, Server, Session, AddrType},
     request::{read_request, Request, RequestType, ListenRequest},
-    source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast, SourceAccessType, MetadataMsg},
+    source::{self, SourceStats, MoveClientsCommand, MoveClientsType, IcyProperties, handle_source, SourceBroadcast, SourceAccessType, MetadataMsg, ReservationGuard},
     response, utils, admin, api,
     migrate::{MigrateEntry, MigrateCommand},
     broadcast::read_media_broadcast,
@@ -71,11 +71,12 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
             v.move_listeners_receiver.clone(),
             v.stats.clone(),
             v.clients.clone(),
-            v.on_demand_notify_reader.clone()
+            v.on_demand_notify_reader.clone(),
+            v.new_reservation_guard()
         ));
 
     let (props, mut stream, meta_stream,
-         mover, stats, clients, on_demand_notify) = match source_info {
+         mover, stats, clients, on_demand_notify, reservation_guard) = match source_info {
         Some(v) => v,
         None => {
             if info.migrated.is_none() {
@@ -175,14 +176,13 @@ async fn prepare_listener(mut session: ClientSession, info: ListenerInfo) -> Res
         id,
         clients,
         client_stats,
-        mountpoint: info.mountpoint
+        mountpoint: info.mountpoint,
+        reservation_guard
     };
 
     let server = session.server.clone();
     let ret    = tokio::select! {
-        r = listener_broadcast(&mut session, &mut broadcast) => {
-            r
-        },
+        r = listener_broadcast(&mut session, &mut broadcast) => r,
         _ = kill_rx.recv() => {
             Err(anyhow::Error::msg("Client killed by admininstrator command"))
         }
@@ -231,7 +231,8 @@ struct BroadcastInfo {
     id: Uuid,
     clients: Arc<RwLock<HashMap<Uuid, Client>>>,
     client_stats: Arc<ClientStats>,
-    mountpoint: String
+    mountpoint: String,
+    reservation_guard: ReservationGuard
 }
 
 enum BroadcastStatus {
@@ -337,6 +338,7 @@ async fn listener_broadcast<'a>(session: &mut ClientSession, b: &mut BroadcastIn
                     write_buffer_to_stream(&buffer, session, b, &metadata, &mut bytes_sent).await?;
                     return Ok(BroadcastStatus::Migrate(migrate))
                 }
+                _ = b.reservation_guard.wait_until_released() => return Err(anyhow::anyhow!("Cannot reserve a slot for listener"))
             }
         };
 

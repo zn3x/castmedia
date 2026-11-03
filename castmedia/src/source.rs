@@ -171,6 +171,20 @@ impl Source {
             .unwrap();
         (prev + n).min(max) - prev
     }
+
+    pub fn new_reservation_guard(&self) -> ReservationGuard {
+        ReservationGuard {
+            reserved: false,
+            brx: match self.access.as_ref() {
+                SourceAccessType::SourceClient { .. } => None,
+                SourceAccessType::RelayedSource { reserve_listener_slot, .. } => reserve_listener_slot.clone()
+            },
+            rtx: None,
+            access: self.access.clone(),
+            stats: self.stats.clone(),
+            mount: self.mount.clone()
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -191,29 +205,25 @@ pub struct ReservationGuard {
 }
 
 impl ReservationGuard {
-    /// Reservation must continuously be polled until false is returned which signifies we failed
+    /// Reservation must continuously be polled until `wait_until_released()` returns which signifies we failed
     /// to make/keep reservation.
-    pub async fn poll(&mut self) -> bool {
+    pub async fn wait_until_released(&mut self) {
         match self.access.as_ref() {
             SourceAccessType::SourceClient { .. } => match self.reserved {
                 true => utils::hang().await,
                 false => {
                     self.reserved = Source::reserve_listener_slots_inner(&self.access, &self.stats, 1) == 1;
-                    self.reserved
+                    utils::hang().await // We reserved this once for all
                 }
             },
             SourceAccessType::RelayedSource { reserve_listener_slot, .. } => {
-                let (mut rtx, mut brx) = match reserve_listener_slot.as_ref() {
-                    Some(rtx) => {
-                        let mut brx = self.brx.take().unwrap_or(rtx.clone());
-                        match self.rtx.take() {
-                            Some(v) => (v, brx),
-                            None => {
-                                // SAFETY: Our broadcast channel is never dropped because slave
-                                // mount update never exits
-                                (brx.recv().await.unwrap(), brx)
-                            }
-                        }
+                let (mut rtx, brx) = match reserve_listener_slot.as_ref() {
+                    Some(brx) => {
+                        let brx = self.brx.get_or_insert(brx.clone());
+                        // SAFETY: Our broadcast channel is never dropped because slave
+                        // mount update never exits
+                        let rtx = self.rtx.get_or_insert(brx.recv().await.unwrap());
+                        (rtx, brx)
                     },
                     None => utils::hang().await // We are in transparent mode, we don't support max_listeners here
                 };
@@ -222,13 +232,13 @@ impl ReservationGuard {
                     tokio::select! {
                         // SAFETY: Same thing here
                         v = brx.recv() => {
-                            rtx           = v.unwrap();
+                            *rtx = v.unwrap();
                             self.reserved = false;
                         },
-                        v = self.reserve_auth(&mut rtx) => {
-                            self.rtx.replace(rtx);
-                            self.brx.replace(brx);
-                            return v
+                        v = Self::reserve_auth(&mut self.reserved, &mut rtx, &self.mount) => {
+                            if !v {
+                                return;
+                            }
                         }
                     };
                 }
@@ -236,20 +246,20 @@ impl ReservationGuard {
         }
     }
 
-    async fn reserve_auth(&mut self, rtx: &mut mpsc::UnboundedSender<ReserveListenerSlotRequest>) -> bool {
-        if self.reserved {
+    async fn reserve_auth(reserved: &mut bool, rtx: &mut mpsc::UnboundedSender<ReserveListenerSlotRequest>, mount: &Arc<String>) -> bool {
+        if *reserved {
             // We did already get reservation, we only wait for other branch of select if
             // mount update disconnects, then we must get new reservation
             utils::hang().await
         } else {
             let (tx, mut rx) = oneshot::channel();
-            match rtx.send(ReserveListenerSlotRequest { resp: tx, mount: self.mount.clone() }) {
+            match rtx.send(ReserveListenerSlotRequest { resp: tx, mount: mount.clone() }) {
                 Ok(()) => {
                     // SAFETY: This should never throw an exception as inner
                     // type is never dropped, this branch of select will be
                     // stopped long before recv here hangs indefinitely 
-                    self.reserved = rx.recv().await.unwrap();
-                    self.reserved
+                    *reserved = rx.recv().await.unwrap();
+                    *reserved
                 },
                 Err(_) => {
                     // We got caught when new channel is set up after mount
